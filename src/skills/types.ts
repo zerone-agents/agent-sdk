@@ -1,0 +1,96 @@
+/**
+ * Skill System Types
+ *
+ * Skills are reusable prompt templates that extend agent capabilities.
+ * They can be invoked by the model via the Skill tool or by users via /skillname.
+ */
+
+import type { ToolContext } from '../types.js'
+import type { HookConfig } from '../hooks.js'
+
+/**
+ * Content block for skill prompts (compatible with Anthropic API).
+ */
+export type SkillContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+
+/**
+ * Bundled skill definition.
+ *
+ * Inspired by Claude Code's skill system. Skills provide specialized
+ * capabilities by injecting context-specific prompts.
+ */
+export interface SkillDefinition {
+  /** Unique skill name (e.g., 'simplify', 'commit') */
+  name: string
+
+  /** Human-readable description */
+  description: string
+
+  /** Alternative names for the skill */
+  aliases?: string[]
+
+  /** When the model should invoke this skill (used in system prompt) */
+  whenToUse?: string
+
+  /** Hint for expected arguments */
+  argumentHint?: string
+
+  /** Whether the skill can be invoked by users via /command */
+  userInvocable?: boolean
+
+  /** Runtime check for availability */
+  isEnabled?: () => boolean
+
+  /** Hook overrides while skill is active */
+  hooks?: HookConfig
+
+  /** Where this skill was loaded from. Undefined for programmatically registered skills. */
+  source?: import('../types.js').SkillSource
+
+  /**
+   * Absolute path to the SKILL.md file on disk.
+   * Only set for filesystem-loaded skills; undefined for bundled skills.
+   */
+  location?: string
+
+  /**
+   * Absolute path to the skill's root directory.
+   * Used to resolve relative paths referenced inside SKILL.md.
+   * Only set for filesystem-loaded skills; undefined for bundled skills.
+   */
+  skillDir?: string
+
+  /**
+   * Generate the prompt content blocks for this skill.
+   *
+   * @param args - User-provided arguments (e.g., from "/simplify focus on error handling")
+   * @param context - Tool execution context (cwd, etc.)
+   * @returns Content blocks to inject into the conversation
+   */
+  getPrompt: (
+    args: string,
+    context: ToolContext,
+  ) => Promise<SkillContentBlock[]>
+}
+
+/**
+ * Result of executing a skill.
+ */
+export interface SkillResult {
+  /** Whether execution succeeded */
+  success: boolean
+
+  /** Skill name that was executed */
+  skillName: string
+
+  /** Execution status */
+  status: 'inline'
+
+  /** Result text */
+  result?: string
+
+  /** Error message */
+  error?: string
+}

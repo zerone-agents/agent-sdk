@@ -1,0 +1,119 @@
+/**
+ * LLM Provider Abstraction Types
+ *
+ * Defines a provider interface that normalizes API differences between
+ * Anthropic Messages API and OpenAI Chat Completions API.
+ *
+ * Internally the SDK uses Anthropic-like message format as the canonical
+ * representation. Providers convert to/from their native API format.
+ */
+
+// --------------------------------------------------------------------------
+// API Type
+// --------------------------------------------------------------------------
+
+export type ApiType = 'anthropic-messages' | 'openai-completions'
+
+// --------------------------------------------------------------------------
+// Normalized Request
+// --------------------------------------------------------------------------
+
+export interface CreateMessageParams {
+  model: string
+  maxTokens: number
+  system: string
+  messages: NormalizedMessageParam[]
+  tools?: NormalizedTool[]
+  thinking?: { type: string; budget_tokens?: number }
+  effort?: string
+  signal?: AbortSignal
+}
+
+/**
+ * Normalized message format (Anthropic-like).
+ * This is the internal representation used throughout the SDK.
+ */
+export interface NormalizedMessageParam {
+  role: 'user' | 'assistant'
+  content: string | NormalizedContentBlock[]
+  rawUsage?: any
+  /** Stable identifier for this message in session transcripts. */
+  id?: string
+  /** Snapshot metadata for revert support (user messages only). */
+  _snapshot?: {
+    beforeHash: string
+  }
+}
+
+export type NormalizedContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: any }
+  | { type: 'tool_result'; tool_use_id: string; content: string | any[]; is_error?: boolean }
+  | { type: 'image'; source: any }
+  | { type: 'thinking'; thinking: string }
+
+export interface NormalizedTool {
+  name: string
+  description: string
+  input_schema: {
+    type: 'object'
+    properties: Record<string, any>
+    required?: string[]
+  }
+}
+
+// --------------------------------------------------------------------------
+// Normalized Response
+// --------------------------------------------------------------------------
+
+export interface CreateMessageResponse {
+  content: NormalizedResponseBlock[]
+  stopReason: 'end_turn' | 'max_tokens' | 'tool_use' | string
+  usage: {
+    input_tokens: number
+    output_tokens: number
+    totalInputTokens: number
+    cache_creation_input_tokens?: number
+    cache_read_input_tokens?: number
+  }
+  rawUsage?: any
+  warnings?: string[]
+}
+
+export type NormalizedResponseBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: any }
+  | { type: 'thinking'; thinking: string }
+
+export interface StreamChunk {
+  type: 'text' | 'thinking' | 'tool_use' | 'usage' | 'done'
+  index: number
+  id?: string
+  delta?: string
+  name?: string
+  input?: string
+  warnings?: string[]
+  usage?: {
+    input_tokens: number
+    output_tokens: number
+    totalInputTokens: number
+    cache_creation_input_tokens?: number
+    cache_read_input_tokens?: number
+  }
+  rawUsage?: any
+}
+
+// --------------------------------------------------------------------------
+// Provider Interface
+// --------------------------------------------------------------------------
+
+export interface LLMProvider {
+  /** The API type this provider implements. */
+  readonly apiType: ApiType
+
+  /** Send a message and get a response. */
+  createMessage(params: CreateMessageParams): Promise<CreateMessageResponse>
+
+  /** Send a message and stream the response. */
+  createMessageStream?(params: CreateMessageParams): AsyncGenerator<StreamChunk>
+}

@@ -1,0 +1,74 @@
+name: Publish SDK
+
+on:
+  push:
+    tags:
+      - 'sdk-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.6.26). Leave empty to use package.json version.'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Set version from tag
+        if: github.event_name == 'push'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#sdk-v}"
+          echo "Publishing version $TAG_VERSION (from tag $GITHUB_REF_NAME)"
+          # Update package.json to match tag version
+          node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')); pkg.version = '$TAG_VERSION'; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n')"
+
+      - name: Set version from manual input
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        run: |
+          echo "Publishing version ${{ inputs.version }}"
+          node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')); pkg.version = '${{ inputs.version }}'; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n')"
+
+      - name: Show current version
+        run: cat package.json | grep '"version"'
+
+      - name: Configure npm auth
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summary
+        if: always()
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "### ✅ Published @zerone-agent/agent-sdk" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Version: ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "Trigger: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY

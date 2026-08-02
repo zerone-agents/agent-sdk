@@ -1,0 +1,504 @@
+/**
+ * @zerone-agent/agent-sdk
+ *
+ * Open-source Agent SDK by Zerone.
+ * Runs the full agent loop in-process without spawning subprocesses.
+ *
+ * Features:
+ * - 30+ built-in tools (file I/O, shell, web, agents, tasks, teams, etc.)
+ * - Skill system (reusable prompt templates with bundled skills)
+ * - MCP server integration (stdio, SSE, HTTP)
+ * - Context compression (auto-compact, micro-compact)
+ * - Retry with exponential backoff
+ * - Git status & project context injection
+ * - Multi-turn session persistence
+ * - Permission system (allow/deny/bypass modes)
+ * - Subagent spawning & team coordination
+ * - Scheduling
+ * - Hook system with lifecycle integration (pre/post tool use, session, compact)
+ * - Token estimation & cost tracking
+ * - File state LRU caching
+ * - Plan mode for structured workflows
+ */
+
+// --------------------------------------------------------------------------
+// High-level Agent API
+// --------------------------------------------------------------------------
+
+export { Agent, createAgent, query } from './agent.js'
+
+// --------------------------------------------------------------------------
+// Tool Helper (Zod-based tool creation, compatible with official SDK)
+// --------------------------------------------------------------------------
+
+export { tool, sdkToolToToolDefinition } from './tool-helper.js'
+export type {
+  ToolAnnotations,
+  CallToolResult,
+  SdkMcpToolDefinition,
+} from './tool-helper.js'
+
+// --------------------------------------------------------------------------
+// In-Process MCP Server
+// --------------------------------------------------------------------------
+
+export { createSdkMcpServer, isSdkServerConfig } from './sdk-mcp-server.js'
+export type { McpSdkServerConfig } from './sdk-mcp-server.js'
+
+// --------------------------------------------------------------------------
+// Core Engine
+// --------------------------------------------------------------------------
+
+export { QueryEngine } from './engine.js'
+
+// --------------------------------------------------------------------------
+// LLM Providers (Anthropic + OpenAI)
+// --------------------------------------------------------------------------
+
+export {
+  createProvider,
+  AnthropicProvider,
+  OpenAIProvider,
+} from './providers/index.js'
+export type {
+  ApiType,
+  LLMProvider,
+  CreateMessageParams,
+  CreateMessageResponse,
+  NormalizedMessageParam,
+  NormalizedContentBlock,
+  NormalizedTool,
+  NormalizedResponseBlock,
+  StreamChunk,
+} from './providers/index.js'
+
+// --------------------------------------------------------------------------
+// Tool System (30+ tools)
+// --------------------------------------------------------------------------
+
+export {
+  // Registry
+  getAllBaseTools,
+  filterTools,
+  assembleToolPool,
+
+  // Helpers
+  defineTool,
+  toApiTool,
+
+  // Core file I/O & execution
+  BashTool,
+  FileReadTool,
+  FileWriteTool,
+  FileEditTool,
+  GlobTool,
+  GrepTool,
+  NotebookEditTool,
+
+  // Web
+  WebFetchTool,
+  WebSearchTool,
+
+  // Agent & Multi-agent
+  TaskTool,
+  MultiTaskTool,
+  SendMessageTool,
+  TeamCreateTool,
+  TeamDeleteTool,
+
+  // Worktree
+  EnterWorktreeTool,
+  ExitWorktreeTool,
+
+  // Planning
+  EnterPlanModeTool,
+  ExitPlanModeTool,
+
+  // User interaction
+  AskUserQuestionTool,
+
+  // Discovery
+  ToolSearchTool,
+
+  // MCP Resources
+  ListMcpResourcesTool,
+  ReadMcpResourceTool,
+
+  // Scheduling
+  CronCreateTool,
+  CronDeleteTool,
+  CronListTool,
+  initCronTools,
+
+  // LSP
+  LSPTool,
+
+  // Config
+  ConfigTool,
+
+  // Todo
+  TodoWriteTool,
+
+  // Skill
+  SkillTool,
+} from './tools/index.js'
+export type {
+  ExaProviderConfig,
+  ParallelProviderConfig,
+  SearchProviderConfig,
+  WebSearchConfig,
+} from './tools/web-search.js'
+export { DefaultToolServices } from './tools/default-services.js'
+export type { ToolServices } from './tools/services.js'
+
+// --------------------------------------------------------------------------
+// MCP Client
+// --------------------------------------------------------------------------
+
+export { connectMCPServer, closeAllConnections } from './mcp/client.js'
+export type { MCPConnection } from './mcp/client.js'
+
+// --------------------------------------------------------------------------
+// Skill System
+// --------------------------------------------------------------------------
+
+export {
+  SkillRegistry,
+  defaultRegistry,
+  registerSkill,
+  getSkill,
+  getAllSkills,
+  getUserInvocableSkills,
+  hasSkill,
+  unregisterSkill,
+  formatSkillsForPrompt,
+  formatSkillsForSystemPrompt,
+  formatSkillsForToolDescription,
+  filterSkillsByAllowlist,
+  loadSkillsFromFilesystem,
+} from './skills/index.js'
+export type {
+  SkillDefinition,
+  SkillContentBlock,
+  SkillResult,
+  ExtraDirs,
+} from './skills/index.js'
+
+// --------------------------------------------------------------------------
+// Agent Resolution & Subagent Spawning
+// --------------------------------------------------------------------------
+
+export { resolveAgent } from './resolve-agent.js'
+export {
+  runSubagent,
+  DEFAULT_SUBAGENT_MAX_TURNS,
+} from './tools/spawn-subagent.js'
+export type {
+  SpawnSubagentOptions,
+  SubagentRun,
+  SpawnSubagentMode,
+} from './tools/spawn-subagent.js'
+
+// --------------------------------------------------------------------------
+// Hook System
+// --------------------------------------------------------------------------
+
+export {
+  HookRegistry,
+  createHookRegistry,
+  HOOK_EVENTS,
+} from './hooks.js'
+export type {
+  HookEvent,
+  HookDefinition,
+  HookInput,
+  HookOutput,
+  HookConfig,
+} from './hooks.js'
+
+// --------------------------------------------------------------------------
+// Session Management
+// --------------------------------------------------------------------------
+
+export {
+  saveSession,
+  loadSession,
+  listSessions,
+  forkSession,
+  getSessionMessages,
+  getSessionInfo,
+  renameSession,
+  tagSession,
+  appendToSession,
+  deleteSession,
+} from './session.js'
+export type { SessionMetadata, SessionData, ForkSource, ForkOptions } from './session.js'
+
+// --------------------------------------------------------------------------
+// Snapshot Engine
+// --------------------------------------------------------------------------
+
+export { SnapshotEngine } from './snapshot/index.js'
+export type { SnapshotEngineOptions, RevertEntry } from './snapshot/index.js'
+export { isGitAvailable } from './snapshot/git-detector.js'
+export { Semaphore } from './snapshot/semaphore.js'
+
+// --------------------------------------------------------------------------
+// Session Revert
+// --------------------------------------------------------------------------
+
+export { revertSession } from './session-revert.js'
+export type { RevertSessionOptions, RevertResult } from './session-revert.js'
+
+// --------------------------------------------------------------------------
+// Engine Snapshot
+// --------------------------------------------------------------------------
+
+export type { EngineSnapshot } from './types.js'
+
+// --------------------------------------------------------------------------
+// Context Utilities
+// --------------------------------------------------------------------------
+
+export {
+  getSystemContext,
+} from './utils/context.js'
+
+// --------------------------------------------------------------------------
+// Message Utilities
+// --------------------------------------------------------------------------
+
+export {
+  createUserMessage,
+  createAssistantMessage,
+  normalizeMessagesForAPI,
+  stripImagesFromMessages,
+  extractTextFromContent,
+  createCompactBoundaryMessage,
+  truncateText,
+} from './utils/messages.js'
+export { truncateToLastNTurns } from './utils/session-turns.js'
+
+// --------------------------------------------------------------------------
+// Token Estimation & Cost
+// --------------------------------------------------------------------------
+
+export {
+  estimateTokens,
+  estimateMessagesTokens,
+  estimateSystemPromptTokens,
+  getTokenCountFromUsage,
+  getContextWindowSize,
+  getAutoCompactThreshold,
+  estimateCost,
+  MODEL_PRICING,
+  AUTOCOMPACT_BUFFER_MAX_TOKENS,
+  AUTOCOMPACT_BUFFER_WINDOW_RATIO,
+  DEFAULT_MAX_REQUEST_BODY_BYTES,
+} from './utils/tokens.js'
+
+// --------------------------------------------------------------------------
+// Context Compression
+// --------------------------------------------------------------------------
+
+export {
+  shouldAutoCompact,
+  compactConversation,
+  compactConversationStream,
+  compactConversationWithProtectedTail,
+  microCompactMessages,
+  pruneMessages,
+  createAutoCompactState,
+  PRUNE_PROTECTED_TURNS,
+  PRUNE_THRESHOLD_CHARS,
+  PROTECTED_TOOL_NAMES,
+} from './utils/compact.js'
+export type { AutoCompactState } from './utils/compact.js'
+
+// --------------------------------------------------------------------------
+// Request Body Size Management
+// --------------------------------------------------------------------------
+
+export {
+  estimateBodyBytes,
+  enforceBodySizeLimit,
+} from './utils/body-size.js'
+
+// --------------------------------------------------------------------------
+// Retry Logic
+// --------------------------------------------------------------------------
+
+export {
+  withRetry,
+  isRetryableError,
+  isPromptTooLongError,
+  isAuthError,
+  isRateLimitError,
+  formatApiError,
+  getRetryDelay,
+  DEFAULT_RETRY_CONFIG,
+} from './utils/retry.js'
+export type { RetryConfig } from './utils/retry.js'
+
+// --------------------------------------------------------------------------
+// File State Cache
+// --------------------------------------------------------------------------
+
+export {
+  FileStateCache,
+  createFileStateCache,
+} from './utils/fileCache.js'
+export type { FileState } from './utils/fileCache.js'
+
+export {
+  getAllTeams,
+  getTeam,
+  clearTeams,
+} from './tools/team.js'
+export type { Team } from './tools/team.js'
+
+export {
+  readMailbox,
+  writeToMailbox,
+  clearMailboxes,
+} from './tools/send-message.js'
+export type { AgentMessage } from './tools/send-message.js'
+
+export {
+  isPlanModeActive,
+  getCurrentPlan,
+} from './tools/plan.js'
+
+export {
+  setQuestionHandler,
+  clearQuestionHandler,
+} from './tools/ask-user.js'
+
+export {
+  setDeferredTools,
+} from './tools/tool-search.js'
+
+export {
+  setMcpConnections,
+} from './tools/mcp-resource.js'
+
+export {
+  getAllCronJobs,
+  clearCronJobs,
+} from './tools/cron.js'
+export type { CronJob } from './tools/cron.js'
+
+// --------------------------------------------------------------------------
+// Cron Utilities
+// --------------------------------------------------------------------------
+
+export {
+  cronToHuman,
+  computeNextCronRun,
+  parseCronExpression,
+  DEFAULT_CRON_JITTER_CONFIG,
+  jitteredNextCronRunMs,
+  jitterFrac,
+} from './cron/index.js'
+export type {
+  CronFields,
+  CronJitterConfig,
+  CronTask,
+  CronStorage,
+} from './cron/index.js'
+
+export {
+  getConfig,
+  setConfig,
+  clearConfig,
+} from './tools/config.js'
+
+export type { TodoInfo, TodoStatus, TodoPriority } from './tools/todowrite.js'
+
+// --------------------------------------------------------------------------
+// Types
+// --------------------------------------------------------------------------
+
+export type {
+  // Message types
+  Message,
+  UserMessage,
+  AssistantMessage,
+  ConversationMessage,
+  MessageRole,
+
+  // SDK message types (streaming events)
+  SDKMessage,
+  SDKUserMessage,
+  SDKAssistantMessage,
+  SDKToolResultMessage,
+  SDKResultMessage,
+  SDKPartialMessage,
+  SDKSystemMessage,
+  SDKCompactBoundaryMessage,
+  SDKCompactMessage,
+  SDKStatusMessage,
+  SDKTaskNotificationMessage,
+  SDKRateLimitEvent,
+  SDKRetryMessage,
+  SDKSubagentMessage,
+  SDKSubtaskCompletedEvent,
+  SDKToolsCompleteMessage,
+  SDKSkillsUpdatedMessage,
+  SDKWarningMessage,
+
+  // Tool types
+  ToolDefinition,
+  ToolInputSchema,
+  ToolContext,
+  SkillContext,
+  SubagentContext,
+  ToolResult,
+
+  // Agent environment & resolution
+  AgentEnvironment,
+  ResolvedAgent,
+  PromptSpec,
+  SkillSource,
+
+  // Permission types
+  PermissionMode,
+  PermissionBehavior,
+  CanUseToolFn,
+  CanUseToolResult,
+
+  // MCP types
+  McpServerConfig,
+  McpStdioConfig,
+  McpSseConfig,
+  McpHttpConfig,
+
+  // Agent types
+  AgentOptions,
+  AgentDefinition,
+  QueryResult,
+  ThinkingConfig,
+  TokenUsage,
+  SystemPromptPreset,
+
+  // Engine types
+  QueryEngineConfig,
+
+  // Content block types
+  ContentBlockParam,
+  ContentBlock,
+
+  // Sandbox types
+  SandboxSettings,
+  SandboxNetworkConfig,
+  SandboxFilesystemConfig,
+
+  // Output format
+  OutputFormat,
+
+  // Setting sources
+  SettingSource,
+
+  // Model info
+  ModelInfo,
+} from './types.js'

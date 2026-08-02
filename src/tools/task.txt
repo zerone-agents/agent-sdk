@@ -1,0 +1,44 @@
+Launch a new agent to handle complex, multistep tasks autonomously. The subagent runs with its own context window and conversation history, isolated from the main conversation.
+
+subagent_type determines the agent's capabilities:
+- 'Explore': Read-only mode. Can read files, search code, run non-mutating shell commands (ls, git log, etc.), and fetch web content. Cannot modify, create, or delete files. Use for research, codebase exploration, and information gathering.
+- 'General': Full capabilities. Inherits the specified agent's complete toolset including file editing, writing, and execution. Use for implementation tasks that require code changes.
+
+subagent_name optionally specifies a registered agent name to look up in the subAgents table. If omitted, the parent agent's agentId is used to look up the table; the call fails if no matching entry exists.
+
+When to use the Task tool:
+- Complex multi-step research that requires reading many files and synthesizing information (use Explore mode)
+- Implementation tasks that involve multiple files and benefit from focused, autonomous execution (use General mode)
+- Code review or analysis where a fresh perspective with isolated context is valuable
+- Tasks where you want to delegate work and receive a concise summary back
+
+When NOT to use the Task tool:
+- If you want to read a specific file, use the Read tool directly — it is faster and shares your context
+- If you are searching for a specific file pattern, use the Glob tool directly
+- If you are searching for specific text within files, use the Grep tool directly
+- If the task can be completed in 1-2 tool calls, do it yourself rather than spawning a subagent
+- If you need the result to be visible to the user in real-time (subagent results are only returned to you, not shown to the user until you relay them)
+
+Usage notes:
+1. When launching a subagent, your prompt should contain a highly detailed task description. The subagent starts with a fresh context and does not know about your conversation history. Specify exactly what information the agent should return in its final message.
+2. Clearly tell the subagent whether you expect it to write code or just do research. For research-only tasks, use Explore mode to enforce read-only behavior. For code changes, use General mode.
+3. Tell the subagent how to verify its work if possible (e.g., relevant test commands, type check commands).
+4. The subagent's result is returned to you as a single message. You should summarize the result for the user in your own response — do not just forward the raw output.
+5. If an agent is taking too long or going in the wrong direction, you can abort the current operation and the subagent will be terminated.
+6. Each subagent invocation starts with a fresh context — there is no session continuity between calls.
+
+Example usage:
+
+<example>
+user: "Find all places in the codebase where we use deprecated APIs and list them"
+assistant: I'll use an Explore subagent to search the codebase for deprecated API usage.
+assistant: [Uses Task tool with subagent_type="Explore", prompt="Search the entire codebase for usage of deprecated APIs. Check for: 1) deprecated function calls, 2) deprecated import paths, 3) TODO/FIXME comments mentioning deprecation. Report back a structured list with file paths, line numbers, and the deprecated API being used."]
+assistant: The subagent found 5 instances of deprecated API usage across 3 files. Here's the summary...
+</example>
+
+<example>
+user: "Add input validation to all API endpoints in the auth module"
+assistant: I'll use a General subagent to implement input validation across the auth module.
+assistant: [Uses Task tool with subagent_type="General", prompt="Add input validation to all API endpoints in src/auth/. For each endpoint: 1) Read the current handler, 2) Add Zod schema validation for request body/params, 3) Return 400 on invalid input. Run 'npm test' after all changes to verify nothing is broken. Report which endpoints were modified and any test failures."]
+assistant: The subagent added validation to 4 endpoints and all tests pass.
+</example>

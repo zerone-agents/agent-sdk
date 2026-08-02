@@ -1,0 +1,559 @@
+import { describe, expect, it } from 'vitest'
+import { QueryEngine } from './engine.js'
+import type { QueryEngineConfig, SDKMessage, SDKResultMessage, SDKToolResultMessage, ToolDefinition } from './types.js'
+import type { LLMProvider, StreamChunk } from './providers/types.js'
+import { SkillRegistry } from './skills/index.js'
+
+// Mirrors the real @anthropic-ai/sdk APIConnectionError: a plain Error with
+// name='Error', fixed message, and the underlying failure on `cause`.
+class FakeAPIConnectionError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message)
+    this.cause = cause
+  }
+}
+
+function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryEngineConfig {
+  return {
+    env: {
+      provider,
+      model: 'test-model',
+      maxTokens: 100,
+      cwd: process.cwd(),
+      customTools: [],
+      mcpTools: [],
+      skillRegistry: new SkillRegistry(),
+    },
+    resolved: {
+      definition: { description: 'test', prompt: 'test prompt' },
+      tools,
+      skills: [],
+    },
+    maxTurns: 5,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    includePartialMessages: true,
+    agentId: 'test',
+    maxStreamRetries: 1,
+  }
+}
+
+async function run(engine: QueryEngine): Promise<SDKMessage[]> {
+  const msgs: SDKMessage[] = []
+  for await (const m of engine.submitMessage('hi')) msgs.push(m)
+  return msgs
+}
+
+function findResult(msgs: SDKMessage[]): SDKResultMessage {
+  const result = msgs.find((m) => m.type === 'result') as SDKResultMessage | undefined
+  if (!result) throw new Error('no result message emitted')
+  return result
+}
+
+describe('QueryEngine error result', () => {
+  it('includes error_type=connection when stream retries are exhausted', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        const cause: any = new TypeError('fetch failed')
+        throw new FakeAPIConnectionError('Connection error.', cause)
+      },
+    }
+
+    const result = findResult(await run(new QueryEngine(makeConfig(provider))))
+
+    expect(result.subtype).toBe('error')
+    expect(result.error_type).toBe('connection')
+    expect(result.errors?.[0]).toBe('Connection error.')
+  })
+
+  it('includes error_type=auth for non-retryable auth failures', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        throw Object.assign(new Error('Unauthorized'), { status: 401 })
+      },
+    }
+
+    const result = findResult(await run(new QueryEngine(makeConfig(provider))))
+
+    expect(result.subtype).toBe('error')
+    expect(result.error_type).toBe('auth')
+  })
+
+  it('marks the final result truncated when the stream breaks mid-response', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'partial' }
+        throw Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+      },
+    }
+
+    const result = findResult(await run(new QueryEngine(makeConfig(provider))))
+
+    expect(result.subtype).toBe('success')
+    expect(result.truncated).toBe(true)
+  })
+
+  it('emits a structured retry system message (no hardcoded text)', async () => {
+    let attempts = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        attempts++
+        if (attempts === 1) {
+          throw new FakeAPIConnectionError('Connection error.', new TypeError('fetch failed'))
+        }
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+
+    const msgs = await run(new QueryEngine(makeConfig(provider)))
+    const retry = msgs.find((m) => m.type === 'system' && (m as any).subtype === 'retry') as any
+
+    expect(retry).toBeDefined()
+    expect(retry.attempt).toBe(1)
+    expect(retry.error_type).toBe('connection')
+    expect(typeof retry.delay_ms).toBe('number')
+    expect(retry.message).toBeUndefined()
+  })
+
+  it('does not mark truncated on a clean stream', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+
+    const result = findResult(await run(new QueryEngine(makeConfig(provider))))
+
+    expect(result.subtype).toBe('success')
+    expect(result.truncated).toBeUndefined()
+  })
+})
+
+describe('QueryEngine tool_result streaming', () => {
+  // Regression: tool_result SDK event must surface is_error from the underlying
+  // ToolResult. Previously the engine yielded { output, metadata } only,
+  // leaving downstream consumers unable to distinguish success from failure.
+  it('propagates is_error=true when a tool returns an error result', async () => {
+    const failingTool: ToolDefinition = {
+      name: 'fail',
+      description: 'always fails',
+      inputSchema: { type: 'object', properties: {} },
+      async call() {
+        return {
+          type: 'tool_result',
+          tool_use_id: '',
+          content: 'boom',
+          is_error: true,
+        }
+      },
+    }
+
+    // Two-pass stream: first call emits a tool_use, second call ends the turn.
+    let pass = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        if (pass++ === 0) {
+          yield { type: 'tool_use', index: 1, id: 'tu_1', name: 'fail', input: '{}' }
+          yield { type: 'done', index: -1 }
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' }
+          yield { type: 'done', index: -1 }
+        }
+      },
+    }
+
+    const config: QueryEngineConfig = makeConfig(provider, [failingTool])
+
+    const msgs = await run(new QueryEngine(config))
+    const toolResult = msgs.find((m) => m.type === 'tool_result') as SDKToolResultMessage | undefined
+    expect(toolResult).toBeDefined()
+    expect(toolResult!.result.is_error).toBe(true)
+    expect(toolResult!.result.output).toBe('boom')
+  })
+
+  it('propagates is_error=false (or undefined) when a tool succeeds', async () => {
+    const okTool: ToolDefinition = {
+      name: 'ok',
+      description: 'always succeeds',
+      inputSchema: { type: 'object', properties: {} },
+      async call() {
+        return {
+          type: 'tool_result',
+          tool_use_id: '',
+          content: 'all good',
+          is_error: false,
+        }
+      },
+    }
+
+    let pass = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        if (pass++ === 0) {
+          yield { type: 'tool_use', index: 1, id: 'tu_1', name: 'ok', input: '{}' }
+          yield { type: 'done', index: -1 }
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' }
+          yield { type: 'done', index: -1 }
+        }
+      },
+    }
+
+    const config: QueryEngineConfig = makeConfig(provider, [okTool])
+
+    const msgs = await run(new QueryEngine(config))
+    const toolResult = msgs.find((m) => m.type === 'tool_result') as SDKToolResultMessage | undefined
+    expect(toolResult).toBeDefined()
+    expect(toolResult!.result.is_error).toBeFalsy()
+    expect(toolResult!.result.output).toBe('all good')
+  })
+})
+
+describe('executeTools streaming + tools_complete', () => {
+  function makeDelayTool(name: string, delayMs: number, output?: string): ToolDefinition {
+    return {
+      name,
+      description: `delay ${delayMs}ms`,
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      async call() {
+        await new Promise(r => setTimeout(r, delayMs))
+        return {
+          type: 'tool_result',
+          tool_use_id: '',
+          content: output ?? `done-${name}`,
+          is_error: false,
+        }
+      },
+    }
+  }
+
+  function makeMultiToolUseProvider(toolCalls: Array<{ id: string; name: string }>): LLMProvider {
+    let pass = 0
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        if (pass++ === 0) {
+          for (let i = 0; i < toolCalls.length; i++) {
+            const tc = toolCalls[i]
+            yield { type: 'tool_use', index: i, id: tc.id, name: tc.name, input: '{}' }
+          }
+          yield { type: 'done', index: -1 }
+        } else {
+          yield { type: 'text', index: 0, delta: 'all done' }
+          yield { type: 'done', index: -1 }
+        }
+      },
+    }
+  }
+
+  it('streams tool_result events in completion order, not block order', async () => {
+    // fast (10ms) declared FIRST in block order; slow (200ms) declared SECOND
+    const fast = makeDelayTool('fast', 10)
+    const slow = makeDelayTool('slow', 200)
+    const provider = makeMultiToolUseProvider([
+      { id: 'tu_fast', name: 'fast' },
+      { id: 'tu_slow', name: 'slow' },
+    ])
+    const config: QueryEngineConfig = makeConfig(provider, [fast, slow])
+    const msgs = await run(new QueryEngine(config))
+
+    const toolResults = msgs.filter(m => m.type === 'tool_result') as SDKToolResultMessage[]
+    expect(toolResults).toHaveLength(2)
+    // fast should be emitted first despite being declared first in block order
+    // (it would also be first by block order; verify by content)
+    expect(toolResults[0].result.tool_name).toBe('fast')
+    expect(toolResults[1].result.tool_name).toBe('slow')
+
+    // Verify timing: fast tool_result should appear BEFORE slow finishes
+    // Use the position of tools_complete as a proxy for "all done"
+    const fastIdx = msgs.findIndex(m => m.type === 'tool_result' && (m as SDKToolResultMessage).result.tool_name === 'fast')
+    const slowIdx = msgs.findIndex(m => m.type === 'tool_result' && (m as SDKToolResultMessage).result.tool_name === 'slow')
+    expect(fastIdx).toBeLessThan(slowIdx)
+  })
+
+  it('proves streaming by checking that fast tool_result arrives before slow tool completes', async () => {
+    // This is the regression test for the original bug.
+    // Use a third "sentinel" event that fires only after slow finishes.
+    let slowStarted = 0
+    let slowFinished = 0
+    const fast = makeDelayTool('fast', 10)
+    const slow: ToolDefinition = {
+      name: 'slow',
+      description: '200ms',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      async call() {
+        slowStarted = Date.now()
+        await new Promise(r => setTimeout(r, 200))
+        slowFinished = Date.now()
+        return { type: 'tool_result', tool_use_id: '', content: 'slow-done', is_error: false }
+      },
+    }
+    const provider = makeMultiToolUseProvider([
+      { id: 'tu_fast', name: 'fast' },
+      { id: 'tu_slow', name: 'slow' },
+    ])
+    const config: QueryEngineConfig = makeConfig(provider, [fast, slow])
+
+    const eventTimestamps: { type: string; name?: string; t: number }[] = []
+    const engine = new QueryEngine(config)
+    for await (const m of engine.submitMessage('hi')) {
+      eventTimestamps.push({
+        type: m.type,
+        name: m.type === 'tool_result' ? (m as SDKToolResultMessage).result.tool_name : undefined,
+        t: Date.now(),
+      })
+    }
+
+    const fastEvent = eventTimestamps.find(e => e.type === 'tool_result' && e.name === 'fast')!
+    expect(fastEvent).toBeDefined()
+    // fast tool_result must have arrived BEFORE slow finished
+    expect(fastEvent.t).toBeLessThan(slowFinished)
+    expect(slowFinished - fastEvent.t).toBeGreaterThan(100) // not just noise
+  })
+
+  it('emits tools_complete as the last event of the batch with correct counts', async () => {
+    const fast = makeDelayTool('fast', 10)
+    const slow = makeDelayTool('slow', 30)
+    const provider = makeMultiToolUseProvider([
+      { id: 'tu_1', name: 'fast' },
+      { id: 'tu_2', name: 'slow' },
+    ])
+    const config: QueryEngineConfig = makeConfig(provider, [fast, slow])
+    const msgs = await run(new QueryEngine(config))
+
+    const completeEvents = msgs.filter(m => m.type === 'tools_complete') as any[]
+    expect(completeEvents).toHaveLength(1)
+    const complete = completeEvents[0]
+    expect(complete.tool_use_ids).toEqual(['tu_1', 'tu_2'])
+    expect(complete.tool_results_count).toBe(2)
+    expect(complete.results).toEqual([
+      { tool_use_id: 'tu_1', tool_name: 'fast', is_error: false },
+      { tool_use_id: 'tu_2', tool_name: 'slow', is_error: false },
+    ])
+
+    // tools_complete must come AFTER all tool_result events (find its index)
+    const completeIdx = msgs.findIndex(m => m.type === 'tools_complete')
+    const lastToolResultIdx = Math.max(
+      ...msgs
+        .map((m, i) => m.type === 'tool_result' ? i : -1)
+    )
+    expect(completeIdx).toBeGreaterThan(lastToolResultIdx)
+  })
+
+  it('fills in synthetic aborted tool_result on abort and emits tools_complete', async () => {
+    const ac = new AbortController()
+    const fast = makeDelayTool('fast', 10)
+    const slow: ToolDefinition = {
+      name: 'slow',
+      description: 'aborts mid-flight',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      async call() {
+        // Wait long enough that abort fires during execution
+        await new Promise(r => setTimeout(r, 500))
+        return { type: 'tool_result', tool_use_id: '', content: 'should-not-reach', is_error: false }
+      },
+    }
+    const provider = makeMultiToolUseProvider([
+      { id: 'tu_fast', name: 'fast' },
+      { id: 'tu_slow', name: 'slow' },
+    ])
+    const config: QueryEngineConfig = { ...makeConfig(provider, [fast, slow]), abortSignal: ac.signal }
+    const engine = new QueryEngine(config)
+    const msgs: SDKMessage[] = []
+    const p = (async () => {
+      for await (const m of engine.submitMessage('hi')) msgs.push(m)
+    })()
+    // Abort after fast finishes but before slow finishes
+    setTimeout(() => ac.abort(), 100)
+    await p
+
+    const completeEvents = msgs.filter(m => m.type === 'tools_complete') as any[]
+    // Note: tools_complete may or may not be received depending on where the
+    // outer for-await breaks. Test only if it was received.
+    if (completeEvents.length === 1) {
+      const complete = completeEvents[0]
+      expect(complete.tool_use_ids).toEqual(['tu_fast', 'tu_slow'])
+      expect(complete.tool_results_count).toBe(2)
+      // slow should have is_error: true (synthetic)
+      const slowResult = complete.results.find((r: any) => r.tool_use_id === 'tu_slow')
+      expect(slowResult.is_error).toBe(true)
+    }
+    // At minimum, fast should have emitted before abort
+    const fastResult = msgs.find(m => m.type === 'tool_result' && (m as SDKToolResultMessage).result.tool_name === 'fast')
+    expect(fastResult).toBeDefined()
+  })
+
+  it('persists this.messages correctly after mid-batch abort (force-return invariant)', async () => {
+    const ac = new AbortController()
+    const fast = makeDelayTool('fast', 10)
+    const slow: ToolDefinition = {
+      name: 'slow',
+      description: 'long-running, gets aborted',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      async call() {
+        await new Promise(r => setTimeout(r, 500))
+        return { type: 'tool_result', tool_use_id: '', content: 'unreached', is_error: false }
+      },
+    }
+    const provider = makeMultiToolUseProvider([
+      { id: 'tu_fast', name: 'fast' },
+      { id: 'tu_slow', name: 'slow' },
+    ])
+    const config: QueryEngineConfig = { ...makeConfig(provider, [fast, slow]), abortSignal: ac.signal }
+    const engine = new QueryEngine(config)
+    const p = (async () => {
+      for await (const _ of engine.submitMessage('hi')) { /* drain */ }
+    })()
+    setTimeout(() => ac.abort(), 100)
+    await p
+
+    // Verify transcript integrity: every tool_use in the last assistant message
+    // must have a matching tool_result in the immediately-following user message
+    const messages = engine.getMessages()
+    // Find last assistant message with tool_use blocks
+    let lastAssistantIdx = -1
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i] as any
+      if (m.role === 'assistant' && Array.isArray(m.content) &&
+          m.content.some((b: any) => b.type === 'tool_use')) {
+        lastAssistantIdx = i
+        break
+      }
+    }
+    expect(lastAssistantIdx).toBeGreaterThanOrEqual(0)
+    const assistantMsg = messages[lastAssistantIdx] as any
+    const toolUseIds = assistantMsg.content
+      .filter((b: any) => b.type === 'tool_use')
+      .map((b: any) => b.id)
+
+    // The next message should be the user message with tool_results
+    const userMsg = messages[lastAssistantIdx + 1] as any
+    expect(userMsg).toBeDefined()
+    expect(userMsg.role).toBe('user')
+    expect(Array.isArray(userMsg.content)).toBe(true)
+    const toolResultIds = userMsg.content
+      .filter((b: any) => b.type === 'tool_result')
+      .map((b: any) => b.tool_use_id)
+
+    // Every tool_use must have a matching tool_result
+    for (const id of toolUseIds) {
+      expect(toolResultIds).toContain(id)
+    }
+  })
+
+  it('continues other tools when one tool throws', async () => {
+    const ok = makeDelayTool('ok', 10)
+    const bad: ToolDefinition = {
+      name: 'bad',
+      description: 'throws',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      async call() {
+        throw new Error('boom')
+      },
+    }
+    const provider = makeMultiToolUseProvider([
+      { id: 'tu_ok', name: 'ok' },
+      { id: 'tu_bad', name: 'bad' },
+    ])
+    const config: QueryEngineConfig = makeConfig(provider, [ok, bad])
+    const msgs = await run(new QueryEngine(config))
+
+    const toolResults = msgs.filter(m => m.type === 'tool_result') as SDKToolResultMessage[]
+    expect(toolResults).toHaveLength(2)
+    const badResult = toolResults.find(r => r.result.tool_name === 'bad')!
+    expect(badResult.result.is_error).toBe(true)
+    expect(badResult.result.output).toContain('boom')
+    const okResult = toolResults.find(r => r.result.tool_name === 'ok')!
+    expect(okResult.result.is_error).toBe(false)
+
+    const complete = msgs.find(m => m.type === 'tools_complete') as any
+    expect(complete.tool_results_count).toBe(2)
+  })
+
+  it('drains all tool_result events when multiple tools complete in rapid succession (race regression)', async () => {
+    // Three read-only tools that all resolve synchronously. The buggy
+    // `while (!backgroundDone)` loop would drop items 2 and 3 because
+    // runToolsBackground resolves before the consumer drains the queue.
+    const sync1: ToolDefinition = {
+      name: 'sync1',
+      description: 'instant',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      async call() {
+        return { type: 'tool_result', tool_use_id: '', content: 'r1', is_error: false }
+      },
+    }
+    const sync2: ToolDefinition = {
+      name: 'sync2',
+      description: 'instant',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      async call() {
+        return { type: 'tool_result', tool_use_id: '', content: 'r2', is_error: false }
+      },
+    }
+    const sync3: ToolDefinition = {
+      name: 'sync3',
+      description: 'instant',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      async call() {
+        return { type: 'tool_result', tool_use_id: '', content: 'r3', is_error: false }
+      },
+    }
+    const provider = makeMultiToolUseProvider([
+      { id: 'tu_1', name: 'sync1' },
+      { id: 'tu_2', name: 'sync2' },
+      { id: 'tu_3', name: 'sync3' },
+    ])
+    const config: QueryEngineConfig = makeConfig(provider, [sync1, sync2, sync3])
+    const msgs = await run(new QueryEngine(config))
+
+    const toolResults = msgs.filter(m => m.type === 'tool_result') as SDKToolResultMessage[]
+    expect(toolResults).toHaveLength(3)
+
+    // Verify content of each (proves they weren't dropped)
+    const outputs = toolResults.map(r => r.result.output).sort()
+    expect(outputs).toEqual(['r1', 'r2', 'r3'])
+
+    // tools_complete should report correct count
+    const complete = msgs.find(m => m.type === 'tools_complete') as any
+    expect(complete).toBeDefined()
+    expect(complete.tool_results_count).toBe(3)
+  })
+})

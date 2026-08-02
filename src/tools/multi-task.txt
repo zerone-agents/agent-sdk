@@ -1,0 +1,28 @@
+Launch multiple subagents in parallel to handle independent subtasks in one tool call. Each subtask runs autonomously in its own isolated fresh context — it cannot see your conversation or other subtasks' work. Events stream back in real time with per-subtask metadata (task_index, task_description).
+
+subagent_type (per subtask):
+- 'Explore': read-only. Can read files, search code, run non-mutating shell commands, fetch web content. For research and information gathering.
+- 'General': full capabilities including file editing and execution. For code changes.
+
+subagent_name (per subtask): optional registered agent name. Defaults to the parent agent. Different subtasks may use different agents.
+
+Use MultiTask when you have 2+ INDEPENDENT subtasks that can run concurrently (e.g., review two unrelated modules, add tests to disjoint files, parallel research across separate targets). Do NOT use it when: only one subtask (use Task instead); subtasks depend on each other's output or share state (run sequentially); or the task takes 1-2 direct tool calls (do it yourself with Read/Glob/Grep).
+
+Rules:
+1. Subtasks must be independent: no ordering guarantee, no shared state, no inter-subtask messaging. Max 10 subtasks per call.
+2. Write a highly detailed prompt per subtask: state exactly what to return, whether to write code (General) or just research (Explore), and how to verify (e.g., test commands).
+3. Failure isolation: one subtask failing does not affect the others. Failed subtasks are listed in the result's "Failed subtasks" section; is_error is true when ALL subtasks fail, OR when any subtask hits maxTurns (aligned with the Task tool, where maxTurns → is_error: true).
+4. Turn limit is inherited from the agent definition (maxTurns, default 10), same as the Task tool. maxTurnsHit=true means soft truncation — re-run with a more focused prompt.
+5. Result is plain markdown text: a summary section combining all completed subtask outputs (headed by each subtask's description), followed by a "Failed subtasks" list if any subtask failed or was aborted. Summarize for the user in your own words — do not forward the raw text verbatim.
+
+Example usage:
+
+<example>
+user: "Review the auth module for security issues and the database module for transaction bugs, then give me a combined report."
+assistant: I'll launch two Explore subagents in parallel.
+assistant: [MultiTask tasks=[
+  {description: "review-auth", subagent_type: "Explore", prompt: "Review src/auth/ for security vulnerabilities: auth bypass, session flaws, insecure password storage. Report each issue with file path, line, severity, suggested fix."},
+  {description: "review-db", subagent_type: "Explore", prompt: "Review src/db/ for transaction bugs: missing transactions, race conditions, SQL injection. Report each issue with file path, line, severity, suggested fix."}
+]]
+assistant: The auth review found 2 issues (1 high, 1 medium) and the db review found 3 (2 high, 1 low). Here's the combined report...
+</example>
