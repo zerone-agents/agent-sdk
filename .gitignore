@@ -11,3 +11,4 @@ AGENTS.md
 .zerone-uploads/
 *.tgz
 .superpowers/
+.backup/
