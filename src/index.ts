@@ -5,7 +5,7 @@
  * Runs the full agent loop in-process without spawning subprocesses.
  *
  * Features:
- * - 30+ built-in tools (file I/O, shell, web, agents, tasks, teams, etc.)
+ * - 20+ built-in tools (file I/O, shell, web, agents, tasks, etc.)
  * - Skill system (reusable prompt templates with bundled skills)
  * - MCP server integration (stdio, SSE, HTTP)
  * - Context compression (auto-compact, micro-compact)
@@ -13,12 +13,11 @@
  * - Git status & project context injection
  * - Multi-turn session persistence
  * - Permission system (allow/deny/bypass modes)
- * - Subagent spawning & team coordination
+ * - Subagent spawning & multi-agent coordination
  * - Scheduling
  * - Hook system with lifecycle integration (pre/post tool use, session, compact)
  * - Token estimation & cost tracking
  * - File state LRU caching
- * - Plan mode for structured workflows
  */
 
 // --------------------------------------------------------------------------
@@ -73,7 +72,7 @@ export type {
 } from './providers/index.js'
 
 // --------------------------------------------------------------------------
-// Tool System (30+ tools)
+// Tool System
 // --------------------------------------------------------------------------
 
 export {
@@ -93,7 +92,6 @@ export {
   FileEditTool,
   GlobTool,
   GrepTool,
-  NotebookEditTool,
 
   // Web
   WebFetchTool,
@@ -102,17 +100,6 @@ export {
   // Agent & Multi-agent
   TaskTool,
   MultiTaskTool,
-  SendMessageTool,
-  TeamCreateTool,
-  TeamDeleteTool,
-
-  // Worktree
-  EnterWorktreeTool,
-  ExitWorktreeTool,
-
-  // Planning
-  EnterPlanModeTool,
-  ExitPlanModeTool,
 
   // User interaction
   AskUserQuestionTool,
@@ -129,9 +116,6 @@ export {
   CronDeleteTool,
   CronListTool,
   initCronTools,
-
-  // LSP
-  LSPTool,
 
   // Config
   ConfigTool,
@@ -349,25 +333,6 @@ export {
   createFileStateCache,
 } from './utils/fileCache.js'
 export type { FileState } from './utils/fileCache.js'
-
-export {
-  getAllTeams,
-  getTeam,
-  clearTeams,
-} from './tools/team.js'
-export type { Team } from './tools/team.js'
-
-export {
-  readMailbox,
-  writeToMailbox,
-  clearMailboxes,
-} from './tools/send-message.js'
-export type { AgentMessage } from './tools/send-message.js'
-
-export {
-  isPlanModeActive,
-  getCurrentPlan,
-} from './tools/plan.js'
 
 export {
   setQuestionHandler,

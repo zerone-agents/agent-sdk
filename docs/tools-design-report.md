@@ -2,6 +2,7 @@
 
 > 调研时间：2026-04-22  
 > 调研范围：`src/tools/` 全部工具模块、`src/engine.ts`、`src/agent.ts`、`src/types.ts`、`src/mcp/`、`src/cron/`
+> 更新时间：2026-08-02（移除 NotebookEdit/SendMessage/Team/Worktree/Plan/LSP 工具）
 
 ---
 
@@ -26,7 +27,7 @@ ToolDefinition（src/types.ts:186-195）
 ```
 注册阶段                  过滤阶段                   执行阶段
 ─────────────────    ─────────────────────    ──────────────────────
-ALL_TOOLS (34个)  →  buildToolPool()        →  executeTools()
+ALL_TOOLS (20个)  →  buildToolPool()        →  executeTools()
    │                  ├── tools 参数过滤         ├── isEnabled() 检查
    │                  ├── allowedTools 白名单    ├── canUseTool() 权限
    │                  └── disallowedTools 黑名单 ├── PreToolUse Hook
@@ -34,7 +35,7 @@ ALL_TOOLS (34个)  →  buildToolPool()        →  executeTools()
    └── MCP tools → assembleToolPool() 去重合并
 ```
 
-### 1.3 工具完整清单（34 个）
+### 1.3 工具完整清单（20 个）
 
 | 分类 | 工具名 | 只读 | 并发安全 | 文件 |
 |------|--------|------|----------|------|
@@ -44,17 +45,10 @@ ALL_TOOLS (34个)  →  buildToolPool()        →  executeTools()
 | | Edit | ✗ | ✗ | `edit.ts` |
 | | Glob | ✓ | ✓ | `glob.ts` |
 | | Grep | ✓ | ✓ | `grep.ts` |
-| | NotebookEdit | ✗ | ✗ | `notebook-edit.ts` |
 | **Web** | WebFetch | ✓ | ✓ | `web-fetch.ts` |
 | | WebSearch | ✗ | ✓ | `web-search.ts` |
 | **多 Agent** | Task | ✗ | ✗ | `task-tool.ts` |
-| | SendMessage | ✗ | ✓ | `send-message.ts` |
-| | TeamCreate | ✗ | ✗ | `team-tools.ts` |
-| | TeamDelete | ✗ | ✗ | `team-tools.ts` |
-| **Worktree** | EnterWorktree | ✗ | ✗ | `worktree-tools.ts` |
-| | ExitWorktree | ✗ | ✗ | `worktree-tools.ts` |
-| **规划** | EnterPlanMode | ✗ | ✗ | `plan-tools.ts` |
-| | ExitPlanMode | ✗ | ✗ | `plan-tools.ts` |
+| | MultiTask | ✗ | ✗ | `multi-task.ts` |
 | **用户交互** | AskUserQuestion | ✓ | ✗ | `ask-user.ts` |
 | **发现** | ToolSearch | ✓ | ✓ | `tool-search.ts` |
 | **MCP 资源** | ListMcpResources | ✓ | ✓ | `mcp-resource-tools.ts` |
@@ -62,8 +56,6 @@ ALL_TOOLS (34个)  →  buildToolPool()        →  executeTools()
 | **调度** | CronCreate | ✗ | ✓ | `cron-tools.ts` |
 | | CronDelete | ✗ | ✓ | `cron-tools.ts` |
 | | CronList | ✓ | ✓ | `cron-tools.ts` |
-| | RemoteTrigger | ✗ | ✓ | `cron-tools.ts` |
-| **LSP** | LSP | ✓ | ✓ | `lsp-tool.ts` |
 | **配置** | Config | ✗ | ✓ | `config-tool.ts` |
 | **待办** | TodoWrite | ✗ | ✓ | `todo-tool.ts` |
 | **技能** | Skill | ✓ | ✓ | `skill-tool.ts` |
@@ -247,8 +239,6 @@ pendingSubagentEvents → yield → 父 agent 的 query() generator
 
 **Grep**：文件内容正则搜索。优先使用 ripgrep，回退 grep。只读。
 
-**NotebookEdit**：Jupyter Notebook 单元格编辑。写操作。
-
 ### 4.2 Web 工具组
 
 **WebFetch**：抓取 URL 内容，支持 markdown/text/html 输出格式。只读。
@@ -270,36 +260,6 @@ pendingSubagentEvents → yield → 父 agent 的 query() generator
 | Provider 继承 | 复用父 agent 的 provider 和 model |
 | 事件传播 | 子 agent 事件通过 `context.emitEvent` → `SDKSubagentMessage` 传播 |
 
-#### SendMessage（`send-message.ts`）
-
-Agent 间消息传递，基于内存邮箱模型：
-
-```
-mailboxes: Map<agentName, AgentMessage[]>
-├── readMailbox(name)    → 读取并清空
-├── writeToMailbox(name) → 追加消息
-└── 支持 to="*" 广播
-```
-
-消息类型：`text`、`shutdown_request`、`shutdown_response`、`plan_approval_response`
-
-#### TeamCreate / TeamDelete（`team-tools.ts`）
-
-多 agent 团队管理，数据模型：
-
-```typescript
-interface Team {
-  id: string
-  name: string
-  members: string[]
-  leaderId: string
-  taskListId?: string
-  status: 'active' | 'disbanded'
-}
-```
-
-进程内 `Map` 存储，无持久化。
-
 ### 4.4 TodoWrite
 
 | 维度 | TodoWrite | Task 工具组 |
@@ -312,45 +272,14 @@ interface Team {
 | 依赖关系 | 无 | blockedBy / blocks（预留） |
 | 用途 | LLM 自用备忘录 | 多 agent 协作任务追踪 |
 
-### 4.5 Worktree 工具组（`worktree-tools.ts`）
-
-Git worktree 隔离环境管理：
-
-- **EnterWorktree**：创建隔离的 git worktree + branch，用于并行开发
-- **ExitWorktree**：退出 worktree，可选 keep 或 remove
-
-进程内 `activeWorktrees: Map` 跟踪活跃 worktree。
-
-### 4.6 Plan Mode 工具组（`plan-tools.ts`）
-
-结构化规划模式：
-
-- **EnterPlanMode**：进入规划模式，agent 专注设计而非执行
-- **ExitPlanMode**：提交计划并退出，记录 `currentPlan`
-
-进程级单例状态（`planModeActive` + `currentPlan`），同一进程同时只有一个 plan。
-
-### 4.7 用户交互工具（`ask-user.ts`）
+### 4.5 用户交互工具（`ask-user.ts`）
 
 AskUserQuestion：向用户提问并等待回复。
 
 - SDK 模式：通过 `setQuestionHandler()` 注入回调
 - 非交互模式：返回默认消息，使用 best judgment 继续
 
-### 4.8 LSP 工具（`lsp-tool.ts`）
-
-代码智能工具，支持 9 种操作。**当前为降级实现**——无真正 LSP Server 连接，回退到 grep/ripgrep：
-
-| 操作 | 实现方式 |
-|------|---------|
-| goToDefinition / goToImplementation | grep 搜索 `(function\|class\|...) symbol` |
-| findReferences | grep 搜索符号名 |
-| hover | 直接提示"需要 LSP Server" |
-| documentSymbol | grep 搜索文件顶层声明 |
-| workspaceSymbol | grep 搜索全局符号 |
-| prepareCallHierarchy / incomingCalls / outgoingCalls | 未实现，提示"需要 LSP Server" |
-
-### 4.9 Config 工具（`config-tool.ts`）
+### 4.6 Config 工具（`config-tool.ts`）
 
 进程内 KV 存储，`Map<string, unknown>`：
 
@@ -359,7 +288,7 @@ AskUserQuestion：向用户提问并等待回复。
 - 纯内存，不持久化
 - 导出 `getConfig()` / `setConfig()` 供使用侧代码读写
 
-### 4.10 Skill 工具（`skill-tool.ts`）
+### 4.7 Skill 工具（`skill-tool.ts`）
 
 技能加载工具，从技能注册表加载特定技能的完整指令到对话上下文。
 
@@ -410,9 +339,7 @@ AskUserQuestion：向用户提问并等待回复。
 
 ### 5.4 RemoteTrigger（`cron-tools.ts`）
 
-**设计目标**：远程定时 Agent 触发，面向云端托管场景。
-
-**当前状态**：纯 stub，所有 action 返回固定文案。
+源代码注释，未注册到 ALL_TOOLS（见 `src/tools/cron.ts:238-266`），不属于内置工具集，对 LLM 不可见。
 
 ### 5.5 空壳工具汇总
 
@@ -422,7 +349,8 @@ AskUserQuestion：向用户提问并等待回复。
 | ListMcpResources | 无调用方注入 MCP connections | 在 Agent.setup() 中调用 `setMcpConnections()` |
 | ReadMcpResource | 同上 | 同上 |
 | CronCreate/Delete/List | Agent 未调用 `initCronTools()` 注入 storage | 在 Agent 构造函数中消费 `cronStorage` 选项 |
-| RemoteTrigger | 无远程后端实现 | 需要接入远程 API |
+
+> 注：`RemoteTrigger` 在源代码中处于注释状态（`src/tools/cron.ts:238-266`），未注册到 `ALL_TOOLS`，因此不计入空壳工具（既非内置工具也非可调用工具）。
 
 ---
 
@@ -532,7 +460,7 @@ interface CronStorage {
 
 ### 8.2 空壳工具未标记
 
-**问题**：ToolSearch、MCP Resources、Cron、RemoteTrigger 都是空壳，但对 LLM 不可见——LLM 会尝试调用并得到无意义的结果。
+**问题**：ToolSearch、MCP Resources、Cron 都是空壳，但对 LLM 不可见——LLM 会尝试调用并得到无意义的结果。
 
 **建议**：
 - 在 `isEnabled()` 中检查前置条件，未满足时返回 false
@@ -540,7 +468,7 @@ interface CronStorage {
 
 ### 8.3 进程级单例状态
 
-**问题**：Config、Todo、Task、Team、Mailboxes、PlanMode、CronStorage、DeferredTools、McpConnections 全部使用模块级变量（`let` / `const` Map/Array），同一进程多个 Agent 实例共享状态。
+**问题**：Config、Todo、Task、CronStorage、DeferredTools、McpConnections 全部使用模块级变量（`let` / `const` Map/Array），同一进程多个 Agent 实例共享状态。
 
 **影响**：
 - 多 Agent 实例之间的任务、配置会互相干扰
@@ -554,13 +482,7 @@ interface CronStorage {
 
 **建议**：将父 agent 的完整 toolPool 传递给子 agent，或至少传递 MCP 工具。
 
-### 8.5 LSP 降级实现未告知 LLM
-
-**问题**：LSP 工具回退到 grep 实现，但 description 没有说明这一点，LLM 可能对结果有错误预期。
-
-**建议**：在 description 或 prompt 中注明当前为 grep-based 降级实现。
-
-### 8.6 Task 依赖关系未实现
+### 8.5 Task 依赖关系未实现
 
 **问题**：`blockedBy` / `blocks` 字段已定义但无逻辑。
 
@@ -573,7 +495,7 @@ interface CronStorage {
 Open Agent SDK 的 Tools 体系设计层次清晰：
 
 1. **核心工具**（文件 I/O、Web、搜索）——功能完整，可直接使用
-2. **多 Agent 协作**（Agent、SendMessage、Team、Task）——框架完整，适合基础协作场景
-3. **扩展工具**（Cron、MCP Resources、ToolSearch、LSP、RemoteTrigger）——接口设计合理，但**核心逻辑未接入**，均为架构占位
+2. **多 Agent 协作**（Agent、Task）——框架完整，适合基础协作场景
+3. **扩展工具**（Cron、MCP Resources、ToolSearch）——接口设计合理，但**核心逻辑未接入**，均为架构占位
 
 主要技术债务集中在：进程级单例状态、空壳工具未标记、`allowedTools` 语义与实现不一致。建议优先解决语义混淆和空壳标记问题，再逐步接入调度器和 MCP Resource 的实际逻辑。

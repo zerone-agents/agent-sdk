@@ -341,7 +341,7 @@ npx tsx examples/web/server.ts
 | `tool(name, desc, schema, handler)`   | Create a tool with Zod schema validation                       |
 | `createSdkMcpServer({ name, tools })` | Bundle tools into an in-process MCP server                     |
 | `defineTool(config)`                  | Low-level tool definition helper                               |
-| `getAllBaseTools()`                   | Get all 35+ built-in tools                                     |
+| `getAllBaseTools()`                   | Get all 20 built-in tools                                      |
 | `registerSkill(definition)`           | Register a custom skill                                        |
 | `getAllSkills()`                       | Get all registered skills                                      |
 | `createProvider(apiType, opts)`        | Create an LLM provider directly                                |
@@ -418,20 +418,14 @@ npx tsx examples/web/server.ts
 | **Grep**                                   | Search file contents with regex              |
 | **WebFetch**                               | Fetch and parse web content                  |
 | **WebSearch**                              | Search the web                               |
-| **NotebookEdit**                           | Edit Jupyter notebook cells                  |
 | **Agent**                                  | Spawn subagents for parallel work            |
+| **MultiTask**                              | Parallel multi-subagent dispatch             |
 | **Skill**                                  | Invoke registered skills                     |
 | **TaskCreate/List/Update/Get/Stop/Output** | Task management system                       |
-| **TeamCreate/Delete**                      | Multi-agent team coordination                |
-| **SendMessage**                            | Inter-agent messaging                        |
-| **EnterWorktree/ExitWorktree**             | Git worktree isolation                       |
-| **EnterPlanMode/ExitPlanMode**             | Structured planning workflow                 |
 | **AskUserQuestion**                        | Ask the user for input                       |
 | **ToolSearch**                             | Discover lazy-loaded tools                   |
 | **ListMcpResources/ReadMcpResource**       | MCP resource access                          |
 | **CronCreate/Delete/List**                 | Scheduled task management                    |
-| **RemoteTrigger**                          | Remote agent triggers                        |
-| **LSP**                                    | Language Server Protocol (code intelligence) |
 | **Config**                                 | Dynamic configuration                        |
 | **TodoWrite**                              | Session todo list                            |
 

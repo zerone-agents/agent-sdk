@@ -1,8 +1,8 @@
 /**
  * Tool Registry - All built-in tool definitions
  *
- * 30+ tools covering file I/O, execution, search, web, agents,
- * tasks, teams, messaging, worktree, planning, scheduling, and more.
+ * Tools covering file I/O, execution, search, web, agents, tasks,
+ * scheduling, and more.
  */
 
 import type { ToolDefinition } from '../types.js'
@@ -14,7 +14,6 @@ import { FileWriteTool } from './write.js'
 import { FileEditTool } from './edit.js'
 import { GlobTool } from './glob.js'
 import { GrepTool } from './grep.js'
-import { NotebookEditTool } from './notebook-edit.js'
 
 // Web
 import { WebFetchTool } from './web-fetch.js'
@@ -23,14 +22,6 @@ import { WebSearchTool } from './web-search.js'
 // Agent & Multi-agent
 import { TaskTool } from './task.js'
 import { MultiTaskTool } from './multi-task.js'
-import { SendMessageTool } from './send-message.js'
-import { TeamCreateTool, TeamDeleteTool } from './team.js'
-
-// Worktree
-import { EnterWorktreeTool, ExitWorktreeTool } from './worktree.js'
-
-// Planning
-import { EnterPlanModeTool, ExitPlanModeTool } from './plan.js'
 
 // User interaction
 import { AskUserQuestionTool } from './ask-user.js'
@@ -44,9 +35,6 @@ import { ListMcpResourcesTool, ReadMcpResourceTool } from './mcp-resource.js'
 // Scheduling
 import { CronCreateTool, CronDeleteTool, CronListTool, initCronTools } from './cron.js'
 
-// LSP
-import { LSPTool } from './lsp.js'
-
 // Config
 import { ConfigTool } from './config.js'
 
@@ -57,7 +45,7 @@ import { TodoWriteTool } from './todowrite.js'
 import { SkillTool } from './skill.js'
 
 /**
- * All built-in tools (30+).
+ * All built-in tools (20+).
  */
 const ALL_TOOLS: ToolDefinition[] = [
   // Core file I/O & execution
@@ -67,7 +55,6 @@ const ALL_TOOLS: ToolDefinition[] = [
   FileEditTool,
   GlobTool,
   GrepTool,
-  NotebookEditTool,
 
   // Web
   WebFetchTool,
@@ -76,17 +63,6 @@ const ALL_TOOLS: ToolDefinition[] = [
   // Agent & Multi-agent
   TaskTool,
   MultiTaskTool,
-  SendMessageTool,
-  TeamCreateTool,
-  TeamDeleteTool,
-
-  // Worktree
-  EnterWorktreeTool,
-  ExitWorktreeTool,
-
-  // Planning
-  EnterPlanModeTool,
-  ExitPlanModeTool,
 
   // User interaction
   AskUserQuestionTool,
@@ -102,9 +78,6 @@ const ALL_TOOLS: ToolDefinition[] = [
   CronCreateTool,
   CronDeleteTool,
   CronListTool,
-
-  // LSP
-  LSPTool,
 
   // Config
   ConfigTool,
@@ -176,21 +149,11 @@ export {
   FileEditTool,
   GlobTool,
   GrepTool,
-  NotebookEditTool,
   WebFetchTool,
   WebSearchTool,
   // Agent
   TaskTool,
   MultiTaskTool,
-  SendMessageTool,
-  TeamCreateTool,
-  TeamDeleteTool,
-  // Worktree
-  EnterWorktreeTool,
-  ExitWorktreeTool,
-  // Planning
-  EnterPlanModeTool,
-  ExitPlanModeTool,
   // User
   AskUserQuestionTool,
   // Discovery
@@ -203,8 +166,6 @@ export {
   CronDeleteTool,
   CronListTool,
   initCronTools,
-  // LSP
-  LSPTool,
   // Config
   ConfigTool,
   // Todo
