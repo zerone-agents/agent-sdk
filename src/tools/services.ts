@@ -15,6 +15,7 @@
 
 import type { ToolDefinition } from '../types.js'
 import type { WebSearchConfig } from './web-search.js'
+import type { WebFetchConfig } from './web-fetch-providers.js'
 
 // ============================================================================
 // Service Types
@@ -66,6 +67,8 @@ export interface ToolServices {
   config: ConfigState
   /** Optional WebSearch provider configuration; absent = anonymous Exa → Parallel default. */
   webSearch?: WebSearchConfig
+  /** Optional WebFetch provider configuration; absent = anonymous Jina → local default. */
+  webFetch?: WebFetchConfig
 }
 
 // ============================================================================
