@@ -318,3 +318,119 @@ function stripTags(html: string): string {
     .replace(/\s+/g, ' ')
     .trim()
 }
+
+// ─── JinaProvider ────────────────────────────────────────────
+const JINA_DEFAULT_ENDPOINT = 'https://r.jina.ai'
+
+export class JinaProvider implements WebFetchProvider {
+  readonly name = 'jina'
+  private readonly endpoint: string
+  private readonly apiKey?: string
+
+  constructor(cfg: JinaProviderConfig) {
+    this.endpoint = cfg.endpoint ?? JINA_DEFAULT_ENDPOINT
+    this.apiKey = cfg.apiKey
+  }
+
+  async fetch(opts: FetchOptions): Promise<FetchResult> {
+    const remainingMs = opts.deadlineMs - Date.now()
+    if (remainingMs <= 0) {
+      return { ok: false, retryable: true, message: 'Jina timeout' }
+    }
+
+    const targetUrl = `${this.endpoint}/${opts.url}`
+    const headers: Record<string, string> = {
+      Accept: 'text/markdown',
+    }
+    if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`
+
+    const signals: AbortSignal[] = [AbortSignal.timeout(remainingMs)]
+    if (opts.abortSignal) signals.push(opts.abortSignal)
+
+    let response: Response
+    try {
+      response = await fetch(targetUrl, {
+        headers,
+        signal: AbortSignal.any(signals),
+      })
+    } catch (err: any) {
+      if (opts.abortSignal?.aborted) {
+        return { ok: false, retryable: false, message: 'Jina fetch aborted' }
+      }
+      return {
+        ok: false,
+        retryable: true,
+        message: `Jina fetch error: ${err.message}`,
+      }
+    }
+
+    if (!response.ok) {
+      const retryable = response.status === 429 || response.status >= 500
+      return {
+        ok: false,
+        retryable,
+        message: `Jina HTTP ${response.status} ${response.statusText}`,
+      }
+    }
+
+    // Wrap body read + parse to preserve the "provider never throws" contract
+    // (Task 2 lesson: response.text() can throw on network drop or
+    // AbortSignal.timeout firing mid-read; parseJinaResponse is also covered
+    // for safety on malformed input).
+    try {
+      const text = await response.text()
+      const parsed = parseJinaResponse(text, opts.url)
+      const maxChars = opts.maxChars ?? DEFAULT_MAX_CHARS
+
+      return {
+        ok: true,
+        content: truncate(parsed.content, maxChars),
+        metadata: {
+          title: parsed.title,
+          finalUrl: opts.url,
+          contentType: 'text/markdown',
+          contentLength: parsed.content.length,
+          provider: this.name,
+          extracted: true,
+        },
+      }
+    } catch (err: any) {
+      return {
+        ok: false,
+        retryable: true,
+        message: `Jina body read/parse error: ${err.message}`,
+      }
+    }
+  }
+}
+
+/**
+ * Jina Reader 响应格式：
+ *   Title: <title>
+ *
+ *   URL Source: <url>
+ *
+ *   Markdown Content:
+ *   <实际内容>
+ *
+ * 也可能直接返回纯 markdown（无前缀块）。
+ */
+function parseJinaResponse(
+  text: string,
+  _originalUrl: string,
+): { title?: string; content: string } {
+  // 提取 Title: 行
+  const titleMatch = /^Title:\s*(.+)$/m.exec(text)
+  const title = titleMatch ? titleMatch[1].trim() : undefined
+
+  // 提取 "Markdown Content:" 之后的内容；找不到则用全文
+  const mdIdx = text.indexOf('Markdown Content:')
+  let content: string
+  if (mdIdx >= 0) {
+    content = text.slice(mdIdx + 'Markdown Content:'.length).trim()
+  } else {
+    content = text.trim()
+  }
+
+  return { title, content }
+}

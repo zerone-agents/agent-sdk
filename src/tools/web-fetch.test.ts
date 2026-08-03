@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { LocalProvider } from './web-fetch-providers.js'
+import { LocalProvider, JinaProvider } from './web-fetch-providers.js'
 
 // Minimal HTML fixtures
 const SIMPLE_HTML = `<!DOCTYPE html><html><head><title>Test Page</title></head>
@@ -202,5 +202,177 @@ describe('LocalProvider', () => {
     if (result.ok) return
     expect(result.retryable).toBe(true)
     expect(result.message).toContain('network drop')
+  })
+})
+
+describe('JinaProvider', () => {
+  const originalFetch = globalThis.fetch
+
+  beforeEach(() => {
+    globalThis.fetch = vi.fn()
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('constructs r.jina.ai URL and sends anonymous request', async () => {
+    ;(globalThis.fetch as any).mockImplementation(async (url: string, init: any) => {
+      expect(url).toBe('https://r.jina.ai/https://example.com/page')
+      expect(init.headers['Accept']).toContain('text/markdown')
+      expect(init.headers['Authorization']).toBeUndefined()
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/markdown' }),
+        url,
+        text: async () =>
+          'Title: Example\n\nURL Source: https://example.com/page\n\nMarkdown Content:\n\n# Example\n\nHello.',
+      }
+    })
+
+    const provider = new JinaProvider({ provider: 'jina' })
+    const result = await provider.fetch({
+      url: 'https://example.com/page',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(result.ok).toBe(true)
+  })
+
+  it('sends Bearer token when apiKey configured', async () => {
+    let capturedInit: any
+    ;(globalThis.fetch as any).mockImplementation(async (_url: string, init: any) => {
+      capturedInit = init
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/markdown' }),
+        text: async () => '# Hi',
+      }
+    })
+
+    const provider = new JinaProvider({ provider: 'jina', apiKey: 'test-key' })
+    await provider.fetch({
+      url: 'https://example.com',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(capturedInit.headers['Authorization']).toBe('Bearer test-key')
+  })
+
+  it('returns retryable on 429', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 429,
+      statusText: 'Too Many Requests',
+      headers: new Headers(),
+      text: async () => 'rate limited',
+    })
+
+    const provider = new JinaProvider({ provider: 'jina' })
+    const result = await provider.fetch({
+      url: 'https://example.com',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.retryable).toBe(true)
+    expect(result.message).toContain('429')
+  })
+
+  it('returns non-retryable on 404', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      headers: new Headers(),
+      text: async () => 'not found',
+    })
+
+    const provider = new JinaProvider({ provider: 'jina' })
+    const result = await provider.fetch({
+      url: 'https://example.com/missing',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.retryable).toBe(false)
+  })
+
+  it('parses Jina response title and content', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/markdown' }),
+      url: 'https://r.jina.ai/https://example.com',
+      text: async () =>
+        'Title: My Page\n\nURL Source: https://example.com\n\nMarkdown Content:\n\n# My Page\n\nBody text here.',
+    })
+
+    const provider = new JinaProvider({ provider: 'jina' })
+    const result = await provider.fetch({
+      url: 'https://example.com',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.metadata.provider).toBe('jina')
+    expect(result.metadata.extracted).toBe(true)
+    expect(result.metadata.finalUrl).toBe('https://example.com')
+    expect(result.content).toContain('Body text here')
+  })
+
+  it('respects custom endpoint', async () => {
+    let capturedUrl: string
+    ;(globalThis.fetch as any).mockImplementation(async (url: string) => {
+      capturedUrl = url
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/markdown' }),
+        text: async () => '# Hi',
+      }
+    })
+
+    const provider = new JinaProvider({
+      provider: 'jina',
+      endpoint: 'https://custom-jina.example.com',
+    })
+    await provider.fetch({
+      url: 'https://target.com',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(capturedUrl!).toBe('https://custom-jina.example.com/https://target.com')
+  })
+
+  it('returns retryable failure when text() throws mid-read', async () => {
+    // Task 2 lesson: body read can fail mid-download (network drop,
+    // AbortSignal.timeout during read). Provider must wrap the throw.
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/markdown' }),
+      url: 'https://r.jina.ai/https://example.com/drop',
+      text: async () => {
+        throw new Error('jina body read drop')
+      },
+    })
+
+    const provider = new JinaProvider({ provider: 'jina' })
+    const result = await provider.fetch({
+      url: 'https://example.com/drop',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.retryable).toBe(true)
+    expect(result.message).toContain('jina body read drop')
   })
 })
