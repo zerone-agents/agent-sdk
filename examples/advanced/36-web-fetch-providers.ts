@@ -25,8 +25,11 @@
  *
  * Run: npx tsx examples/advanced/36-web-fetch-providers.ts
  */
-import { createAgent, DefaultToolServices } from '../../src/index.js'
-import type { WebFetchConfig } from '../../src/tools/web-fetch-providers.js'
+import {
+  createAgent,
+  DefaultToolServices,
+  type WebFetchConfig,
+} from '../../src/index.js'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
