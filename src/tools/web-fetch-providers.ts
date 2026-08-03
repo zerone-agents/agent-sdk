@@ -183,103 +183,118 @@ export class LocalProvider implements WebFetchProvider {
 
     const contentType = response.headers.get('content-type') ?? ''
     const finalUrl = response.url || opts.url
-    const buf = await response.arrayBuffer()
-    const { text } = decodeBuffer(buf, contentType)
 
-    const maxChars = opts.maxChars ?? DEFAULT_MAX_CHARS
-    const format = opts.format ?? 'markdown'
-
-    // 非 HTML 内容：直接返回文本
-    const isHtml =
-      contentType.includes('text/html') || contentType.includes('application/xhtml')
-    if (!isHtml) {
-      const content = truncate(text, maxChars)
-      return {
-        ok: true,
-        content,
-        metadata: {
-          finalUrl,
-          contentType,
-          contentLength: text.length,
-          provider: this.name,
-          extracted: false,
-        },
-      }
-    }
-
-    // format: html → 跳过提取，返回原始 HTML
-    if (format === 'html') {
-      const content = truncate(text, maxChars)
-      return {
-        ok: true,
-        content,
-        metadata: {
-          finalUrl,
-          contentType,
-          contentLength: text.length,
-          provider: this.name,
-          extracted: false,
-          title: extractTitle(text),
-        },
-      }
-    }
-
-    // HTML → DOM → Readability → Turndown/Text
-    let articleTitle: string | undefined
-    let mainHtml: string
-    let extracted = false
+    // Wrap body read + all subsequent parse/decode/conversion steps to
+    // preserve the "provider never throws" contract. Body reads can fail
+    // mid-download (network drop, AbortSignal.timeout during read); parse
+    // steps can also throw on malformed input. All are wrapped here so
+    // callers only ever see FetchResult, never a thrown exception.
     try {
-      const doc = new DOMParser().parseFromString(text, 'text/html') as any
-      // linkedom's typings declare doc.title as HTMLTitleElement but at
-      // runtime it returns a string (matching HTML spec); coerce for safety.
-      const docTitle: string | undefined = doc.title
-        ? String(doc.title)
-        : undefined
-      articleTitle = docTitle || undefined
-      const reader = new Readability(doc)
-      const article = reader.parse()
-      if (article) {
-        mainHtml = article.content ?? ''
-        articleTitle = articleTitle ?? article.title ?? undefined
-        extracted = true
-      } else {
+      const buf = await response.arrayBuffer()
+      const { text } = decodeBuffer(buf, contentType)
+
+      const maxChars = opts.maxChars ?? DEFAULT_MAX_CHARS
+      const format = opts.format ?? 'markdown'
+
+      // 非 HTML 内容：直接返回文本
+      const isHtml =
+        contentType.includes('text/html') ||
+        contentType.includes('application/xhtml')
+      if (!isHtml) {
+        const content = truncate(text, maxChars)
+        return {
+          ok: true,
+          content,
+          metadata: {
+            finalUrl,
+            contentType,
+            contentLength: text.length,
+            provider: this.name,
+            extracted: false,
+          },
+        }
+      }
+
+      // format: html → 跳过提取，返回原始 HTML
+      if (format === 'html') {
+        const content = truncate(text, maxChars)
+        return {
+          ok: true,
+          content,
+          metadata: {
+            finalUrl,
+            contentType,
+            contentLength: text.length,
+            provider: this.name,
+            extracted: false,
+            title: extractTitle(text),
+          },
+        }
+      }
+
+      // HTML → DOM → Readability → Turndown/Text
+      let articleTitle: string | undefined
+      let mainHtml: string
+      let extracted = false
+      try {
+        const doc = new DOMParser().parseFromString(text, 'text/html') as any
+        // linkedom's typings declare doc.title as HTMLTitleElement but at
+        // runtime it returns a string (matching HTML spec); coerce for safety.
+        const docTitle: string | undefined = doc.title
+          ? String(doc.title)
+          : undefined
+        articleTitle = docTitle || undefined
+        const reader = new Readability(doc)
+        const article = reader.parse()
+        if (article) {
+          mainHtml = article.content ?? ''
+          articleTitle = articleTitle ?? article.title ?? undefined
+          extracted = true
+        } else {
+          mainHtml = text
+        }
+      } catch {
+        // 解析失败 → 退化到原始 HTML
         mainHtml = text
       }
-    } catch {
-      // 解析失败 → 退化到原始 HTML
-      mainHtml = text
-    }
 
-    let content: string
-    if (format === 'text') {
-      // 剥标签保留 textContent
-      content = stripTags(mainHtml)
-    } else {
-      // markdown
-      try {
-        const turndown = new TurndownService({
-          headingStyle: 'atx',
-          codeBlockStyle: 'fenced',
-        })
-        content = turndown.turndown(mainHtml)
-      } catch {
+      let content: string
+      if (format === 'text') {
+        // 剥标签保留 textContent
         content = stripTags(mainHtml)
+      } else {
+        // markdown
+        try {
+          const turndown = new TurndownService({
+            headingStyle: 'atx',
+            codeBlockStyle: 'fenced',
+          })
+          content = turndown.turndown(mainHtml)
+        } catch {
+          content = stripTags(mainHtml)
+        }
       }
-    }
 
-    content = truncate(content, maxChars)
+      content = truncate(content, maxChars)
 
-    return {
-      ok: true,
-      content,
-      metadata: {
-        title: articleTitle,
-        finalUrl,
-        contentType,
-        contentLength: content.length,
-        provider: this.name,
-        extracted,
-      },
+      return {
+        ok: true,
+        content,
+        metadata: {
+          title: articleTitle,
+          finalUrl,
+          contentType,
+          contentLength: content.length,
+          provider: this.name,
+          extracted,
+        },
+      }
+    } catch (err: any) {
+      return {
+        ok: false,
+        retryable: true,
+        message: `Local fetch body read/parse error: ${err.message}`,
+      }
     }
   }
 }

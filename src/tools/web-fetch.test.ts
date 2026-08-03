@@ -178,4 +178,29 @@ describe('LocalProvider', () => {
     expect(result.content).toContain('<html>')
     expect(result.content).toContain('<nav>')
   })
+
+  it('returns retryable failure when arrayBuffer() throws mid-download', async () => {
+    // Simulates network drop / AbortSignal.timeout firing during body read.
+    // Provider must wrap the throw and return { ok: false, retryable: true }
+    // rather than propagating the exception ("provider never throws" contract).
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/html' }),
+      url: 'https://example.com/drop',
+      arrayBuffer: async () => {
+        throw new Error('network drop')
+      },
+    })
+
+    const result = await provider.fetch({
+      url: 'https://example.com/drop',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.retryable).toBe(true)
+    expect(result.message).toContain('network drop')
+  })
 })
