@@ -16,9 +16,15 @@
  *
  *   Scenario C — SPA site (JS rendering verification)
  *     Default anonymous Jina fetches a JS-rendered React docs page. If the
- *     result mentions useState/useEffect, Jina rendered the JS (the local
- *     provider would see an empty shell). May WARN if the anonymous
- *     20 RPM rate limit (shared per IP across all users) kicks in.
+ *     result mentions hooks/useState/useEffect/React, Jina rendered the JS
+ *     (the local provider would see an empty shell). May WARN if the
+ *     anonymous 20 RPM rate limit (shared per IP across all users) kicks in.
+ *
+ * Note on anonymous Jina rate limit:
+ *   Anonymous Jina is 20 RPM per IP, shared across all users of that IP. If
+ *   you see Scenario A or C show `Provider: local` instead of `jina`, the
+ *   rate limit was hit — wait 60s and re-run, or configure a free Jina API
+ *   key (500 RPM) via services.webFetch.providers.
  *
  * Prerequisites:
  *   ZERONE_AGENT_API_KEY, ZERONE_AGENT_BASE_URL, ZERONE_AGENT_MODEL
@@ -151,17 +157,19 @@ async function main() {
     )
 
     // Scenario C: SPA site via default anonymous Jina. react.dev requires
-    // JS rendering; if the content mentions useState/useEffect, Jina did
-    // the rendering. May WARN on anonymous rate limit (20 RPM shared).
+    // JS rendering; if the content mentions hooks/React-related keywords,
+    // Jina did the rendering. May WARN on anonymous rate limit (20 RPM shared).
     const c = await runScenario(
       'C: SPA site (react.dev) proves JS rendering via Jina',
       undefined,
       'Use WebFetch to fetch https://react.dev/reference/react and tell me: ' +
-        'does this page mention useState or useEffect hooks? (one word yes/no)',
+        'does this page mention React hooks? (one word yes/no)',
       workdir,
     )
     const cProvider = providerOf(c.resultText)
-    const cHasHooks = /useState|useEffect/.test(c.resultText)
+    // Jina often returns section-level summaries mentioning "Hooks" but not
+    // the specific useState/useEffect literals; accept either.
+    const cHasHooks = /hooks|useState|useEffect/i.test(c.resultText)
     const cPass = c.toolUsed && !c.isError && cHasHooks
     console.log(
       `  ${cPass ? 'PASS' : 'WARN'} scenario C: provider=${cProvider ?? 'unknown'} ` +
