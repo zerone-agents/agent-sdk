@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { LocalProvider, JinaProvider } from './web-fetch-providers.js'
+import {
+  LocalProvider,
+  JinaProvider,
+  FirecrawlProvider,
+} from './web-fetch-providers.js'
 
 // Minimal HTML fixtures
 const SIMPLE_HTML = `<!DOCTYPE html><html><head><title>Test Page</title></head>
@@ -374,5 +378,102 @@ describe('JinaProvider', () => {
     if (result.ok) return
     expect(result.retryable).toBe(true)
     expect(result.message).toContain('jina body read drop')
+  })
+})
+
+describe('FirecrawlProvider', () => {
+  const originalFetch = globalThis.fetch
+
+  beforeEach(() => {
+    globalThis.fetch = vi.fn()
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('POSTs to /v2/markdown with Bearer token', async () => {
+    let capturedUrl: string
+    let capturedInit: any
+    ;(globalThis.fetch as any).mockImplementation(async (url: string, init: any) => {
+      capturedUrl = url
+      capturedInit = init
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            data: { markdown: '# Firecrawl Result\n\nBody.', title: 'FR' },
+          }),
+      }
+    })
+
+    const provider = new FirecrawlProvider({
+      provider: 'firecrawl',
+      apiKey: 'fc-key',
+    })
+    const result = await provider.fetch({
+      url: 'https://example.com',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(capturedUrl!).toBe('https://api.firecrawl.dev/v2/markdown')
+    expect(capturedInit.method).toBe('POST')
+    expect(capturedInit.headers['Authorization']).toBe('Bearer fc-key')
+    expect(JSON.parse(capturedInit.body).url).toBe('https://example.com')
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.metadata.provider).toBe('firecrawl')
+    expect(result.content).toContain('Firecrawl Result')
+  })
+
+  it('returns non-retryable on success: false from API', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () =>
+        JSON.stringify({ success: false, errors: ['invalid url'] }),
+    })
+
+    const provider = new FirecrawlProvider({
+      provider: 'firecrawl',
+      apiKey: 'fc-key',
+    })
+    const result = await provider.fetch({
+      url: 'https://example.com',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.retryable).toBe(false)
+  })
+
+  it('returns retryable on 5xx', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: new Headers(),
+      text: async () => 'down',
+    })
+
+    const provider = new FirecrawlProvider({
+      provider: 'firecrawl',
+      apiKey: 'fc-key',
+    })
+    const result = await provider.fetch({
+      url: 'https://example.com',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.retryable).toBe(true)
   })
 })

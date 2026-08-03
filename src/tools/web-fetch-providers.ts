@@ -434,3 +434,104 @@ function parseJinaResponse(
 
   return { title, content }
 }
+
+// ─── FirecrawlProvider ──────────────────────────────────────
+const FIRECRAWL_DEFAULT_ENDPOINT = 'https://api.firecrawl.dev'
+
+export class FirecrawlProvider implements WebFetchProvider {
+  readonly name = 'firecrawl'
+  private readonly endpoint: string
+  private readonly apiKey: string
+
+  constructor(cfg: FirecrawlProviderConfig) {
+    this.endpoint = cfg.endpoint ?? FIRECRAWL_DEFAULT_ENDPOINT
+    this.apiKey = cfg.apiKey
+  }
+
+  async fetch(opts: FetchOptions): Promise<FetchResult> {
+    const remainingMs = opts.deadlineMs - Date.now()
+    if (remainingMs <= 0) {
+      return { ok: false, retryable: true, message: 'Firecrawl timeout' }
+    }
+
+    const signals: AbortSignal[] = [AbortSignal.timeout(remainingMs)]
+    if (opts.abortSignal) signals.push(opts.abortSignal)
+
+    const maxChars = opts.maxChars ?? DEFAULT_MAX_CHARS
+
+    let response: Response
+    try {
+      response = await fetch(`${this.endpoint}/v2/markdown`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({ url: opts.url, maxChars }),
+        signal: AbortSignal.any(signals),
+      })
+    } catch (err: any) {
+      if (opts.abortSignal?.aborted) {
+        return { ok: false, retryable: false, message: 'Firecrawl aborted' }
+      }
+      return {
+        ok: false,
+        retryable: true,
+        message: `Firecrawl fetch error: ${err.message}`,
+      }
+    }
+
+    if (!response.ok) {
+      const retryable = response.status === 429 || response.status >= 500
+      return {
+        ok: false,
+        retryable,
+        message: `Firecrawl HTTP ${response.status} ${response.statusText}`,
+      }
+    }
+
+    // Wrap body read + JSON.parse + downstream logic to preserve the
+    // "provider never throws" contract (Task 2 lesson: response.text() can
+    // throw on network drop or AbortSignal.timeout firing mid-read; the
+    // subsequent parse and field access can also throw on malformed input).
+    try {
+      const body = await response.text()
+      const parsed = JSON.parse(body) as {
+        success?: boolean
+        errors?: string[]
+        data?: { markdown?: string; title?: string }
+      }
+
+      if (!parsed.success) {
+        const errMsg = Array.isArray(parsed.errors)
+          ? parsed.errors.join(', ')
+          : 'unknown error'
+        return {
+          ok: false,
+          retryable: false,
+          message: `Firecrawl error: ${errMsg}`,
+        }
+      }
+
+      const content: string = parsed.data?.markdown ?? ''
+      return {
+        ok: true,
+        content: truncate(content, maxChars),
+        metadata: {
+          title: parsed.data?.title,
+          finalUrl: opts.url,
+          contentType: 'text/markdown',
+          contentLength: content.length,
+          provider: this.name,
+          extracted: true,
+        },
+      }
+    } catch (err: any) {
+      return {
+        ok: false,
+        retryable: true,
+        message: `Firecrawl body read/parse error: ${err.message}`,
+      }
+    }
+  }
+}
