@@ -3,6 +3,7 @@ import {
   LocalProvider,
   JinaProvider,
   FirecrawlProvider,
+  buildProviders,
 } from './web-fetch-providers.js'
 
 // Minimal HTML fixtures
@@ -475,5 +476,50 @@ describe('FirecrawlProvider', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.retryable).toBe(true)
+  })
+})
+
+describe('buildProviders', () => {
+  it('returns [jina, local] by default when no config', () => {
+    const providers = buildProviders(undefined)
+    expect(providers).toHaveLength(2)
+    expect(providers[0].name).toBe('jina')
+    expect(providers[1].name).toBe('local')
+  })
+
+  it('returns [jina, local] when providers array is empty', () => {
+    const providers = buildProviders({ providers: [] })
+    expect(providers).toHaveLength(2)
+    expect(providers[0].name).toBe('jina')
+  })
+
+  it('respects explicit provider list without appending fallback', () => {
+    const providers = buildProviders({
+      providers: [{ provider: 'local' }],
+    })
+    expect(providers).toHaveLength(1)
+    expect(providers[0].name).toBe('local')
+  })
+
+  it('constructs Firecrawl when configured', () => {
+    const providers = buildProviders({
+      providers: [
+        { provider: 'firecrawl', apiKey: 'k' },
+        { provider: 'local' },
+      ],
+    })
+    expect(providers).toHaveLength(2)
+    expect(providers[0].name).toBe('firecrawl')
+    expect(providers[1].name).toBe('local')
+  })
+
+  it('respects custom Jina endpoint', () => {
+    const providers = buildProviders({
+      providers: [
+        { provider: 'jina', endpoint: 'https://my-jina.example.com' },
+      ],
+    })
+    expect(providers[0].name).toBe('jina')
+    // name 暴露即可，endpoint 通过 fetch 行为验证（已在 Task 3 测过）
   })
 })

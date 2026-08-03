@@ -535,3 +535,27 @@ export class FirecrawlProvider implements WebFetchProvider {
     }
   }
 }
+
+/**
+ * 构造 provider chain。
+ * - 无 config 或 providers 为空 → 默认 [jina(匿名), local]
+ * - 配置非空 → 严格按配置，不自动追加 fallback（用户明确知道要什么）
+ */
+export function buildProviders(config?: WebFetchConfig): WebFetchProvider[] {
+  if (!config || !config.providers || config.providers.length === 0) {
+    return [
+      new JinaProvider({ provider: 'jina' }),
+      new LocalProvider({ provider: 'local' }),
+    ]
+  }
+  return config.providers.map((p): WebFetchProvider => {
+    switch (p.provider) {
+      case 'jina':
+        return new JinaProvider(p)
+      case 'local':
+        return new LocalProvider(p)
+      case 'firecrawl':
+        return new FirecrawlProvider(p)
+    }
+  })
+}
