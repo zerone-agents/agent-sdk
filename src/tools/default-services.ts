@@ -16,6 +16,7 @@ import type {
   ConfigState,
 } from './services.js'
 import type { WebSearchConfig } from './web-search.js'
+import type { WebFetchConfig } from './web-fetch-providers.js'
 
 /**
  * Default implementation of ToolServices.
@@ -29,6 +30,8 @@ export class DefaultToolServices implements ToolServices {
   config: ConfigState
   /** Optional WebSearch provider configuration; absent = anonymous Exa → Parallel default. */
   webSearch?: WebSearchConfig
+  /** Optional WebFetch provider configuration; absent = anonymous Jina → Local default. */
+  webFetch?: WebFetchConfig
 
   constructor() {
     // No user handler by default (non-interactive mode)
