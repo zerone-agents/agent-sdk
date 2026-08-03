@@ -7,6 +7,10 @@
  * See docs/superpowers/specs/2026-08-03-webfetch-enhancements-design.md.
  */
 
+import { Readability } from '@mozilla/readability'
+import TurndownService from 'turndown'
+import { DOMParser } from 'linkedom'
+
 /** 单次 fetch 的请求选项 */
 export interface FetchOptions {
   url: string
@@ -75,4 +79,227 @@ export interface WebFetchConfig {
   providers?: WebFetchProviderConfig[]
   /** 总超时（共享），默认 30000 */
   timeoutMs?: number
+}
+
+// ─── 编码处理 ───────────────────────────────────────────────
+/** 从 Content-Type header 提取 charset */
+function charsetFromContentType(ct: string): string | null {
+  const m = /charset\s*=\s*["']?([\w-]+)/i.exec(ct)
+  return m ? m[1].toLowerCase() : null
+}
+
+/** 从 HTML <meta charset="..."> 或 <meta http-equiv> 提取 charset */
+function charsetFromHtml(html: string): string | null {
+  // 优先 <meta charset="...">
+  const m1 = /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(html)
+  if (m1) return m1[1].toLowerCase()
+  // 其次 http-equiv Content-Type
+  const m2 = /<meta[^>]+http-equiv\s*=\s*["']?content-type["']?[^>]*content\s*=\s*["'][^"']*charset=([\w-]+)/i.exec(
+    html,
+  )
+  if (m2) return m2[1].toLowerCase()
+  return null
+}
+
+/**
+ * 用正确的 charset 解码 buffer。
+ * 优先级：HTTP Content-Type > HTML <meta charset> > 默认 utf-8
+ * 仅用 HTML 前 1KB 探测 charset（避免对大文件全文扫描）。
+ */
+function decodeBuffer(
+  buf: ArrayBuffer,
+  contentType: string,
+): { text: string; charset: string } {
+  const bytes = new Uint8Array(buf)
+  // 先用 ascii-superset 探测 charset
+  const head = new TextDecoder('utf-8', { fatal: false }).decode(
+    bytes.subarray(0, Math.min(bytes.length, 1024)),
+  )
+  const charset =
+    charsetFromContentType(contentType) ??
+    charsetFromHtml(head) ??
+    'utf-8'
+  try {
+    const text = new TextDecoder(charset, { fatal: false }).decode(bytes)
+    return { text, charset }
+  } catch {
+    // 不支持的 charset，回退 utf-8
+    const text = new TextDecoder('utf-8').decode(bytes)
+    return { text, charset: 'utf-8' }
+  }
+}
+
+// ─── LocalProvider ───────────────────────────────────────────
+const DEFAULT_MAX_CHARS = 100_000
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (compatible; AgentSDK/1.0)'
+
+export class LocalProvider implements WebFetchProvider {
+  readonly name = 'local'
+  // 当前 LocalProviderConfig 无配置项；保留 constructor 形态以与 Jina/Firecrawl 一致
+  constructor(_cfg: LocalProviderConfig) {}
+
+  async fetch(opts: FetchOptions): Promise<FetchResult> {
+    const remainingMs = opts.deadlineMs - Date.now()
+    if (remainingMs <= 0) {
+      return {
+        ok: false,
+        retryable: true,
+        message: 'Local fetch timeout',
+      }
+    }
+
+    const signals: AbortSignal[] = [AbortSignal.timeout(remainingMs)]
+    if (opts.abortSignal) signals.push(opts.abortSignal)
+
+    let response: Response
+    try {
+      response = await fetch(opts.url, {
+        headers: {
+          'User-Agent': DEFAULT_USER_AGENT,
+          Accept: 'text/html,application/json,text/plain,*/*',
+          ...opts.headers,
+        },
+        signal: AbortSignal.any(signals),
+      })
+    } catch (err: any) {
+      if (opts.abortSignal?.aborted) {
+        return { ok: false, retryable: false, message: 'Fetch aborted' }
+      }
+      return {
+        ok: false,
+        retryable: true,
+        message: `Local fetch error: ${err.message}`,
+      }
+    }
+
+    if (!response.ok) {
+      const retryable = response.status === 429 || response.status >= 500
+      return {
+        ok: false,
+        retryable,
+        message: `Local fetch HTTP ${response.status} ${response.statusText}`,
+      }
+    }
+
+    const contentType = response.headers.get('content-type') ?? ''
+    const finalUrl = response.url || opts.url
+    const buf = await response.arrayBuffer()
+    const { text } = decodeBuffer(buf, contentType)
+
+    const maxChars = opts.maxChars ?? DEFAULT_MAX_CHARS
+    const format = opts.format ?? 'markdown'
+
+    // 非 HTML 内容：直接返回文本
+    const isHtml =
+      contentType.includes('text/html') || contentType.includes('application/xhtml')
+    if (!isHtml) {
+      const content = truncate(text, maxChars)
+      return {
+        ok: true,
+        content,
+        metadata: {
+          finalUrl,
+          contentType,
+          contentLength: text.length,
+          provider: this.name,
+          extracted: false,
+        },
+      }
+    }
+
+    // format: html → 跳过提取，返回原始 HTML
+    if (format === 'html') {
+      const content = truncate(text, maxChars)
+      return {
+        ok: true,
+        content,
+        metadata: {
+          finalUrl,
+          contentType,
+          contentLength: text.length,
+          provider: this.name,
+          extracted: false,
+          title: extractTitle(text),
+        },
+      }
+    }
+
+    // HTML → DOM → Readability → Turndown/Text
+    let articleTitle: string | undefined
+    let mainHtml: string
+    let extracted = false
+    try {
+      const doc = new DOMParser().parseFromString(text, 'text/html') as any
+      // linkedom's typings declare doc.title as HTMLTitleElement but at
+      // runtime it returns a string (matching HTML spec); coerce for safety.
+      const docTitle: string | undefined = doc.title
+        ? String(doc.title)
+        : undefined
+      articleTitle = docTitle || undefined
+      const reader = new Readability(doc)
+      const article = reader.parse()
+      if (article) {
+        mainHtml = article.content ?? ''
+        articleTitle = articleTitle ?? article.title ?? undefined
+        extracted = true
+      } else {
+        mainHtml = text
+      }
+    } catch {
+      // 解析失败 → 退化到原始 HTML
+      mainHtml = text
+    }
+
+    let content: string
+    if (format === 'text') {
+      // 剥标签保留 textContent
+      content = stripTags(mainHtml)
+    } else {
+      // markdown
+      try {
+        const turndown = new TurndownService({
+          headingStyle: 'atx',
+          codeBlockStyle: 'fenced',
+        })
+        content = turndown.turndown(mainHtml)
+      } catch {
+        content = stripTags(mainHtml)
+      }
+    }
+
+    content = truncate(content, maxChars)
+
+    return {
+      ok: true,
+      content,
+      metadata: {
+        title: articleTitle,
+        finalUrl,
+        contentType,
+        contentLength: content.length,
+        provider: this.name,
+        extracted,
+      },
+    }
+  }
+}
+
+// ─── 工具函数 ───────────────────────────────────────────────
+function truncate(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  return text.slice(0, maxChars) + '\n...(truncated)'
+}
+
+function extractTitle(html: string): string | undefined {
+  const m = /<title[^>]*>([^<]*)<\/title>/i.exec(html)
+  return m ? m[1].trim() : undefined
+}
+
+function stripTags(html: string): string {
+  return html
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
