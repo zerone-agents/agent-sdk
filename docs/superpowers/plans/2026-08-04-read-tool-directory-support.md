@@ -108,7 +108,7 @@ describe('formatSize', () => {
   it('formats K as integer when value >= 10', () => {
     expect(formatSize(10240)).toBe('10K')
     expect(formatSize(12288)).toBe('12K')
-    expect(formatSize(1023488)).toBe('999K')     // just under 1 M
+    expect(formatSize(1022976)).toBe('999K')     // exactly 999 * 1024, just under 1 M
   })
 
   it('formats M with one decimal when value < 10', () => {
@@ -247,7 +247,8 @@ describe('formatEntryRow', () => {
       brokenLink: false,
     }
     const row = formatEntryRow(entry, widths)
-    expect(row).toBe('  FILE  1.2K    Aug 04 09:15   package.json')
+    // Layout: '  ' + TYPE(padStart 4) + '  ' + SIZE(padStart 6) + '  ' + MTIME(padEnd 12) + '  ' + NAME
+    expect(row).toBe('  FILE    1.2K  Aug 04 09:15  package.json')
   })
 
   it('formats a directory row with trailing slash and - for size', () => {
@@ -259,7 +260,7 @@ describe('formatEntryRow', () => {
       brokenLink: false,
     }
     const row = formatEntryRow(entry, widths)
-    expect(row).toBe('  DIR   -        Aug 04 10:23   src/')
+    expect(row).toBe('   DIR       -  Aug 04 10:23  src/')
   })
 
   it('formats a symlink row with -> for size', () => {
@@ -271,7 +272,7 @@ describe('formatEntryRow', () => {
       brokenLink: false,
     }
     const row = formatEntryRow(entry, widths)
-    expect(row).toBe('  LINK  ->       Aug 04 10:23   npm')
+    expect(row).toBe('  LINK      ->  Aug 04 10:23  npm')
   })
 
   it('appends (broken link) suffix for broken symlinks', () => {
@@ -283,7 +284,7 @@ describe('formatEntryRow', () => {
       brokenLink: true,
     }
     const row = formatEntryRow(entry, widths)
-    expect(row).toBe('  LINK  ->       Aug 04 10:23   dangling (broken link)')
+    expect(row).toBe('  LINK      ->  Aug 04 10:23  dangling (broken link)')
   })
 
   it('formats OTHER entries (fifo/socket)', () => {
@@ -295,7 +296,8 @@ describe('formatEntryRow', () => {
       brokenLink: false,
     }
     const row = formatEntryRow(entry, widths)
-    expect(row).toBe('  OTHER 0B       Aug 04 10:23   pipe')
+    // OTHER has length 5 > widths.type 4; padStart does not truncate.
+    expect(row).toBe('  OTHER      0B  Aug 04 10:23  pipe')
   })
 
   it('right-aligns size column when other rows have larger widths', () => {
@@ -308,7 +310,7 @@ describe('formatEntryRow', () => {
       brokenLink: false,
     }
     const row = formatEntryRow(entry, wideWidths)
-    expect(row).toBe('  FILE      12B       Aug 04 09:15   small.txt')
+    expect(row).toBe('  FILE       12B  Aug 04 09:15  small.txt')
   })
 })
 ```
@@ -449,7 +451,9 @@ describe('listDirectory — core', () => {
     const result = await listDirectory(workdir, defaultOpts)
 
     const lines = result.split('\n')
-    expect(lines[0]).toBe('  TYPE  SIZE  MTIME        NAME')
+    // Header layout matches formatEntries: '  ' + TYPE(padStart w) + '  ' + SIZE(padStart w) + '  ' + MTIME(padEnd 12) + '  NAME'
+    // For this dir, widths = { type: 4, size: 4, mtime: 12 } so MTIME is padded with 7 spaces.
+    expect(lines[0]).toBe('  TYPE  SIZE  MTIME         NAME')
     // Find the data rows by name (mtime varies, so we check structure).
     const aLine = lines.find((l) => l.endsWith('a.txt'))
     const subLine = lines.find((l) => l.endsWith('subdir/'))
