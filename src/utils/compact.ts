@@ -15,7 +15,7 @@ import {
   getAutoCompactThreshold,
 } from './tokens.js'
 
-export const PRUNE_PROTECTED_TURNS = 2
+export const PRUNE_PROTECTED_TURNS = 6
 export const PRUNE_THRESHOLD_CHARS = 20_000
 
 /**
