@@ -49,3 +49,15 @@ export function truncateToLastNTurns(
   const cutIndex = boundaries[boundaries.length - maxTurns]
   return messages.slice(cutIndex)
 }
+
+/**
+ * Count conversation rounds = number of fresh user messages.
+ * A fresh user message is one whose content is not exclusively tool_result blocks.
+ */
+export function countSessionTurns(messages: NormalizedMessageParam[]): number {
+  let count = 0
+  for (const msg of messages) {
+    if (isFreshUserMessage(msg)) count++
+  }
+  return count
+}

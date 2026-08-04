@@ -11,12 +11,11 @@ import { SkillRegistry } from '../skills/index.js'
 
 /**
  * Integration test: verifies that the `maxSessionTurns` engine wiring works
- * end-to-end. The engine must:
- *   - send only the last N conversation rounds to the LLM provider (truncated)
- *   - keep the FULL transcript in engine.getMessages() (not truncated)
- *
- * Spec: "create agent with maxSessionTurns: 2, run 5 queries, verify session
- * transcript has all messages but API calls only received last 2 rounds."
+ * end-to-end with halved compaction. When the conversation exceeds
+ * maxSessionTurns rounds, the engine must:
+ *   - summarize the older half via the LLM (an extra compaction API call)
+ *   - rewrite the persistent transcript to [summary pair, ...recent half]
+ *   - fall back to keeping the transcript bounded on every subsequent overflow
  */
 
 /** A minimal recording provider. Captures the `messages` array it receives on
@@ -105,7 +104,7 @@ function buildConfig(
 }
 
 describe('maxSessionTurns engine wiring (integration)', () => {
-  it('truncates API messages to last 2 rounds while keeping full transcript', async () => {
+  it('compacts the older half into a summary when rounds exceed maxSessionTurns', async () => {
     const provider = new RecordingProvider()
     const engine = new QueryEngine(buildConfig(provider))
 
@@ -114,56 +113,46 @@ describe('maxSessionTurns engine wiring (integration)', () => {
       await drain(engine.submitMessage(`Question ${i}`))
     }
 
-    // --- Assert: provider received one API call per round ---
-    expect(provider.calls).toHaveLength(4)
+    // Compaction requests are single-message calls whose prompt asks for a summary.
+    const isCompactionCall = (call: NormalizedMessageParam[]) =>
+      call.length === 1 &&
+      typeof call[0].content === 'string' &&
+      call[0].content.startsWith('Please summarize')
+    const compactionCalls = provider.calls.filter(isCompactionCall)
+    const mainCalls = provider.calls.filter((c) => !isCompactionCall(c))
 
-    // --- Assert: the LAST API call only received the last 2 rounds ---
-    //
-    // Truncation happens BEFORE the current round's assistant reply exists.
-    // With maxSessionTurns=2, the 4th call should receive:
-    //   [user3, assistant3, user4]  (round 3 complete + round 4 partial)
-    const lastCall = provider.calls[3]
-    expect(lastCall).toHaveLength(3)
-    expect(lastCall.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
-    expect(extractLastUserText([lastCall[0]])).toBe('Question 3')
-    expect(extractLastUserText([lastCall[2]])).toBe('Question 4')
+    // --- Assert: 4 main API calls (one per round) ---
+    expect(mainCalls).toHaveLength(4)
 
-    // --- Assert: the 3rd API call was also truncated to last 2 rounds ---
-    //   [user2, assistant2, user3]  — note Question 1 is GONE, proving truncation
-    const thirdCall = provider.calls[2]
-    expect(thirdCall).toHaveLength(3)
-    expect(extractLastUserText([thirdCall[0]])).toBe('Question 2')
-    expect(extractLastUserText([thirdCall[2]])).toBe('Question 3')
+    // --- Assert: compaction fired at round 3 and round 4 ---
+    // After Q3 is appended, turns (3) exceed maxSessionTurns (2) → compact.
+    // The summary pair counts as 1 fresh user turn, so after Q4 is appended
+    // turns are 4 again → compact once more.
+    expect(compactionCalls).toHaveLength(2)
 
-    // --- Assert: no truncation when rounds <= maxSessionTurns ---
-    // 2nd call: 2 user msgs → 2 turns → 2 <= 2 → full history sent:
-    //   [user1, assistant1, user2]
-    const secondCall = provider.calls[1]
-    expect(secondCall).toHaveLength(3)
-    expect(extractLastUserText([secondCall[0]])).toBe('Question 1')
+    // --- Assert: the last main call starts with the summary pair ---
+    // and keeps only the recent half verbatim (protectedTurns = 1 round).
+    const lastCall = mainCalls[3]
+    expect(lastCall[0].role).toBe('user')
+    expect(lastCall[0].content).toContain('[Previous conversation summary]')
+    // The raw pre-compaction turns are gone as standalone messages.
+    const mainCallJson = JSON.stringify(lastCall)
+    expect(mainCallJson).not.toContain('"content":"Question 1"')
 
-    // 1st call: single user message, no truncation possible
-    const firstCall = provider.calls[0]
-    expect(firstCall).toHaveLength(1)
-    expect(extractLastUserText(firstCall)).toBe('Question 1')
+    // --- Assert: early rounds ran without compaction ---
+    // 1st call: single user message; 2nd call: 2 turns <= 2 → full history.
+    expect(mainCalls[0]).toHaveLength(1)
+    expect(extractLastUserText(mainCalls[0])).toBe('Question 1')
+    expect(mainCalls[1]).toHaveLength(3)
+    expect(extractLastUserText([mainCalls[1][0]])).toBe('Question 1')
 
-    // --- Assert: engine.getMessages() returns the FULL, untruncated history ---
-    // 4 rounds × (user + assistant) = 8 messages.
-    const fullHistory = engine.getMessages()
-    expect(fullHistory).toHaveLength(8)
-    expect(fullHistory.map((m) => m.role)).toEqual([
-      'user',
-      'assistant',
-      'user',
-      'assistant',
-      'user',
-      'assistant',
-      'user',
-      'assistant',
-    ])
-    // Sanity: first user + last user are both present (not dropped)
-    expect(extractLastUserText([fullHistory[0]])).toBe('Question 1')
-    expect(extractLastUserText([fullHistory[6]])).toBe('Question 4')
+    // --- Assert: persistent transcript was rewritten with the summary ---
+    const history = engine.getMessages()
+    expect(history[0].role).toBe('user')
+    expect(history[0].content).toContain('[Previous conversation summary]')
+    // Recent rounds survive verbatim in the persistent transcript.
+    const historyJson = JSON.stringify(history)
+    expect(historyJson).toContain('Question 4')
   })
 
   it('does not truncate when maxSessionTurns is unset', async () => {

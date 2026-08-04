@@ -15,7 +15,7 @@ import {
   getAutoCompactThreshold,
 } from './tokens.js'
 
-export const PRUNE_PROTECTED_TURNS = 2
+export const PRUNE_PROTECTED_TURNS = 6
 export const PRUNE_THRESHOLD_CHARS = 20_000
 
 /**
@@ -265,6 +265,7 @@ export async function* compactConversationWithProtectedTail(
   model: string,
   messages: NormalizedMessageParam[],
   state: AutoCompactState,
+  protectedTurns: number = PRUNE_PROTECTED_TURNS,
 ): AsyncGenerator<SDKCompactMessage, {
   messages: NormalizedMessageParam[]
   state: AutoCompactState
@@ -284,7 +285,7 @@ export async function* compactConversationWithProtectedTail(
       userMsgIndices.push(i)
     }
   }
-  const protectedStart = Math.max(0, userMsgIndices.length - PRUNE_PROTECTED_TURNS)
+  const protectedStart = Math.max(0, userMsgIndices.length - protectedTurns)
   const cutoffIndex = protectedStart < userMsgIndices.length
     ? userMsgIndices[protectedStart]
     : historyMsgs.length
@@ -337,6 +338,15 @@ function stripImagesFromMessages(
 }
 
 /**
+ * Truncate long text keeping both head and tail (middle elided).
+ */
+function truncateHeadTail(text: string, max: number): string {
+  if (text.length <= max) return text
+  const half = Math.floor(max / 2)
+  return text.slice(0, half) + '\n...(truncated)...\n' + text.slice(-half)
+}
+
+/**
  * Build compaction prompt from messages.
  */
 function buildCompactionPrompt(messages: any[]): string {
@@ -346,17 +356,18 @@ function buildCompactionPrompt(messages: any[]): string {
     const role = msg.role === 'user' ? 'User' : 'Assistant'
 
     if (typeof msg.content === 'string') {
-      parts.push(`${role}: ${msg.content.slice(0, 5000)}`)
+      parts.push(`${role}: ${truncateHeadTail(msg.content, 5000)}`)
     } else if (Array.isArray(msg.content)) {
       const texts: string[] = []
       for (const block of msg.content as any[]) {
         if (block.type === 'text') {
-          texts.push(block.text.slice(0, 3000))
+          texts.push(truncateHeadTail(block.text, 5000))
         } else if (block.type === 'tool_use') {
-          texts.push(`[Tool: ${block.name}]`)
+          const input = truncateHeadTail(JSON.stringify(block.input ?? {}), 1000)
+          texts.push(`[Tool: ${block.name} ${input}]`)
         } else if (block.type === 'tool_result') {
           const content = typeof block.content === 'string'
-            ? block.content.slice(0, 1000)
+            ? truncateHeadTail(block.content, 5000)
             : '[tool result]'
           texts.push(`[Tool Result: ${content}]`)
         }

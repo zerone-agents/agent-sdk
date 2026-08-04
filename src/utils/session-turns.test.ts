@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { truncateToLastNTurns } from './session-turns.js'
+import { countSessionTurns, truncateToLastNTurns } from './session-turns.js'
 import type { NormalizedMessageParam } from '../providers/types.js'
 
 function userMsg(text: string): NormalizedMessageParam {
@@ -175,5 +175,23 @@ describe('truncateToLastNTurns', () => {
     ]
     const result = truncateToLastNTurns(messages, -3)
     expect(result).toEqual(messages)
+  })
+})
+
+describe('countSessionTurns', () => {
+  it('counts fresh user messages only', () => {
+    const messages: NormalizedMessageParam[] = [
+      userMsg('turn1'),
+      assistantMsg('resp1'),
+      toolResultMsg('t1'),
+      userMsg('turn2'),
+      assistantMsg('resp2'),
+    ]
+    expect(countSessionTurns(messages)).toBe(2)
+  })
+
+  it('returns 0 for empty and tool-result-only histories', () => {
+    expect(countSessionTurns([])).toBe(0)
+    expect(countSessionTurns([toolResultMsg('t1')])).toBe(0)
   })
 })

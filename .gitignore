@@ -12,3 +12,4 @@ AGENTS.md
 *.tgz
 .superpowers/
 .backup/
+docs/superpowers/
