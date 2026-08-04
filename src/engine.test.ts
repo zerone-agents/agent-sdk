@@ -557,3 +557,59 @@ describe('executeTools streaming + tools_complete', () => {
     expect(complete.tool_results_count).toBe(3)
   })
 })
+
+describe('maxSessionTurns halved compaction', () => {
+  function makeHalveProvider(opts: { failSummary?: boolean } = {}): LLMProvider {
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        if (opts.failSummary) throw new Error('summary failed')
+        return {
+          content: [{ type: 'text', text: 'SESSION SUMMARY' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        } as any
+      },
+      async *createMessageStream(params: any): AsyncGenerator<StreamChunk> {
+        const isCompaction = params.messages?.length === 1
+          && typeof params.messages[0].content === 'string'
+          && params.messages[0].content.includes('Please summarize')
+        if (isCompaction && opts.failSummary) throw new Error('summary failed')
+        yield { type: 'text', index: 0, delta: isCompaction ? 'SESSION SUMMARY' : 'final answer' } as StreamChunk
+        yield { type: 'usage', usage: { input_tokens: 10, output_tokens: 5, totalInputTokens: 10 } } as any
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+  }
+
+  function seedTurns(engine: QueryEngine, n: number) {
+    for (let i = 1; i <= n; i++) {
+      engine.messages.push(
+        { role: 'user', content: `seed turn ${i}` },
+        { role: 'assistant', content: `seed resp ${i}` },
+      )
+    }
+  }
+
+  it('compacts persistent history when session turns exceed maxSessionTurns', async () => {
+    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider()), maxSessionTurns: 2 })
+    seedTurns(engine, 3) // 3 seeded turns + 1 submitted = 4 > 2
+
+    await run(engine)
+
+    const json = JSON.stringify(engine.messages)
+    expect(json).toContain('SESSION SUMMARY')
+    expect(json).not.toContain('seed turn 1')
+  })
+
+  it('falls back to hard truncation when summary fails', async () => {
+    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider({ failSummary: true })), maxSessionTurns: 2 })
+    seedTurns(engine, 3)
+
+    await run(engine)
+
+    const json = JSON.stringify(engine.messages)
+    expect(json).not.toContain('SESSION SUMMARY')
+    expect(json).not.toContain('seed turn 1')
+    expect(json).toContain('seed turn 3')
+  })
+})

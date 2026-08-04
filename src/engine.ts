@@ -35,7 +35,7 @@ import {
   DEFAULT_MAX_REQUEST_BODY_BYTES,
 } from './utils/tokens.js'
 import { enforceBodySizeLimit } from './utils/body-size.js'
-import { truncateToLastNTurns } from './utils/session-turns.js'
+import { countSessionTurns, truncateToLastNTurns } from './utils/session-turns.js'
 import {
   shouldAutoCompact,
   compactConversation,
@@ -224,6 +224,21 @@ export class QueryEngine {
         }
       }
 
+      // Session turns halved compaction: summarize the older half when over the limit
+      if (this.config.maxSessionTurns && this.config.maxSessionTurns >= 2) {
+        if (countSessionTurns(this.messages) > this.config.maxSessionTurns) {
+          let sessionSummary = ''
+          for await (const ev of this.compactStream(Math.max(1, Math.floor(this.config.maxSessionTurns / 2)))) {
+            if (ev.type === 'compact' && ev.phase === 'end') sessionSummary = ev.summary ?? ''
+            yield ev
+          }
+          if (!sessionSummary) {
+            // Summary failed: fall back to hard truncation so context always converges
+            this.messages = truncateToLastNTurns(this.messages, this.config.maxSessionTurns)
+          }
+        }
+      }
+
       // Micro-compact: truncate large tool results
       let apiMessages = microCompactMessages(
         normalizeMessagesForAPI(this.messages as any[]),
@@ -240,11 +255,6 @@ export class QueryEngine {
           subtype: 'warning',
           message: `Request body exceeded ${maxBodyBytes} byte limit. ${bodySizeResult.strippedCount} image(s) removed from older messages.`,
         } as any
-      }
-
-      // Session turns truncation: limit context to last N conversation rounds
-      if (this.config.maxSessionTurns) {
-        apiMessages = truncateToLastNTurns(apiMessages, this.config.maxSessionTurns)
       }
 
       this.turnCount++
@@ -654,7 +664,7 @@ export class QueryEngine {
    * so callers can surface progress (e.g. a `/compact` command). This is the
    * same algorithm used by auto-compaction, so behavior is identical.
    */
-  async *compactStream(): AsyncGenerator<SDKCompactMessage> {
+  async *compactStream(protectedTurns?: number): AsyncGenerator<SDKCompactMessage> {
     await this.executeHooks('PreCompact')
     try {
       const gen = compactConversationWithProtectedTail(
@@ -662,6 +672,7 @@ export class QueryEngine {
         this.config.env.model,
         this.messages,
         this.compactState,
+        protectedTurns,
       )
       while (true) {
         const next = await gen.next()
