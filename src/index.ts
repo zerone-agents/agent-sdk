@@ -132,6 +132,13 @@ export type {
   SearchProviderConfig,
   WebSearchConfig,
 } from './tools/web-search.js'
+export type {
+  FirecrawlProviderConfig,
+  JinaProviderConfig,
+  LocalProviderConfig,
+  WebFetchConfig,
+  WebFetchProviderConfig,
+} from './tools/web-fetch-providers.js'
 export { DefaultToolServices } from './tools/default-services.js'
 export type { ToolServices } from './tools/services.js'
 
