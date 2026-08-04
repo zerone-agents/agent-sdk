@@ -910,14 +910,14 @@ export class Agent {
   }
 
   /**
-   * Get the list of allowed skills (whitelist).
+   * Get the list of available skills (whitelist).
    */
-  getAllowedSkills(): string[] | undefined {
+  getAvailableSkills(): string[] | undefined {
     return this.cfg.agent?.availableSkills
   }
 
   /**
-   * Set the allowed skills whitelist.
+   * Set the available skills whitelist.
    */
   setAvailableSkills(availableSkills: string[] | undefined): void {
     if (this.cfg.agent) {
