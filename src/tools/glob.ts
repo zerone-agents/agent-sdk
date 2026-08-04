@@ -1,7 +1,10 @@
 /**
  * GlobTool - File pattern matching
+ *
+ * Uses fs.promises.glob (Node 22+).
  */
 
+import { glob } from 'fs/promises'
 import { resolve } from 'path'
 import { defineTool } from './types.js'
 
@@ -29,53 +32,19 @@ export const GlobTool = defineTool({
     const { pattern } = input
 
     try {
-      const fsPromises = await import('fs/promises')
-      // @ts-ignore
-      const globFn = fsPromises.glob
-      if (typeof globFn === 'function') {
-        const matches: string[] = []
-        // @ts-ignore
-        for await (const entry of globFn(pattern, { cwd: searchDir })) {
-          if (context.abortSignal?.aborted) break
-          matches.push(entry)
-          if (matches.length >= 500) break
-        }
-        if (matches.length === 0) {
-          return `No files matching pattern "${pattern}" in ${searchDir}`
-        }
-        return matches.join('\n')
+      const matches: string[] = []
+      for await (const entry of glob(pattern, { cwd: searchDir })) {
+        if (context.abortSignal?.aborted) break
+        matches.push(entry)
+        if (matches.length >= 500) break
       }
-    } catch {
-      // Fall through to bash-based approach
+      if (matches.length === 0) {
+        return `No files matching pattern "${pattern}" in ${searchDir}`
+      }
+      return matches.join('\n')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return `Error searching for files with pattern "${pattern}": ${message}`
     }
-
-    // Fallback: use bash find/glob
-    const { spawn } = await import('child_process')
-    return new Promise<string>((resolvePromise) => {
-      // Use bash glob expansion or find
-      const cmd = `shopt -s globstar nullglob 2>/dev/null; cd ${JSON.stringify(searchDir)} && ls -1d ${pattern} 2>/dev/null | head -500`
-      const proc = spawn('bash', ['-c', cmd], {
-        cwd: searchDir,
-        timeout: 30000,
-      })
-
-      if (context.abortSignal) {
-        context.abortSignal.addEventListener('abort', () => proc.kill('SIGTERM'), { once: true })
-      }
-
-      const chunks: Buffer[] = []
-      proc.stdout?.on('data', (d: Buffer) => chunks.push(d))
-      proc.on('close', () => {
-        const result = Buffer.concat(chunks).toString('utf-8').trim()
-        if (!result) {
-          resolvePromise(`No files matching pattern "${pattern}" in ${searchDir}`)
-        } else {
-          resolvePromise(result)
-        }
-      })
-      proc.on('error', () => {
-        resolvePromise(`Error searching for files with pattern "${pattern}"`)
-      })
-    })
   },
 })

@@ -115,4 +115,38 @@ describe('loadSkillsFromFilesystem', () => {
 
     await rm(projectSkillsRoot, { recursive: true, force: true })
   })
+
+  // Nested directory support: SKILL.md can live at any depth under the
+  // skill root, not just one level deep. The skill name is the immediate
+  // parent directory of SKILL.md.
+  it('loads skills from nested subdirectories (e.g. skills/team/commit/SKILL.md)', async () => {
+    // Build a tree:
+    //   .agents/skills/
+    //   ├── flat-commit/SKILL.md              (1 level — backward compat)
+    //   ├── team-a/commit/SKILL.md            (2 levels — nested)
+    //   └── team-b/sub/deep-review/SKILL.md   (3 levels — deeply nested)
+    const root = join(cwd, '.agents', 'skills')
+    await mkdir(join(root, 'flat-commit'), { recursive: true })
+    await mkdir(join(root, 'team-a', 'commit'), { recursive: true })
+    await mkdir(join(root, 'team-b', 'sub', 'deep-review'), { recursive: true })
+
+    await writeFile(join(root, 'flat-commit', 'SKILL.md'),
+      '---\nname: flat-commit\ndescription: x\n---\nBody.\n')
+    await writeFile(join(root, 'team-a', 'commit', 'SKILL.md'),
+      '---\nname: nested-commit\ndescription: x\n---\nBody.\n')
+    await writeFile(join(root, 'team-b', 'sub', 'deep-review', 'SKILL.md'),
+      '---\nname: deep-review\ndescription: x\n---\nBody.\n')
+
+    const registry = new SkillRegistry()
+    const result = await loadSkillsFromFilesystem(cwd, ['project'], {}, registry)
+
+    expect(result.loaded).toBe(3)
+    expect(registry.get('flat-commit')).toBeDefined()
+    expect(registry.get('nested-commit')).toBeDefined()
+    expect(registry.get('deep-review')).toBeDefined()
+
+    // skillName is derived from immediate parent dir, not the path
+    const deep = registry.get('deep-review')!
+    expect(deep.skillDir).toBe(join(root, 'team-b', 'sub', 'deep-review'))
+  })
 })

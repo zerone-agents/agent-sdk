@@ -2,11 +2,11 @@
  * Filesystem Skills Loader
  *
  * Loads SKILL.md files from .agents/skills/ directories.
+ * Supports nested directory structure via fs.promises.glob (Node 22+).
  */
 
-import { readdir, readFile } from 'fs/promises'
-import { existsSync, statSync } from 'fs'
-import { join } from 'path'
+import { glob, readFile } from 'fs/promises'
+import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
 import { parseSkillMarkdown } from './yaml.js'
 import type { SkillRegistry } from './registry.js'
@@ -84,20 +84,15 @@ export async function loadSkillsFromFilesystem(
   return { loaded, errors }
 }
 
-function isDirOrSymlinkToDir(p: string, entry: import('fs').Dirent): boolean {
-  if (entry.isDirectory()) return true
-  if (entry.isSymbolicLink()) {
-    try {
-      return existsSync(p) && statSync(p).isDirectory()
-    } catch {
-      return false
-    }
-  }
-  return false
-}
-
 /**
- * Load all skills from a directory.
+ * Load all skills from a directory tree.
+ *
+ * Uses fs.promises.glob (Node 22+) to find every SKILL.md anywhere in
+ * the tree, supporting nested grouping directories like
+ * skills/team/commit/SKILL.md.
+ * The skill name is the immediate parent directory name of SKILL.md.
+ * Symlinked directories at the top level are followed; symlinks inside
+ * symlinks are not (loop protection).
  */
 async function loadSkillsFromDir(
   dir: string,
@@ -108,13 +103,14 @@ async function loadSkillsFromDir(
   let loaded = 0
 
   try {
-    const entries = await readdir(dir, { withFileTypes: true })
-    const skillDirs = entries.filter(entry => isDirOrSymlinkToDir(join(dir, entry.name), entry))
+    const skillPaths: string[] = []
+    for await (const entry of glob('**/SKILL.md', { cwd: dir })) {
+      skillPaths.push(join(dir, entry))
+    }
 
-    for (const skillDir of skillDirs) {
-      const skillPath = join(dir, skillDir.name, 'SKILL.md')
+    for (const skillPath of skillPaths) {
       try {
-        const definition = await loadSkillFile(dir, skillDir.name, skillPath)
+        const definition = await loadSkillFile(skillPath)
         registry.register(definition, source)
         loaded++
       } catch (error) {
@@ -122,10 +118,8 @@ async function loadSkillsFromDir(
       }
     }
   } catch (error) {
-    // Directory doesn't exist or permission denied - silently skip
-    if ((error as any).code !== 'ENOENT') {
-      errors.push(error instanceof Error ? error : new Error(String(error)))
-    }
+    // Unexpected error from glob itself — surface it
+    errors.push(error instanceof Error ? error : new Error(String(error)))
   }
 
   return { loaded, errors }
@@ -133,21 +127,23 @@ async function loadSkillsFromDir(
 
 /**
  * Load a single SKILL.md file and return its definition.
+ *
+ * Skill name and directory are derived from skillPath:
+ *   skillPath = /abs/skills/team/commit/SKILL.md
+ *   skillDir  = /abs/skills/team/commit
+ *   skillName = commit
  */
-async function loadSkillFile(
-  baseDir: string,
-  skillName: string,
-  skillPath: string
-): Promise<SkillDefinition> {
+async function loadSkillFile(skillPath: string): Promise<SkillDefinition> {
   const content = await readFile(skillPath, 'utf-8')
   const { frontmatter, body } = parseSkillMarkdown(content)
 
+  const skillDir = dirname(skillPath)
+  const skillName = basename(skillDir)
+
   const finalBody = body.replace(
     /\$\{ZERONE_AGENT_SKILL_DIR\}/g,
-    join(baseDir, skillName)
+    skillDir,
   )
-
-  const skillDir = join(baseDir, skillName)
 
   const definition: SkillDefinition = {
     name: frontmatter.name || skillName,
