@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { formatSize, formatMtime, formatEntryRow, type DirEntry } from './read.js'
 
 describe('formatSize', () => {
@@ -150,5 +150,114 @@ describe('formatEntryRow', () => {
     }
     const row = formatEntryRow(entry, wideWidths)
     expect(row).toBe('  FILE       12B  Aug 04 09:15  small.txt')
+  })
+})
+
+import { listDirectory, type ListDirOptions } from './read.js'
+import { mkdtemp, rm, writeFile, mkdir } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+describe('listDirectory — core', () => {
+  let workdir: string
+
+  beforeEach(async () => {
+    workdir = await mkdtemp(join(tmpdir(), 'readdir-test-'))
+  })
+
+  afterEach(async () => {
+    await rm(workdir, { recursive: true, force: true })
+  })
+
+  const defaultOpts: ListDirOptions = { showHidden: false, offset: 0, limit: 200 }
+
+  it('returns a header row plus entries for a basic directory', async () => {
+    await writeFile(join(workdir, 'a.txt'), 'hello')
+    await mkdir(join(workdir, 'subdir'))
+
+    const result = await listDirectory(workdir, defaultOpts)
+
+    const lines = result.split('\n')
+    // Header layout matches formatEntries: '  ' + TYPE(padStart w) + '  ' + SIZE(padStart w) + '  ' + MTIME(padEnd 12) + '  NAME'
+    // For this dir, widths = { type: 4, size: 4, mtime: 12 } so MTIME is padded with 7 spaces.
+    expect(lines[0]).toBe('  TYPE  SIZE  MTIME         NAME')
+    // Find the data rows by name (mtime varies, so we check structure).
+    const aLine = lines.find((l) => l.endsWith('a.txt'))
+    const subLine = lines.find((l) => l.endsWith('subdir/'))
+    expect(aLine).toBeDefined()
+    expect(subLine).toBeDefined()
+    expect(aLine).toContain('FILE')
+    expect(aLine).toContain('5B')            // 'hello' is 5 bytes
+    expect(subLine).toContain('DIR')
+    expect(subLine).toContain('-')            // size placeholder
+  })
+
+  it('hides dotfiles by default', async () => {
+    await writeFile(join(workdir, '.env'), 'SECRET=value')
+    await writeFile(join(workdir, '.gitignore'), 'node_modules')
+    await writeFile(join(workdir, 'visible.ts'), 'export {}')
+
+    const result = await listDirectory(workdir, defaultOpts)
+
+    expect(result).toContain('visible.ts')
+    expect(result).not.toContain('.env')
+    expect(result).not.toContain('.gitignore')
+  })
+
+  it('includes dotfiles when showHidden is true', async () => {
+    await writeFile(join(workdir, '.env'), 'SECRET=value')
+    await writeFile(join(workdir, 'visible.ts'), 'export {}')
+
+    const result = await listDirectory(workdir, { ...defaultOpts, showHidden: true })
+
+    expect(result).toContain('visible.ts')
+    expect(result).toContain('.env')
+  })
+
+  it('sorts entries case-insensitively by name', async () => {
+    await writeFile(join(workdir, 'Zebra.json'), '1')
+    await writeFile(join(workdir, 'apple.ts'), '2')
+    await writeFile(join(workdir, 'Banana.md'), '3')
+
+    const result = await listDirectory(workdir, defaultOpts)
+    const lines = result.split('\n').slice(1)  // drop header
+
+    const names = lines.map((l) => l.split(/\s+/).pop()!)
+    expect(names).toEqual(['apple.ts', 'Banana.md', 'Zebra.json'])
+  })
+
+  it('sorts entries with leading dots when shown', async () => {
+    await writeFile(join(workdir, '.a'), '1')
+    await writeFile(join(workdir, 'b'), '2')
+    await writeFile(join(workdir, '.c'), '3')
+
+    const result = await listDirectory(workdir, { ...defaultOpts, showHidden: true })
+    const lines = result.split('\n').slice(1)
+    const names = lines.map((l) => l.split(/\s+/).pop()!)
+    // Dot-prefixed names sort by their remaining characters, so '.a' < '.c' < 'b'
+    expect(names).toEqual(['.a', '.c', 'b'])
+  })
+
+  it('returns (empty directory) for an empty dir', async () => {
+    const result = await listDirectory(workdir, defaultOpts)
+    expect(result).toBe('(empty directory)')
+  })
+
+  it('returns (empty directory) when only hidden files exist and showHidden is false', async () => {
+    await writeFile(join(workdir, '.hidden'), 'secret')
+    const result = await listDirectory(workdir, defaultOpts)
+    expect(result).toBe('(empty directory)')
+  })
+
+  it('throws EACCES-error-shaped rejection when directory is unreadable', async () => {
+    // Skip on Windows — chmod bits don't translate cleanly.
+    if (process.platform === 'win32') return
+
+    await mkdir(join(workdir, 'locked'), { mode: 0o600 })
+    // Drop read+execute for everyone (and owner too to make readdir fail).
+    await import('fs/promises').then((fs) => fs.chmod(join(workdir, 'locked'), 0o000))
+
+    await expect(listDirectory(join(workdir, 'locked'), defaultOpts))
+      .rejects.toThrow()
   })
 })

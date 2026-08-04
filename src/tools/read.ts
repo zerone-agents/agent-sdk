@@ -7,9 +7,10 @@
  * 3. Text → line-numbered content
  */
 
-import { readFile, stat } from 'fs/promises'
-import { resolve, extname, dirname } from 'path'
+import { readFile, stat, readdir, lstat } from 'fs/promises'
+import { resolve, extname, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
+import type { Stats } from 'fs'
 import { defineTool } from './types.js'
 
 const SAMPLE_BYTES = 4096
@@ -263,6 +264,138 @@ export function formatEntryRow(
   if (entry.type === 'DIR') name += '/'
   if (entry.brokenLink) name += ' (broken link)'
   return `  ${typeStr}  ${sizeStr}  ${mtimeStr}  ${name}`
+}
+
+export interface ListDirOptions {
+  showHidden: boolean
+  offset: number
+  limit: number
+}
+
+/**
+ * List a directory's top-level entries, formatted as an aligned text block.
+ * Behavior:
+ *   - Hidden entries (name starts with '.') excluded unless showHidden.
+ *   - Sorted by name, case-insensitive.
+ *   - Never recursive.
+ *   - Pagination via offset/limit, with MAX_ENTRIES hard cap.
+ *
+ * Throws if the directory cannot be read (ENOENT, EACCES, etc.) — the
+ * caller is responsible for catching and converting to tool_error.
+ */
+export async function listDirectory(
+  path: string,
+  options: ListDirOptions,
+): Promise<string> {
+  const MAX_ENTRIES = 200
+  const effectiveLimit = Math.min(options.limit, MAX_ENTRIES)
+
+  const dirents = await readdir(path, { withFileTypes: true })
+
+  let names = dirents.map((d) => d.name)
+  if (!options.showHidden) {
+    names = names.filter((n) => !n.startsWith('.'))
+  }
+
+  if (names.length === 0) {
+    return '(empty directory)'
+  }
+
+  // Build DirEntry for each name. Use lstat first to detect symlinks.
+  // Stat failures on individual entries are tolerated (entry skipped).
+  const entries: DirEntry[] = []
+  for (const name of names) {
+    const fullPath = join(path, name)
+    let lstatResult: Stats
+    try {
+      lstatResult = await lstat(fullPath)
+    } catch {
+      continue  // skip entries we can't even lstat
+    }
+
+    let type: DirEntry['type']
+    if (lstatResult.isSymbolicLink()) type = 'LINK'
+    else if (lstatResult.isDirectory()) type = 'DIR'
+    else if (lstatResult.isFile()) type = 'FILE'
+    else type = 'OTHER'
+
+    // For symlinks, attempt stat() to detect broken links and to capture
+    // target mtime. If stat fails, mark as broken link.
+    let size: number | null = null
+    let mtime: Date
+    let brokenLink = false
+
+    if (type === 'LINK') {
+      try {
+        const targetStat = await stat(fullPath)
+        mtime = targetStat.mtime
+        // Size stays null — symlinks display '->' regardless of target.
+      } catch {
+        brokenLink = true
+        mtime = lstatResult.mtime
+      }
+    } else {
+      size = lstatResult.size
+      mtime = lstatResult.mtime
+    }
+
+    entries.push({ name, type, size, mtime, brokenLink })
+  }
+
+  // Sort case-insensitively, stable for cross-platform parity.
+  entries.sort((a, b) => {
+    const la = a.name.toLowerCase()
+    const lb = b.name.toLowerCase()
+    if (la < lb) return -1
+    if (la > lb) return 1
+    return 0
+  })
+
+  // Apply pagination. (Footer logic added in Task 4.)
+  const total = entries.length
+  const sliced = entries.slice(options.offset, options.offset + effectiveLimit)
+
+  return formatEntries(sliced, { offset: options.offset, total, effectiveLimit })
+}
+
+/**
+ * Format a slice of DirEntries as the final string output, including
+ * header row, alignment, and (in Task 4) pagination footer.
+ */
+function formatEntries(
+  entries: DirEntry[],
+  pageInfo: { offset: number; total: number; effectiveLimit: number },
+): string {
+  if (entries.length === 0) {
+    // After pagination, no rows left to show. (Not the same as empty dir.)
+    return '(no entries in this range)'
+  }
+
+  // Compute column widths from the visible rows + the header label.
+  const header = { type: 'TYPE', size: 'SIZE', mtime: 'MTIME' }
+  const widths = {
+    type: Math.max(header.type.length, ...entries.map((e) => e.type.length)),
+    size: Math.max(header.size.length, ...entries.map((e) => {
+      if (e.type === 'DIR') return 1
+      if (e.type === 'LINK') return 2
+      return formatSize(e.size ?? 0).length
+    })),
+    mtime: Math.max(header.mtime.length, 'MMM DD HH:mm'.length),
+  }
+
+  const headerRow = `  ${header.type.padStart(widths.type)}  ${header.size.padStart(widths.size)}  ${header.mtime.padEnd(widths.mtime)}  NAME`
+  const rows = entries.map((e) => formatEntryRow(e, widths))
+
+  let result = [headerRow, ...rows].join('\n')
+
+  // Pagination footer added in Task 4.
+  const shownCount = entries.length
+  const remaining = pageInfo.total - pageInfo.offset - shownCount
+  if (remaining > 0) {
+    result += `\n\n(还有 ${remaining} 条未显示 — 请用 Glob 工具或细化路径)`
+  }
+
+  return result
 }
 
 export const FileReadTool = defineTool({
