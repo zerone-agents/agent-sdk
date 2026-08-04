@@ -61,3 +61,68 @@ describe('compactConversationWithProtectedTail protectedTurns', () => {
     expect(kept).not.toContain('turn3')
   })
 })
+
+describe('buildCompactionPrompt content rules', () => {
+  /** Mock provider：捕获收到的压缩 prompt */
+  function captureProvider(): { provider: LLMProvider; getPrompt: () => string } {
+    let prompt = ''
+    return {
+      getPrompt: () => prompt,
+      provider: {
+        apiType: 'anthropic-messages',
+        async createMessage(params: any): Promise<CreateMessageResponse> {
+          prompt = params.messages[0].content
+          return {
+            content: [{ type: 'text', text: 'S' }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          } as CreateMessageResponse
+        },
+      },
+    }
+  }
+
+  function toolConversation(): NormalizedMessageParam[] {
+    return [
+      userMsg('x'.repeat(9000)),                                        // 超长 user 文本
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'y'.repeat(9000) },                     // 超长 assistant 文本
+          { type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/a/b.ts', offset: 10 } },
+        ],
+      } as any,
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'z'.repeat(9000) }],
+      } as any,
+      assistantMsg('last'),
+    ]
+  }
+
+  it('truncates all text kinds to 5000 chars keeping head and tail', async () => {
+    const { provider, getPrompt } = captureProvider()
+    await drain(compactConversationWithProtectedTail(provider, 'm', toolConversation(), createAutoCompactState(), 0))
+    const p = getPrompt()
+
+    // 三类内容（user 纯文本、assistant 文本块、tool_result）各截一次
+    const markerCount = p.split('...(truncated)...').length - 1
+    expect(markerCount).toBe(3)
+
+    // 9000 字符的原始完整内容不再出现
+    expect(p).not.toContain('x'.repeat(9000))
+    expect(p).not.toContain('y'.repeat(9000))
+    expect(p).not.toContain('z'.repeat(9000))
+
+    // 首尾各保留 2500：头部 2500 应存在（尾部与头部字符相同，无法区分，验证头部长度即可）
+    expect(p).toContain('x'.repeat(2500))
+    expect(p).toContain('y'.repeat(2500))
+    expect(p).toContain('z'.repeat(2500))
+  })
+
+  it('keeps tool_use key arguments instead of dropping them', async () => {
+    const { provider, getPrompt } = captureProvider()
+    await drain(compactConversationWithProtectedTail(provider, 'm', toolConversation(), createAutoCompactState(), 0))
+    expect(getPrompt()).toContain('[Tool: Read')
+    expect(getPrompt()).toContain('/a/b.ts')
+  })
+})
