@@ -571,6 +571,7 @@ Full examples are in [`examples/`](examples/) organized by category:
 | --- | --- |
 | [`examples/skills/12-skills.ts`](examples/skills/12-skills.ts) | Skill system usage |
 | [`examples/skills/14-filesystem-skills-agent.ts`](examples/skills/14-filesystem-skills-agent.ts) | Filesystem skills loading |
+| [`examples/skills/15-nested-skills.ts`](examples/skills/15-nested-skills.ts) | Nested skill directories + frontmatter override + variable substitution |
 
 ### Sessions & History
 
