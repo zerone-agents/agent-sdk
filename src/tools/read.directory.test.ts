@@ -331,3 +331,84 @@ describe('listDirectory — pagination and truncation', () => {
     expect(lines.length).toBe(6)
   })
 })
+
+import { symlink } from 'fs/promises'
+
+describe('listDirectory — symlinks', () => {
+  let workdir: string
+
+  beforeEach(async () => {
+    workdir = await mkdtemp(join(tmpdir(), 'readdir-sym-'))
+  })
+
+  afterEach(async () => {
+    await rm(workdir, { recursive: true, force: true })
+  })
+
+  it('formats a valid symlink to a file as LINK with -> for size', async () => {
+    const target = join(workdir, 'target.txt')
+    await writeFile(target, 'hello')
+    const link = join(workdir, 'link.txt')
+    await symlink(target, link)
+
+    const result = await listDirectory(workdir, { showHidden: false, offset: 0, limit: 200 })
+    const lines = result.split('\n')
+    const linkLine = lines.find((l) => l.endsWith('link.txt'))
+    const targetLine = lines.find((l) => l.endsWith('target.txt'))
+
+    expect(linkLine).toBeDefined()
+    expect(targetLine).toBeDefined()
+    expect(linkLine).toContain('LINK')
+    expect(linkLine).toContain('->')
+    expect(linkLine).not.toContain('(broken link)')
+    // Target is reported as a regular FILE.
+    expect(targetLine).toContain('FILE')
+  })
+
+  it('formats a valid symlink to a directory with no trailing slash on link name', async () => {
+    const targetDir = join(workdir, 'realdir')
+    await mkdir(targetDir)
+    const link = join(workdir, 'linkdir')
+    await symlink(targetDir, link)
+
+    const result = await listDirectory(workdir, { showHidden: false, offset: 0, limit: 200 })
+    const lines = result.split('\n')
+    const linkLine = lines.find((l) => l.includes('linkdir'))
+    // Symlink-to-dir is still a LINK, not a DIR; no trailing slash.
+    expect(linkLine).toContain('LINK')
+    expect(linkLine).not.toMatch(/linkdir\/$/)
+  })
+
+  it('marks a broken symlink with (broken link) suffix', async () => {
+    // Point at a path that does not exist.
+    const link = join(workdir, 'dangling')
+    await symlink(join(workdir, 'nope'), link)
+
+    const result = await listDirectory(workdir, { showHidden: false, offset: 0, limit: 200 })
+    expect(result).toContain('LINK')
+    expect(result).toContain('dangling (broken link)')
+  })
+
+  it('does not abort the listing when one entry is a broken symlink', async () => {
+    await writeFile(join(workdir, 'good.txt'), 'ok')
+    await symlink(join(workdir, 'nope'), join(workdir, 'bad'))
+
+    const result = await listDirectory(workdir, { showHidden: false, offset: 0, limit: 200 })
+    expect(result).toContain('good.txt')
+    expect(result).toContain('bad (broken link)')
+  })
+
+  it('reports a symlink-loop as a broken link, listed exactly once', async () => {
+    // Create a -> b -> a loop. Both should be detected as broken.
+    const a = join(workdir, 'a')
+    const b = join(workdir, 'b')
+    await symlink(b, a)
+    await symlink(a, b)
+
+    const result = await listDirectory(workdir, { showHidden: false, offset: 0, limit: 200 })
+    const aMatches = result.split('\n').filter((l) => l.includes('a (broken link)'))
+    const bMatches = result.split('\n').filter((l) => l.includes('b (broken link)'))
+    expect(aMatches.length).toBe(1)
+    expect(bMatches.length).toBe(1)
+  })
+})
