@@ -265,6 +265,7 @@ export async function* compactConversationWithProtectedTail(
   model: string,
   messages: NormalizedMessageParam[],
   state: AutoCompactState,
+  protectedTurns: number = PRUNE_PROTECTED_TURNS,
 ): AsyncGenerator<SDKCompactMessage, {
   messages: NormalizedMessageParam[]
   state: AutoCompactState
@@ -284,7 +285,7 @@ export async function* compactConversationWithProtectedTail(
       userMsgIndices.push(i)
     }
   }
-  const protectedStart = Math.max(0, userMsgIndices.length - PRUNE_PROTECTED_TURNS)
+  const protectedStart = Math.max(0, userMsgIndices.length - protectedTurns)
   const cutoffIndex = protectedStart < userMsgIndices.length
     ? userMsgIndices[protectedStart]
     : historyMsgs.length
