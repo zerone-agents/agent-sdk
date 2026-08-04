@@ -1,19 +1,24 @@
 /**
  * Example 31: Session Context Round Limit (maxSessionTurns)
  *
- * Demonstrates how maxSessionTurns limits the conversation rounds sent to
- * the LLM API while the session transcript retains the full history.
+ * Demonstrates how maxSessionTurns bounds the conversation via halved
+ * compaction: when the session exceeds N rounds, the older half is
+ * summarized by the LLM and the summary replaces it in the persistent
+ * transcript, while the most recent half is kept verbatim.
  *
  * The example runs 5 turns of conversation. Each turn asks the agent to
- * remember a number. With maxSessionTurns: 2, the LLM only sees the last
- * 2 rounds on each call — so it "forgets" numbers from earlier turns.
+ * remember a number. With maxSessionTurns: 2, rounds beyond the limit are
+ * compacted into a summary — so the agent can still recall earlier numbers
+ * from the summary even though their raw messages are gone.
  *
  * Key points:
- * - Session transcript (agent.getMessages()) always has ALL messages
- * - Only the API call is truncated to the last N rounds
+ * - On overflow, the persistent transcript is rewritten to
+ *   [summary pair, ...recent half] (old raw rounds are NOT preserved)
+ * - Compaction reuses the standard compact flow and emits `compact` events
+ * - If the summary call fails, the engine falls back to hard truncation
  * - maxSessionTurns can be set at agent creation or overridden per-query
  *
- * Run: npx tsx examples/31-session-turn-limit.ts
+ * Run: npx tsx examples/sessions/31-session-turn-limit.ts
  */
 import { createAgent, truncateToLastNTurns } from '../../src/index.js'
 import type { NormalizedMessageParam } from '../../src/providers/types.js'
@@ -44,12 +49,13 @@ async function main() {
     })
     console.log(`  ${result.text}`)
     console.log(`  Tokens: ${result.usage.input_tokens} in / ${result.usage.output_tokens} out`)
-    console.log(`  Session history: ${agent.getMessages().length} messages (full transcript)\n`)
+    console.log(`  Session history: ${agent.getMessages().length} messages\n`)
   }
 
-  // Show that full history is preserved in the session
+  // Show the persistent transcript: old rounds have been replaced by a
+  // summary, recent rounds remain verbatim.
   const fullMessages: Message[] = agent.getMessages()
-  console.log('--- Full session transcript (all rounds, never truncated) ---')
+  console.log('--- Persistent transcript (older rounds compacted into a summary) ---')
   for (const msg of fullMessages) {
     const role = msg.message.role
     const content = msg.message.content
@@ -64,8 +70,9 @@ async function main() {
     }
   }
 
-  // Demonstrate the utility function directly
-  console.log('\n--- truncateToLastNTurns() utility demo ---')
+  // Demonstrate the utility function directly. truncateToLastNTurns is the
+  // hard-truncation fallback used when the summary call fails.
+  console.log('\n--- truncateToLastNTurns() utility demo (fallback path) ---')
   const sampleMessages: NormalizedMessageParam[] = [
     { role: 'user', content: 'turn 1' },
     { role: 'assistant', content: 'response 1' },
