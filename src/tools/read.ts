@@ -215,6 +215,56 @@ export function formatSize(bytes: number): string {
   return `${formatted}${units[unitIndex]}`
 }
 
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * Format a Date as 'MMM DD HH:mm' (24h, English month abbreviations).
+ * Day and hour are zero-padded to two digits.
+ */
+export function formatMtime(mtime: Date): string {
+  const month = MONTH_NAMES[mtime.getMonth()]
+  const day = String(mtime.getDate()).padStart(2, '0')
+  const hour = String(mtime.getHours()).padStart(2, '0')
+  const minute = String(mtime.getMinutes()).padStart(2, '0')
+  return `${month} ${day} ${hour}:${minute}`
+}
+
+/**
+ * One directory entry, normalized for formatting.
+ * - size is null for directories and symlinks (broken or not).
+ * - brokenLink is only true when type === 'LINK' and stat() failed.
+ */
+export interface DirEntry {
+  name: string
+  type: 'DIR' | 'FILE' | 'LINK' | 'OTHER'
+  size: number | null
+  mtime: Date
+  brokenLink: boolean
+}
+
+/**
+ * Format a single DirEntry as one aligned row.
+ * Layout: 2sp + TYPE(right-aligned to width) + 2sp + SIZE(right-aligned) + 2sp + MTIME(left-justified) + 2sp + NAME
+ * Directories get trailing '/', symlinks get '->' in SIZE, broken links get ' (broken link)' suffix.
+ */
+export function formatEntryRow(
+  entry: DirEntry,
+  widths: { type: number; size: number; mtime: number },
+): string {
+  const typeStr = entry.type.padStart(widths.type)
+  let sizeStr: string
+  if (entry.type === 'DIR') sizeStr = '-'
+  else if (entry.type === 'LINK') sizeStr = '->'
+  else sizeStr = formatSize(entry.size ?? 0)
+  sizeStr = sizeStr.padStart(widths.size)
+  const mtimeStr = formatMtime(entry.mtime).padEnd(widths.mtime)
+  let name = entry.name
+  if (entry.type === 'DIR') name += '/'
+  if (entry.brokenLink) name += ' (broken link)'
+  return `  ${typeStr}  ${sizeStr}  ${mtimeStr}  ${name}`
+}
+
 export const FileReadTool = defineTool({
   name: 'Read',
   description: 'Read a file from the filesystem. Returns content with line numbers. Supports text files, images (returns visual content), and PDFs.',
