@@ -136,13 +136,10 @@ export function formatSkillsForSystemPrompt(skills?: SkillDefinition[]): string 
   const sorted = [...invocable].sort((a, b) => a.name.localeCompare(b.name))
 
   const skillXml = sorted.map((skill) => {
-    const locationLine = skill.location
-      ? `\n    <location>file://${skill.location}</location>`
-      : ''
     return [
       '  <skill>',
       `    <name>${skill.name}</name>`,
-      `    <description>${skill.description}</description>${locationLine}`,
+      `    <description>${skill.description}</description>`,
       '  </skill>',
     ].join('\n')
   })
