@@ -261,3 +261,73 @@ describe('listDirectory — core', () => {
       .rejects.toThrow()
   })
 })
+
+describe('listDirectory — pagination and truncation', () => {
+  let workdir: string
+  let bigDir: string
+
+  beforeEach(async () => {
+    workdir = await mkdtemp(join(tmpdir(), 'readdir-page-'))
+    bigDir = join(workdir, 'big')
+    await mkdir(bigDir)
+    // Create 250 entries named 000.txt .. 249.txt
+    for (let i = 0; i < 250; i++) {
+      await writeFile(join(bigDir, String(i).padStart(3, '0') + '.txt'), String(i))
+    }
+  })
+
+  afterEach(async () => {
+    await rm(workdir, { recursive: true, force: true })
+  })
+
+  it('caps output at MAX_ENTRIES (200) even when caller asks for more', async () => {
+    const result = await listDirectory(bigDir, { showHidden: false, offset: 0, limit: 1000 })
+    const lines = result.split('\n')
+    // 1 header + 200 entries + 1 blank + 1 footer = 203
+    expect(lines.length).toBe(203)
+    expect(result).toContain('还有 50 条未显示')
+  })
+
+  it('returns exactly 200 rows by default', async () => {
+    const result = await listDirectory(bigDir, { showHidden: false, offset: 0, limit: 200 })
+    const dataLines = result.split('\n').slice(1)  // drop header
+    // 200 entries + 1 blank separator + 1 footer line = 202 after dropping header
+    expect(dataLines.length).toBe(202)
+    expect(result).toContain('还有 50 条未显示')
+  })
+
+  it('honors offset to skip the first N entries', async () => {
+    const result = await listDirectory(bigDir, { showHidden: false, offset: 200, limit: 200 })
+    const lines = result.split('\n').slice(1)
+    // Remaining: 250 - 200 = 50 entries, no footer
+    expect(lines.length).toBe(50)
+    expect(result).not.toContain('还有')
+  })
+
+  it('honors a small limit within a page', async () => {
+    const result = await listDirectory(bigDir, { showHidden: false, offset: 10, limit: 5 })
+    const lines = result.split('\n').slice(1)
+    // 5 entries + 1 blank separator + 1 footer line = 7 after dropping header
+    expect(lines.length).toBe(7)
+    expect(result).toContain('还有 235 条未显示')
+  })
+
+  it('returns no-entries message when offset exceeds total', async () => {
+    const result = await listDirectory(bigDir, { showHidden: false, offset: 500, limit: 10 })
+    expect(result).toBe('(no entries in this range)')
+  })
+
+  it('does not show footer when all entries fit', async () => {
+    // Create a small dir with 5 entries
+    const small = join(workdir, 'small')
+    await mkdir(small)
+    for (let i = 0; i < 5; i++) {
+      await writeFile(join(small, `f${i}.txt`), 'x')
+    }
+    const result = await listDirectory(small, { showHidden: false, offset: 0, limit: 200 })
+    expect(result).not.toContain('还有')
+    const lines = result.split('\n')
+    // 1 header + 5 entries
+    expect(lines.length).toBe(6)
+  })
+})
