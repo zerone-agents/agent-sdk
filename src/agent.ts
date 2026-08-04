@@ -53,7 +53,7 @@ import { DefaultToolServices } from './tools/default-services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
 export type QueryOverrides = Partial<AgentOptions> &
-  Partial<Pick<AgentDefinition, 'allowedTools' | 'disallowedTools' | 'allowedSkills'>>
+  Partial<Pick<AgentDefinition, 'allowedTools' | 'disallowedTools' | 'availableSkills'>>
 
 // --------------------------------------------------------------------------
 // Internal config groups (Task 16: organize 55 AgentOptions fields into 7 groups)
@@ -530,7 +530,7 @@ export class Agent {
       ...definition,
       allowedTools: overrides?.allowedTools ?? definition.allowedTools,
       disallowedTools: overrides?.disallowedTools ?? definition.disallowedTools,
-      allowedSkills: overrides?.allowedSkills ?? definition.allowedSkills,
+      availableSkills: overrides?.availableSkills ?? definition.availableSkills,
     }
     const env = this.buildEnv(opts, provider)
     const resolved = resolveAgent(env, mergedDefinition)
@@ -913,17 +913,17 @@ export class Agent {
    * Get the list of allowed skills (whitelist).
    */
   getAllowedSkills(): string[] | undefined {
-    return this.cfg.agent?.allowedSkills
+    return this.cfg.agent?.availableSkills
   }
 
   /**
    * Set the allowed skills whitelist.
    */
-  setAllowedSkills(allowedSkills: string[] | undefined): void {
+  setAvailableSkills(availableSkills: string[] | undefined): void {
     if (this.cfg.agent) {
-      this.cfg.agent.allowedSkills = allowedSkills
-    } else if (allowedSkills !== undefined) {
-      this.cfg.agent = { description: 'Main agent', prompt: '', allowedSkills }
+      this.cfg.agent.availableSkills = availableSkills
+    } else if (availableSkills !== undefined) {
+      this.cfg.agent = { description: 'Main agent', prompt: '', availableSkills }
     }
   }
 

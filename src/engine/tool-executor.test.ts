@@ -57,7 +57,7 @@ function makeCtx(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionCo
         settingSources: [],
       },
       resolved: {
-        definition: { prompt: 'test', allowedTools: [], allowedSkills: [] },
+        definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
         tools: [],
         skills: [],
       },
@@ -321,7 +321,7 @@ describe('runToolsBackground', () => {
       config: {
         ...makeCtx().config,
         resolved: {
-          definition: { prompt: 'test', allowedTools: [], allowedSkills: [] },
+          definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
           tools,
           skills: [],
         },
@@ -435,7 +435,7 @@ describe('runToolsBackground', () => {
       config: {
         ...makeCtx().config,
         resolved: {
-          definition: { prompt: 'test', allowedTools: [], allowedSkills: [] },
+          definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
           tools: [tool],
           skills: [],
         },
@@ -465,7 +465,7 @@ describe('executeTools', () => {
       config: {
         ...makeCtx().config,
         resolved: {
-          definition: { prompt: 'test', allowedTools: [], allowedSkills: [] },
+          definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
           tools,
           skills: [],
         },
@@ -525,7 +525,7 @@ describe('executeTools', () => {
       config: {
         ...makeCtx().config,
         resolved: {
-          definition: { prompt: 'test', allowedTools: [], allowedSkills: [] },
+          definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
           tools: [slowTool],
           skills: [],
         },

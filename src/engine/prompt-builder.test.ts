@@ -13,7 +13,7 @@ function makeConfig(overrides: Partial<QueryEngineConfig> = {}): QueryEngineConf
       settingSources: [],
     },
     resolved: {
-      definition: { prompt: 'You are a test agent', allowedTools: [], allowedSkills: [] },
+      definition: { prompt: 'You are a test agent', allowedTools: [], availableSkills: [] },
       tools: [],
       skills: [],
     },
@@ -32,7 +32,7 @@ describe('buildSystemPrompt', () => {
   it('includes appendPrompt when provided', async () => {
     const config = makeConfig({
       resolved: {
-        definition: { prompt: 'Base', appendPrompt: 'Extra instructions', allowedTools: [], allowedSkills: [] },
+        definition: { prompt: 'Base', appendPrompt: 'Extra instructions', allowedTools: [], availableSkills: [] },
         tools: [],
         skills: [],
       },

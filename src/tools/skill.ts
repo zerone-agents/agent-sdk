@@ -175,14 +175,10 @@ export const SkillTool: ToolDefinition = {
       }
     }
 
-    if (!ctx.resolvedSkills.some((s) => s.name === skill.name)) {
-      return {
-        type: 'tool_result',
-        tool_use_id: toolUseId,
-        content: `Error: Skill "${skillName}" is not in the allowed skills list`,
-        is_error: true,
-      }
-    }
+    // Note: we intentionally do NOT enforce resolvedSkills (availableSkills)
+    // at runtime. The allowlist only filters what the model "sees" in the
+    // system prompt; if the user/model explicitly invokes a skill by name,
+    // we let it through. The user is the source of truth.
 
     try {
       const contentBlocks = await skill.getPrompt(args, context)

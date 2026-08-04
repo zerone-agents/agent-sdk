@@ -424,7 +424,7 @@ export interface AgentDefinition {
   allowedTools?: string[]
   disallowedTools?: string[]
   /** Skill allow-list (consumed by resolveAgent). */
-  allowedSkills?: string[]
+  availableSkills?: string[]
   maxTurns?: number
 }
 
@@ -499,7 +499,7 @@ export interface OutputFormat {
 // Setting Sources
 // --------------------------------------------------------------------------
 
-export type SettingSource = 'user' | 'project' | 'local'
+export type SettingSource = 'user' | 'project'
 
 export type SkillSource = 'programmatic' | 'user' | 'project'
 

@@ -18,7 +18,7 @@ export function resolveAgent(env: AgentEnvironment, definition: AgentDefinition)
   const tools = filterTools(pool, definition.allowedTools, definition.disallowedTools)
   const skills = filterSkillsByAllowlist(
     env.skillRegistry.getUserInvocable(),
-    definition.allowedSkills,
+    definition.availableSkills,
   )
   return { definition, tools, skills }
 }
