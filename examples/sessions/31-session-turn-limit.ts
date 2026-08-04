@@ -22,7 +22,6 @@
  */
 import { createAgent, truncateToLastNTurns } from '../../src/index.js'
 import type { NormalizedMessageParam } from '../../src/providers/types.js'
-import type { Message } from '../../src/types.js'
 
 async function main() {
   console.log('--- Example 31: Session Context Round Limit (maxSessionTurns) ---\n')
@@ -54,11 +53,13 @@ async function main() {
 
   // Show the persistent transcript: old rounds have been replaced by a
   // summary, recent rounds remain verbatim.
-  const fullMessages: Message[] = agent.getMessages()
+  // NOTE: getMessages() returns the append-only audit log (never compacted);
+  // getMessageHistory() returns the live engine transcript (compacted).
+  const fullMessages = await agent.getMessageHistory()
   console.log('--- Persistent transcript (older rounds compacted into a summary) ---')
   for (const msg of fullMessages) {
-    const role = msg.message.role
-    const content = msg.message.content
+    const role = msg.role
+    const content = msg.content
     if (typeof content === 'string') {
       console.log(`  [${role}] ${content.slice(0, 80)}`)
     } else if (Array.isArray(content)) {
