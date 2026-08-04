@@ -7,9 +7,10 @@
  * 3. Text → line-numbered content
  */
 
-import { readFile, stat } from 'fs/promises'
-import { resolve, extname, dirname } from 'path'
+import { readFile, stat, readdir, lstat } from 'fs/promises'
+import { resolve, extname, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
+import type { Stats } from 'fs'
 import { defineTool } from './types.js'
 
 const SAMPLE_BYTES = 4096
@@ -195,23 +196,241 @@ async function extractPdfText(filePath: string): Promise<ExtractPdfResult> {
   return { text: fullText.trimEnd(), pageCount, fieldCount }
 }
 
+/**
+ * Format a byte count as a human-readable size string.
+ *  - < 1024:           raw bytes with 'B' suffix
+ *  - < 10 of unit:     one decimal place (e.g. '1.5K')
+ *  - >= 10 of unit:    rounded integer (e.g. '12M')
+ * Units: B, K, M, G, T. Caps at T (no P or beyond).
+ *
+ * @internal
+ */
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`
+  const units = ['K', 'M', 'G', 'T']
+  let value = bytes / 1024
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex++
+  }
+  const formatted = value < 10 ? value.toFixed(1) : Math.round(value).toString()
+  return `${formatted}${units[unitIndex]}`
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * Format a Date as 'MMM DD HH:mm' (24h, English month abbreviations).
+ * Day and hour are zero-padded to two digits.
+ *
+ * @internal
+ */
+export function formatMtime(mtime: Date): string {
+  const month = MONTH_NAMES[mtime.getMonth()]
+  const day = String(mtime.getDate()).padStart(2, '0')
+  const hour = String(mtime.getHours()).padStart(2, '0')
+  const minute = String(mtime.getMinutes()).padStart(2, '0')
+  return `${month} ${day} ${hour}:${minute}`
+}
+
+/**
+ * One directory entry, normalized for formatting.
+ * - size is null for directories and symlinks (broken or not).
+ * - brokenLink is only true when type === 'LINK' and stat() failed.
+ *
+ * @internal
+ */
+export interface DirEntry {
+  name: string
+  type: 'DIR' | 'FILE' | 'LINK' | 'OTHER'
+  size: number | null
+  mtime: Date
+  brokenLink: boolean
+}
+
+/**
+ * Format a single DirEntry as one aligned row.
+ * Layout: 2sp + TYPE(right-aligned to width) + 2sp + SIZE(right-aligned) + 2sp + MTIME(left-justified) + 2sp + NAME
+ * Directories get trailing '/', symlinks get '->' in SIZE, broken links get ' (broken link)' suffix.
+ *
+ * @internal
+ */
+export function formatEntryRow(
+  entry: DirEntry,
+  widths: { type: number; size: number; mtime: number },
+): string {
+  const typeStr = entry.type.padStart(widths.type)
+  let sizeStr: string
+  if (entry.type === 'DIR') sizeStr = '-'
+  else if (entry.type === 'LINK') sizeStr = '->'
+  else sizeStr = formatSize(entry.size ?? 0)
+  sizeStr = sizeStr.padStart(widths.size)
+  const mtimeStr = formatMtime(entry.mtime).padEnd(widths.mtime)
+  let name = entry.name
+  if (entry.type === 'DIR') name += '/'
+  if (entry.brokenLink) name += ' (broken link)'
+  return `  ${typeStr}  ${sizeStr}  ${mtimeStr}  ${name}`
+}
+
+/** @internal */
+export interface ListDirOptions {
+  showHidden: boolean
+  offset: number
+  limit: number
+}
+
+/**
+ * List a directory's top-level entries, formatted as an aligned text block.
+ * Behavior:
+ *   - Hidden entries (name starts with '.') excluded unless showHidden.
+ *   - Sorted by name, case-insensitive.
+ *   - Never recursive.
+ *   - Pagination via offset/limit, with MAX_ENTRIES hard cap.
+ *
+ * Throws if the directory cannot be read (ENOENT, EACCES, etc.) — the
+ * caller is responsible for catching and converting to tool_error.
+ *
+ * @internal
+ */
+export async function listDirectory(
+  path: string,
+  options: ListDirOptions,
+): Promise<string> {
+  const MAX_ENTRIES = 200
+  const effectiveLimit = Math.min(options.limit, MAX_ENTRIES)
+
+  const dirents = await readdir(path, { withFileTypes: true })
+
+  let names = dirents.map((d) => d.name)
+  if (!options.showHidden) {
+    names = names.filter((n) => !n.startsWith('.'))
+  }
+
+  if (names.length === 0) {
+    return '(empty directory)'
+  }
+
+  // Build DirEntry for each name. Use lstat first to detect symlinks.
+  // Stat failures on individual entries are tolerated (entry skipped).
+  const entries: DirEntry[] = []
+  for (const name of names) {
+    const fullPath = join(path, name)
+    let lstatResult: Stats
+    try {
+      lstatResult = await lstat(fullPath)
+    } catch {
+      continue  // skip entries we can't even lstat
+    }
+
+    let type: DirEntry['type']
+    if (lstatResult.isSymbolicLink()) type = 'LINK'
+    else if (lstatResult.isDirectory()) type = 'DIR'
+    else if (lstatResult.isFile()) type = 'FILE'
+    else type = 'OTHER'
+
+    // For symlinks, attempt stat() to detect broken links and to capture
+    // target mtime. If stat fails, mark as broken link.
+    let size: number | null = null
+    let mtime: Date
+    let brokenLink = false
+
+    if (type === 'LINK') {
+      try {
+        const targetStat = await stat(fullPath)
+        mtime = targetStat.mtime
+        // Size stays null — symlinks display '->' regardless of target.
+      } catch {
+        brokenLink = true
+        mtime = lstatResult.mtime
+      }
+    } else {
+      size = lstatResult.size
+      mtime = lstatResult.mtime
+    }
+
+    entries.push({ name, type, size, mtime, brokenLink })
+  }
+
+  // Sort case-insensitively, stable for cross-platform parity.
+  entries.sort((a, b) => {
+    const la = a.name.toLowerCase()
+    const lb = b.name.toLowerCase()
+    if (la < lb) return -1
+    if (la > lb) return 1
+    return 0
+  })
+
+  // Apply pagination.
+  const total = entries.length
+  const sliced = entries.slice(options.offset, options.offset + effectiveLimit)
+
+  return formatEntries(sliced, { offset: options.offset, total, effectiveLimit })
+}
+
+/**
+ * Format a slice of DirEntries as the final string output, including
+ * header row, alignment, and pagination footer.
+ */
+function formatEntries(
+  entries: DirEntry[],
+  pageInfo: { offset: number; total: number; effectiveLimit: number },
+): string {
+  if (entries.length === 0) {
+    // After pagination, no rows left to show. (Not the same as empty dir.)
+    return '(no entries in this range)'
+  }
+
+  // Compute column widths from the visible rows + the header label.
+  const header = { type: 'TYPE', size: 'SIZE', mtime: 'MTIME' }
+  const widths = {
+    type: Math.max(header.type.length, ...entries.map((e) => e.type.length)),
+    size: Math.max(header.size.length, ...entries.map((e) => {
+      if (e.type === 'DIR') return 1
+      if (e.type === 'LINK') return 2
+      return formatSize(e.size ?? 0).length
+    })),
+    mtime: Math.max(header.mtime.length, 'MMM DD HH:mm'.length),
+  }
+
+  const headerRow = `  ${header.type.padStart(widths.type)}  ${header.size.padStart(widths.size)}  ${header.mtime.padEnd(widths.mtime)}  NAME`
+  const rows = entries.map((e) => formatEntryRow(e, widths))
+
+  let result = [headerRow, ...rows].join('\n')
+
+  // Pagination footer.
+  const shownCount = entries.length
+  const remaining = pageInfo.total - pageInfo.offset - shownCount
+  if (remaining > 0) {
+    result += `\n\n(还有 ${remaining} 条未显示 — 请用 Glob 工具或细化路径)`
+  }
+
+  return result
+}
+
 export const FileReadTool = defineTool({
   name: 'Read',
-  description: 'Read a file from the filesystem. Returns content with line numbers. Supports text files, images (returns visual content), and PDFs.',
+  description: 'Read a file or directory from the filesystem. For files: returns content with line numbers; supports text files, images (returns visual content), and PDFs. For directories: returns a formatted listing of top-level entries (type, size, mtime, name).',
   inputSchema: {
     type: 'object',
     properties: {
       file_path: {
         type: 'string',
-        description: 'The absolute path to the file to read',
+        description: 'The absolute path to the file or directory to read',
       },
       offset: {
         type: 'number',
-        description: 'Line number to start reading from (0-based)',
+        description: 'Line number to start reading from (0-based, files); or number of entries to skip (directories).',
       },
       limit: {
         type: 'number',
-        description: 'Maximum number of lines to read',
+        description: 'Maximum number of lines (files) or entries (directories) to read. Capped at 200 for directories.',
+      },
+      show_hidden: {
+        type: 'boolean',
+        description: 'When reading a directory, include hidden files (starting with .). Default: false. Ignored for files.',
+        default: false,
       },
     },
     required: ['file_path'],
@@ -224,7 +443,16 @@ export const FileReadTool = defineTool({
     try {
       const fileStat = await stat(filePath)
       if (fileStat.isDirectory()) {
-        return { data: `Error: ${filePath} is a directory, not a file. Use Bash with 'ls' to list directory contents.`, is_error: true }
+        try {
+          const listing = await listDirectory(filePath, {
+            showHidden: input.show_hidden ?? false,
+            offset: input.offset ?? 0,
+            limit: input.limit ?? 200,
+          })
+          return listing
+        } catch (err: any) {
+          return { data: `Error reading directory: ${err.message}`, is_error: true }
+        }
       }
 
       const ext = getExtension(filePath)
