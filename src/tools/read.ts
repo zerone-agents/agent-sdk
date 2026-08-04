@@ -202,6 +202,8 @@ async function extractPdfText(filePath: string): Promise<ExtractPdfResult> {
  *  - < 10 of unit:     one decimal place (e.g. '1.5K')
  *  - >= 10 of unit:    rounded integer (e.g. '12M')
  * Units: B, K, M, G, T. Caps at T (no P or beyond).
+ *
+ * @internal
  */
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`
@@ -222,6 +224,8 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 /**
  * Format a Date as 'MMM DD HH:mm' (24h, English month abbreviations).
  * Day and hour are zero-padded to two digits.
+ *
+ * @internal
  */
 export function formatMtime(mtime: Date): string {
   const month = MONTH_NAMES[mtime.getMonth()]
@@ -235,6 +239,8 @@ export function formatMtime(mtime: Date): string {
  * One directory entry, normalized for formatting.
  * - size is null for directories and symlinks (broken or not).
  * - brokenLink is only true when type === 'LINK' and stat() failed.
+ *
+ * @internal
  */
 export interface DirEntry {
   name: string
@@ -248,6 +254,8 @@ export interface DirEntry {
  * Format a single DirEntry as one aligned row.
  * Layout: 2sp + TYPE(right-aligned to width) + 2sp + SIZE(right-aligned) + 2sp + MTIME(left-justified) + 2sp + NAME
  * Directories get trailing '/', symlinks get '->' in SIZE, broken links get ' (broken link)' suffix.
+ *
+ * @internal
  */
 export function formatEntryRow(
   entry: DirEntry,
@@ -266,6 +274,7 @@ export function formatEntryRow(
   return `  ${typeStr}  ${sizeStr}  ${mtimeStr}  ${name}`
 }
 
+/** @internal */
 export interface ListDirOptions {
   showHidden: boolean
   offset: number
@@ -282,6 +291,8 @@ export interface ListDirOptions {
  *
  * Throws if the directory cannot be read (ENOENT, EACCES, etc.) — the
  * caller is responsible for catching and converting to tool_error.
+ *
+ * @internal
  */
 export async function listDirectory(
   path: string,
@@ -351,7 +362,7 @@ export async function listDirectory(
     return 0
   })
 
-  // Apply pagination. (Footer logic added in Task 4.)
+  // Apply pagination.
   const total = entries.length
   const sliced = entries.slice(options.offset, options.offset + effectiveLimit)
 
@@ -360,7 +371,7 @@ export async function listDirectory(
 
 /**
  * Format a slice of DirEntries as the final string output, including
- * header row, alignment, and (in Task 4) pagination footer.
+ * header row, alignment, and pagination footer.
  */
 function formatEntries(
   entries: DirEntry[],
@@ -388,7 +399,7 @@ function formatEntries(
 
   let result = [headerRow, ...rows].join('\n')
 
-  // Pagination footer added in Task 4.
+  // Pagination footer.
   const shownCount = entries.length
   const remaining = pageInfo.total - pageInfo.offset - shownCount
   if (remaining > 0) {
