@@ -195,6 +195,26 @@ async function extractPdfText(filePath: string): Promise<ExtractPdfResult> {
   return { text: fullText.trimEnd(), pageCount, fieldCount }
 }
 
+/**
+ * Format a byte count as a human-readable size string.
+ *  - < 1024:           raw bytes with 'B' suffix
+ *  - < 10 of unit:     one decimal place (e.g. '1.5K')
+ *  - >= 10 of unit:    rounded integer (e.g. '12M')
+ * Units: B, K, M, G, T. Caps at T (no P or beyond).
+ */
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`
+  const units = ['K', 'M', 'G', 'T']
+  let value = bytes / 1024
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex++
+  }
+  const formatted = value < 10 ? value.toFixed(1) : Math.round(value).toString()
+  return `${formatted}${units[unitIndex]}`
+}
+
 export const FileReadTool = defineTool({
   name: 'Read',
   description: 'Read a file from the filesystem. Returns content with line numbers. Supports text files, images (returns visual content), and PDFs.',
