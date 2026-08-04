@@ -10,7 +10,7 @@
  * - Tool output: <skill_content> XML with full SKILL.md content, base dir, and file listing
  */
 
-import { readdir } from 'fs/promises'
+import { glob } from 'fs/promises'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 import type { ToolDefinition, ToolResult, ToolContext, SkillContext } from '../types.js'
@@ -20,35 +20,24 @@ import type { ToolDefinition, ToolResult, ToolContext, SkillContext } from '../t
 // --------------------------------------------------------------------------
 
 /**
- * List all files recursively under a directory.
+ * List all files recursively under a skill directory.
  * Returns absolute paths, sampled to at most `limit` entries.
+ * Uses fs.promises.glob (Node 22+).
  */
 async function listSkillFiles(dir: string, limit = 20): Promise<string[]> {
   const results: string[] = []
-
-  async function walk(current: string) {
-    if (results.length >= limit) return
-    let entries
-    try {
-      entries = await readdir(current, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
+  try {
+    for await (const entry of glob('**/*', { cwd: dir, withFileTypes: true })) {
+      if (!entry.isFile()) continue
+      // Skip the SKILL.md itself — the content is already included inline
+      if (entry.name === 'SKILL.md') continue
+      // entry.parentPath is absolute (derived from cwd)
+      results.push(join(entry.parentPath, entry.name))
       if (results.length >= limit) break
-      const fullPath = join(current, entry.name)
-      if (entry.isDirectory()) {
-        await walk(fullPath)
-      } else if (entry.isFile()) {
-        // Skip the SKILL.md itself — the content is already included inline
-        if (entry.name !== 'SKILL.md') {
-          results.push(fullPath)
-        }
-      }
     }
+  } catch {
+    // Directory missing or unreadable — return whatever we have
   }
-
-  await walk(dir)
   return results
 }
 

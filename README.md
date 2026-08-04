@@ -1,12 +1,14 @@
 # Zerone/AgentSDK (TypeScript)
 
 [![npm version](https://img.shields.io/npm/v/@zerone-agent/agent-sdk)](https://www.npmjs.com/package/@zerone-agent/agent-sdk)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
 Open-source Agent SDK that runs the full agent loop **in-process** — no subprocess or CLI required. Supports both **Anthropic** and **OpenAI-compatible** APIs. Deploy anywhere: cloud, serverless, Docker, CI/CD.
 
 ## Get started
+
+**Requires Node.js 22+** (uses native `fs.promises.glob`).
 
 ```bash
 npm install @zerone-agent/agent-sdk
@@ -216,6 +218,17 @@ allowed-tools:
 Analyze the codebase structure and provide recommendations.
 ```
 
+Skills can be organized **flat** (one level deep) or **nested** at any depth — useful for grouping related skills:
+
+```
+.agents/skills/
+├── commit/SKILL.md                # flat
+├── team-a/review/SKILL.md         # nested
+└── team-b/sub/deep/SKILL.md       # deeply nested
+```
+
+The skill name is the **immediate parent directory** of `SKILL.md` (e.g. `team-a/review/SKILL.md` → skill name `review`).
+
 Load in your application:
 
 ```typescript
@@ -230,6 +243,13 @@ const agent = createAgent({
 const agent = createAgent({
   settingSources: ["user"], // Load from ~/.agents/skills/
 });
+
+// Or add extra skill directories (scanned after the defaults):
+const agent = createAgent({
+  settingSources: ["user", "project"],
+  extraUserSkillDirs: ["/opt/shared-skills"],         // tagged source='user'
+  extraProjectSkillDirs: ["../sister-repo/.agents/skills"], // tagged source='project'
+});
 ```
 
 **Setting source priority:**
@@ -237,6 +257,9 @@ const agent = createAgent({
 - `['user']`: Load from `~/.agents/skills/`
 - `['project']`: Load from `${cwd}/.agents/skills/`
 - `['user', 'project']`: Load both (project skills override user skills)
+- `extraUserSkillDirs` / `extraProjectSkillDirs`: additional directories scanned after the defaults, tagged with the corresponding source
+
+> **Note**: Project-sourced skills (from `<cwd>/.agents/skills/` and `extraProjectSkillDirs`) **bypass the `availableSkills` allowlist** — they represent project author intent and always appear in the system prompt. User-level skills are filtered by `availableSkills` if set.
 
 ### Hooks (lifecycle events)
 
@@ -392,7 +415,9 @@ npx tsx examples/web/server.ts
 | `sessionId`          | `string`                                | auto                   | Explicit session ID                                                  |
 | `outputFormat`       | `{ type: 'json_schema', schema }`       | —                      | Structured output                                                    |
 | `sandbox`            | `SandboxSettings`                       | —                      | Filesystem/network sandbox                                           |
-| `settingSources`     | `SettingSource[]`                       | —                      | Load AGENT.md, project settings                                      |
+| `settingSources`     | `SettingSource[]`                       | —                      | Load skills from `~/.agents/skills/` (`user`) and/or `${cwd}/.agents/skills/` (`project`) |
+| `extraUserSkillDirs`     | `string[]`                          | —                      | Additional user-level skill directories (tagged `source='user'`)    |
+| `extraProjectSkillDirs`  | `string[]`                          | —                      | Additional project-level skill directories (tagged `source='project'`, bypass `availableSkills`) |
 | `env`                | `Record<string, string>`                | —                      | Environment variables                                                |
 | `abortController`    | `AbortController`                       | —                      | Cancellation controller                                              |
 
@@ -546,6 +571,7 @@ Full examples are in [`examples/`](examples/) organized by category:
 | --- | --- |
 | [`examples/skills/12-skills.ts`](examples/skills/12-skills.ts) | Skill system usage |
 | [`examples/skills/14-filesystem-skills-agent.ts`](examples/skills/14-filesystem-skills-agent.ts) | Filesystem skills loading |
+| [`examples/skills/15-nested-skills.ts`](examples/skills/15-nested-skills.ts) | Nested skill directories + frontmatter override + variable substitution |
 
 ### Sessions & History
 
