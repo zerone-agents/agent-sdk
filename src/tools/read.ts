@@ -400,21 +400,26 @@ function formatEntries(
 
 export const FileReadTool = defineTool({
   name: 'Read',
-  description: 'Read a file from the filesystem. Returns content with line numbers. Supports text files, images (returns visual content), and PDFs.',
+  description: 'Read a file or directory from the filesystem. For files: returns content with line numbers; supports text files, images (returns visual content), and PDFs. For directories: returns a formatted listing of top-level entries (type, size, mtime, name).',
   inputSchema: {
     type: 'object',
     properties: {
       file_path: {
         type: 'string',
-        description: 'The absolute path to the file to read',
+        description: 'The absolute path to the file or directory to read',
       },
       offset: {
         type: 'number',
-        description: 'Line number to start reading from (0-based)',
+        description: 'Line number to start reading from (0-based, files); or number of entries to skip (directories).',
       },
       limit: {
         type: 'number',
-        description: 'Maximum number of lines to read',
+        description: 'Maximum number of lines (files) or entries (directories) to read. Capped at 200 for directories.',
+      },
+      show_hidden: {
+        type: 'boolean',
+        description: 'When reading a directory, include hidden files (starting with .). Default: false. Ignored for files.',
+        default: false,
       },
     },
     required: ['file_path'],
@@ -427,7 +432,16 @@ export const FileReadTool = defineTool({
     try {
       const fileStat = await stat(filePath)
       if (fileStat.isDirectory()) {
-        return { data: `Error: ${filePath} is a directory, not a file. Use Bash with 'ls' to list directory contents.`, is_error: true }
+        try {
+          const listing = await listDirectory(filePath, {
+            showHidden: input.show_hidden ?? false,
+            offset: input.offset ?? 0,
+            limit: input.limit ?? 200,
+          })
+          return listing
+        } catch (err: any) {
+          return { data: `Error reading directory: ${err.message}`, is_error: true }
+        }
       }
 
       const ext = getExtension(filePath)

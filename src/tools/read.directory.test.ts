@@ -412,3 +412,103 @@ describe('listDirectory — symlinks', () => {
     expect(bMatches.length).toBe(1)
   })
 })
+
+import { FileReadTool } from './read.js'
+
+describe('FileReadTool.call — directory paths (end-to-end)', () => {
+  let workdir: string
+  const mockContext = { cwd: '', sessionId: 'test' }
+
+  beforeEach(async () => {
+    workdir = await mkdtemp(join(tmpdir(), 'read-tool-e2e-'))
+    mockContext.cwd = workdir
+  })
+
+  afterEach(async () => {
+    await rm(workdir, { recursive: true, force: true })
+  })
+
+  it('returns a directory listing instead of an error', async () => {
+    await writeFile(join(workdir, 'a.txt'), 'hi')
+    await mkdir(join(workdir, 'sub'))
+
+    const result: any = await FileReadTool.call(
+      { file_path: workdir },
+      mockContext,
+    )
+
+    expect(result.is_error).toBeFalsy()
+    expect(typeof result.content).toBe('string')
+    expect(result.content).toContain('TYPE')
+    expect(result.content).toContain('a.txt')
+    expect(result.content).toContain('sub/')
+  })
+
+  it('respects show_hidden option', async () => {
+    await writeFile(join(workdir, '.env'), 'k=v')
+    await writeFile(join(workdir, 'pub.txt'), 'x')
+
+    const hidden: any = await FileReadTool.call(
+      { file_path: workdir },
+      mockContext,
+    )
+    expect(hidden.content).not.toContain('.env')
+    expect(hidden.content).toContain('pub.txt')
+
+    const shown: any = await FileReadTool.call(
+      { file_path: workdir, show_hidden: true },
+      mockContext,
+    )
+    expect(shown.content).toContain('.env')
+    expect(shown.content).toContain('pub.txt')
+  })
+
+  it('returns is_error=true when directory does not exist', async () => {
+    const result: any = await FileReadTool.call(
+      { file_path: join(workdir, 'nope') },
+      mockContext,
+    )
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('not found')
+  })
+
+  it('still reads files normally (regression)', async () => {
+    const fp = join(workdir, 'plain.txt')
+    await writeFile(fp, 'line one\nline two\n')
+
+    const result: any = await FileReadTool.call(
+      { file_path: fp },
+      mockContext,
+    )
+    expect(result.is_error).toBeFalsy()
+    expect(result.content).toContain('line one')
+    expect(result.content).toMatch(/^\s*1\t/s)
+  })
+
+  it('honors offset and limit when reading a directory', async () => {
+    for (let i = 0; i < 5; i++) {
+      await writeFile(join(workdir, `f${i}.txt`), 'x')
+    }
+    const result: any = await FileReadTool.call(
+      { file_path: workdir, offset: 1, limit: 2 },
+      mockContext,
+    )
+    const lines = (result.content as string).split('\n').slice(1)
+    expect(lines.length).toBeGreaterThanOrEqual(2)
+    expect(result.content).toContain('还有')
+  })
+
+  it('caps at MAX_ENTRIES when caller passes a large limit', async () => {
+    for (let i = 0; i < 250; i++) {
+      await writeFile(join(workdir, `f${String(i).padStart(3, '0')}.txt`), 'x')
+    }
+    const result: any = await FileReadTool.call(
+      { file_path: workdir, limit: 1000 },
+      mockContext,
+    )
+    const dataLines = (result.content as string).split('\n').slice(1)
+    // 200 entries + blank + footer = 202
+    expect(dataLines.length).toBe(202)
+    expect(result.content).toContain('还有 50 条未显示')
+  })
+})
