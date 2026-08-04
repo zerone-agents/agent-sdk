@@ -63,12 +63,12 @@ describe('resolveAgent', () => {
     expect(r.tools.find(t => t.name === 'Read')?.description).toBe('mcp override')
   })
 
-  it('filters skills by allowedSkills', () => {
+  it('filters skills by availableSkills', () => {
     const env = makeEnv()
     env.skillRegistry.register(
       { name: 'review', description: 'd', getPrompt: async () => [] },
     )
-    const r = resolveAgent(env, { description: 'd', prompt: 'p', allowedSkills: ['commit'] })
+    const r = resolveAgent(env, { description: 'd', prompt: 'p', availableSkills: ['commit'] })
     expect(r.skills.map(s => s.name)).toEqual(['commit'])
   })
 })

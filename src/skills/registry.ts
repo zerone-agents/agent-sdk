@@ -112,16 +112,16 @@ export function unregisterSkill(name: string): boolean {
 
 /**
  * Filter skills by allowlist.
- * - allowedSkills undefined or empty: no filtering
+ * - availableSkills undefined or empty: no filtering
  * - otherwise: allowlist entries + project-sourced skills (always allowed)
  */
 export function filterSkillsByAllowlist(
   skills: SkillDefinition[],
-  allowedSkills?: string[],
+  availableSkills?: string[],
 ): SkillDefinition[] {
-  if (!allowedSkills || allowedSkills.length === 0) return skills
+  if (!availableSkills || availableSkills.length === 0) return skills
   return skills.filter(
-    (skill) => skill.source === 'project' || allowedSkills.includes(skill.name),
+    (skill) => skill.source === 'project' || availableSkills.includes(skill.name),
   )
 }
 
