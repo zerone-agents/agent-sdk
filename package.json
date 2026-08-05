@@ -42,13 +42,13 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@mozilla/readability": "^0.6.0",
     "cross-spawn": "^7.0.6",
     "diff": "^9.0.0",
     "linkedom": "^0.18.13",
     "pdfjs-dist": "^4.10.0",
-    "sharp": "^0.34.5",
+    "sharp": "^0.35.3",
     "turndown": "^7.2.4",
     "yaml": "^2.7.0",
     "zod": "^3.23.0",
@@ -60,7 +60,7 @@
     "@types/turndown": "^5.0.6",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.10"
   },
   "keywords": [
     "agent-sdk",
