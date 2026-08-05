@@ -1,637 +1,107 @@
-# Zerone/AgentSDK (TypeScript)
+# Agent SDK
 
 [![npm version](https://img.shields.io/npm/v/@zerone-agent/agent-sdk)](https://www.npmjs.com/package/@zerone-agent/agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
+**English** | [简体中文](./README.zh-CN.md)
+
 Open-source Agent SDK that runs the full agent loop **in-process** — no subprocess or CLI required. Supports both **Anthropic** and **OpenAI-compatible** APIs. Deploy anywhere: cloud, serverless, Docker, CI/CD.
 
-## Get started
+## Features
 
-**Requires Node.js 22+** (uses native `fs.promises.glob`).
+- **In-process agent loop** — runs anywhere Node runs: cloud, serverless, Docker, CI/CD
+- **Multi-provider** — Anthropic, OpenAI / DeepSeek, or custom providers
+- **30+ built-in tools** — file I/O, search, bash, web, MCP, subagents, skills
+- **Streaming + blocking** — `query()` for events, `prompt()` for promises
+- **Session persistence** — automatic compaction when context grows
+- **Permission system** — per-tool allow/deny with hooks for custom policy
+- **Skills + Subagents** — composable in-context capabilities
+
+## Concepts
+
+Five core abstractions compose every agent run:
+
+- **Agent** — stateful wrapper around a session. Holds the tool pool, MCP connections, hooks, and history. Created via `createAgent()`.
+- **QueryEngine** — runs the agentic loop on each `prompt()` / `query()` call: API request → tool calls → repeat until turn limit or completion.
+- **Tool** — a function the model can invoke. The SDK ships 20+ built-in tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch, ...). Custom tools are defined with `tool()` (Zod schema) or `defineTool()` (low-level).
+- **Provider** — LLM backend abstraction. `AnthropicProvider` and `OpenAIProvider` ship built-in; custom providers implement the `LLMProvider` interface.
+- **Skill** — a reusable prompt template (Claude-Code-compatible). Skills are loaded programmatically via `registerSkill()` or from the filesystem (`.agents/skills/<name>/SKILL.md`); the SDK ships no built-in skills.
+
+For the full component model and request flow, see [Architecture](docs/architecture.md).
+
+## Installation
 
 ```bash
 npm install @zerone-agent/agent-sdk
 ```
 
-Set your API key:
+Requires Node.js 22 or later.
+
+Set your API key (or use the `apiKey` option in code):
 
 ```bash
-export ZERONE_AGENT_API_KEY=your-api-key
+export ZERONE_AGENT_API_KEY=...     # primary
+# or
+export ZERONE_AGENT_AUTH_TOKEN=...  # alternative auth token
 ```
 
-### OpenAI-compatible models
+For other providers (DeepSeek, third-party Anthropic-compatible endpoints, custom base URLs), see [Provider Configuration](docs/api.md#provider-configuration).
 
-Works with OpenAI, DeepSeek, Qwen, Mistral, or any OpenAI-compatible endpoint:
+## Quick Start
 
-```bash
-export ZERONE_AGENT_API_TYPE=openai-completions
-export ZERONE_AGENT_API_KEY=sk-...
-export ZERONE_AGENT_BASE_URL=https://api.openai.com/v1
-export ZERONE_AGENT_MODEL=gpt-4o
-```
-
-### Third-party Anthropic-compatible providers
-
-```bash
-export ZERONE_AGENT_BASE_URL=https://openrouter.ai/api
-export ZERONE_AGENT_API_KEY=sk-or-...
-export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
-```
-
-## Quick start
-
-### One-shot query (streaming)
-
-```typescript
-import { query } from "@zerone-agent/agent-sdk";
-
-for await (const message of query({
-  prompt: "Read package.json and tell me the project name.",
-  options: {
-    allowedTools: ["Read", "Glob"],
-    permissionMode: "bypassPermissions",
-  },
-})) {
-  if (message.type === "assistant") {
-    for (const block of message.message.content) {
-      if ("text" in block) console.log(block.text);
-    }
-  }
-}
-```
-
-### Simple blocking prompt
+**Streaming** (events as they arrive):
 
 ```typescript
 import { createAgent } from "@zerone-agent/agent-sdk";
 
 const agent = createAgent({ model: "claude-sonnet-4-6" });
-const result = await agent.prompt("What files are in this project?");
 
-console.log(result.text);
-console.log(
-  `Turns: ${result.num_turns}, Tokens: ${result.usage.input_tokens + result.usage.output_tokens}`,
-);
-```
-
-### OpenAI / GPT models
-
-```typescript
-import { createAgent } from "@zerone-agent/agent-sdk";
-
-const agent = createAgent({
-  apiType: "openai-completions",
-  model: "gpt-4o",
-  apiKey: "sk-...",
-  baseURL: "https://api.openai.com/v1",
-});
-
-const result = await agent.prompt("What files are in this project?");
-console.log(result.text);
-```
-
-The `apiType` is auto-detected from model name — models containing `gpt-`, `o1`, `o3`, `deepseek`, `qwen`, `mistral`, etc. automatically use `openai-completions`.
-
-### Multi-turn conversation
-
-```typescript
-import { createAgent } from "@zerone-agent/agent-sdk";
-
-const agent = createAgent({ maxTurns: 5 });
-
-const r1 = await agent.prompt(
-  'Create a file /tmp/hello.txt with "Hello World"',
-);
-console.log(r1.text);
-
-const r2 = await agent.prompt("Read back the file you just created");
-console.log(r2.text);
-
-console.log(`Audit log entries: ${agent.getMessageLog().length}`);
-```
-
-### Custom tools (Zod schema)
-
-```typescript
-import { z } from "zod";
-import { query, tool, createSdkMcpServer } from "@zerone-agent/agent-sdk";
-
-const getWeather = tool(
-  "get_weather",
-  "Get the temperature for a city",
-  { city: z.string().describe("City name") },
-  async ({ city }) => ({
-    content: [{ type: "text", text: `${city}: 22°C, sunny` }],
-  }),
-);
-
-const server = createSdkMcpServer({ name: "weather", tools: [getWeather] });
-
-for await (const msg of query({
-  prompt: "What is the weather in Tokyo?",
-  options: { mcpServers: { weather: server } },
-})) {
-  if (msg.type === "result")
-    console.log(`Done: $${msg.total_cost_usd?.toFixed(4)}`);
+for await (const event of agent.query("Write a haiku about TypeScript.")) {
+  if (event.type === "assistant") {
+    for (const block of event.message.content) {
+      if ("text" in block) process.stdout.write(block.text);
+    }
+  }
 }
 ```
 
-### Custom tools (low-level)
+**Blocking** (single result):
 
 ```typescript
-import {
-  createAgent,
-  getAllBaseTools,
-  defineTool,
-} from "@zerone-agent/agent-sdk";
+import { createAgent } from "@zerone-agent/agent-sdk";
 
-const calculator = defineTool({
-  name: "Calculator",
-  description: "Evaluate a math expression",
-  inputSchema: {
-    type: "object",
-    properties: { expression: { type: "string" } },
-    required: ["expression"],
-  },
-  isReadOnly: true,
-  async call(input) {
-    const result = Function(`'use strict'; return (${input.expression})`)();
-    return `${input.expression} = ${result}`;
-  },
-});
-
-const agent = createAgent({ tools: [...getAllBaseTools(), calculator] });
-const r = await agent.prompt("Calculate 2**10 * 3");
-console.log(r.text);
-```
-
-### Skills
-
-Skills are reusable prompt templates that extend agent capabilities. Five bundled skills are included: `simplify`, `commit`, `review`, `debug`, `test`.
-
-#### Programmatic Registration
-
-```typescript
-import {
-  createAgent,
-  registerSkill,
-  getAllSkills,
-} from "@zerone-agent/agent-sdk";
-
-// Register a custom skill
-registerSkill({
-  name: "explain",
-  description: "Explain a concept in simple terms",
-  userInvocable: true,
-  async getPrompt(args) {
-    return [
-      {
-        type: "text",
-        text: `Explain in simple terms: ${args || "Ask what to explain."}`,
-      },
-    ];
-  },
-});
-
-console.log(`${getAllSkills().length} skills registered`);
-
-// The model can invoke skills via the Skill tool
 const agent = createAgent();
-const result = await agent.prompt('Use the "explain" skill to explain git rebase');
+const result = await agent.prompt("List 3 JavaScript testing frameworks.");
 console.log(result.text);
 ```
 
-#### Filesystem Skills (Claude Code compatible)
+For the full set of patterns (multi-turn, custom tools, skills, hooks, MCP, subagents, permissions, web UI), see [Getting Started](docs/getting-started.md).
 
-Create `.agents/skills/my-skill/SKILL.md`:
+## Documentation
 
-```yaml
----
-description: Analyze code quality
-model: claude-sonnet-4-6
-allowed-tools:
-  - Read
-  - Glob
----
-
-Analyze the codebase structure and provide recommendations.
-```
-
-Skills can be organized **flat** (one level deep) or **nested** at any depth — useful for grouping related skills:
-
-```
-.agents/skills/
-├── commit/SKILL.md                # flat
-├── team-a/review/SKILL.md         # nested
-└── team-b/sub/deep/SKILL.md       # deeply nested
-```
-
-The skill name is the **immediate parent directory** of `SKILL.md` (e.g. `team-a/review/SKILL.md` → skill name `review`).
-
-Load in your application:
-
-```typescript
-import { createAgent } from "@zerone-agent/agent-sdk";
-
-const agent = createAgent({
-  cwd: "/path/to/project",
-  settingSources: ["project"], // Load from .agents/skills/
-});
-
-// Or load user-level skills:
-const agent = createAgent({
-  settingSources: ["user"], // Load from ~/.agents/skills/
-});
-
-// Or add extra skill directories (scanned after the defaults):
-const agent = createAgent({
-  settingSources: ["user", "project"],
-  extraUserSkillDirs: ["/opt/shared-skills"],         // tagged source='user'
-  extraProjectSkillDirs: ["../sister-repo/.agents/skills"], // tagged source='project'
-});
-```
-
-**Setting source priority:**
-
-- `['user']`: Load from `~/.agents/skills/`
-- `['project']`: Load from `${cwd}/.agents/skills/`
-- `['user', 'project']`: Load both (project skills override user skills)
-- `extraUserSkillDirs` / `extraProjectSkillDirs`: additional directories scanned after the defaults, tagged with the corresponding source
-
-> **Note**: Project-sourced skills (from `<cwd>/.agents/skills/` and `extraProjectSkillDirs`) **bypass the `availableSkills` allowlist** — they represent project author intent and always appear in the system prompt. User-level skills are filtered by `availableSkills` if set.
-
-### Hooks (lifecycle events)
-
-```typescript
-import { createAgent, createHookRegistry } from "@zerone-agent/agent-sdk";
-
-const hooks = createHookRegistry({
-  PreToolUse: [
-    {
-      handler: async (input) => {
-        console.log(`About to use: ${input.toolName}`);
-        // Return { block: true } to prevent tool execution
-      },
-    },
-  ],
-  PostToolUse: [
-    {
-      handler: async (input) => {
-        console.log(`Tool ${input.toolName} completed`);
-      },
-    },
-  ],
-});
-```
-
-20 lifecycle events: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SessionStart`, `SessionEnd`, `Stop`, `SubagentStart`, `SubagentStop`, `UserPromptSubmit`, `PermissionRequest`, `PermissionDenied`, `TaskCreated`, `TaskCompleted`, `ConfigChange`, `CwdChanged`, `FileChanged`, `Notification`, `PreCompact`, `PostCompact`, `TeammateIdle`.
-
-### MCP server integration
-
-```typescript
-import { createAgent } from "@zerone-agent/agent-sdk";
-
-const agent = createAgent({
-  mcpServers: {
-    filesystem: {
-      command: "npx",
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-    },
-  },
-});
-
-const result = await agent.prompt("List files in /tmp");
-console.log(result.text);
-await agent.close();
-```
-
-### Subagents
-
-```typescript
-import { query } from "@zerone-agent/agent-sdk";
-
-for await (const msg of query({
-  prompt: "Use the code-reviewer agent to review src/index.ts",
-  options: {
-    agents: {
-      "code-reviewer": {
-        description: "Expert code reviewer",
-        prompt: "Analyze code quality. Focus on security and performance.",
-        tools: ["Read", "Glob", "Grep"],
-      },
-    },
-  },
-})) {
-  if (msg.type === "result") console.log("Done");
-}
-```
-
-### Permissions
-
-```typescript
-import { query } from "@zerone-agent/agent-sdk";
-
-// Read-only agent — can only analyze, not modify
-for await (const msg of query({
-  prompt: "Review the code in src/ for best practices.",
-  options: {
-    allowedTools: ["Read", "Glob", "Grep"],
-    permissionMode: "dontAsk",
-  },
-})) {
-  // ...
-}
-```
-
-### Web UI
-
-A built-in web chat interface is included for testing:
-
-```bash
-npx tsx examples/web/server.ts
-# Open http://localhost:8081
-```
-
-## API reference
-
-### Top-level functions
-
-| Function                              | Description                                                    |
-| ------------------------------------- | -------------------------------------------------------------- |
-| `query({ prompt, options })`          | One-shot streaming query, returns `AsyncGenerator<SDKMessage>` |
-| `createAgent(options)`                | Create a reusable agent with session persistence               |
-| `tool(name, desc, schema, handler)`   | Create a tool with Zod schema validation                       |
-| `createSdkMcpServer({ name, tools })` | Bundle tools into an in-process MCP server                     |
-| `defineTool(config)`                  | Low-level tool definition helper                               |
-| `getAllBaseTools()`                   | Get all 20 built-in tools                                      |
-| `registerSkill(definition)`           | Register a custom skill                                        |
-| `getAllSkills()`                       | Get all registered skills                                      |
-| `createProvider(apiType, opts)`        | Create an LLM provider directly                                |
-| `createHookRegistry(config)`          | Create a hook registry for lifecycle events                    |
-| `listSessions()`                      | List persisted sessions                                        |
-| `forkSession(id)`                     | Fork a session for branching                                   |
-
-### Agent methods
-
-| Method                          | Description                                           |
-| ------------------------------- | ----------------------------------------------------- |
-| `agent.query(prompt)`           | Streaming query, returns `AsyncGenerator<SDKMessage>` |
-| `agent.prompt(text)`            | Blocking query, returns `Promise<QueryResult>`        |
-| `agent.getMessageLog()`         | Append-only audit log of all emitted messages         |
-| `agent.getMessageHistory()`     | Engine's persistent history (post-compaction view)    |
-| `agent.clear()`                 | Reset session                                         |
-| `agent.interrupt()`             | Abort current query                                   |
-| `agent.setModel(model)`         | Change model mid-session                              |
-| `agent.setPermissionMode(mode)` | Change permission mode                                |
-| `agent.getApiType()`            | Get current API type                                  |
-| `agent.close()`                 | Close MCP connections, persist session                |
-
-### Options
-
-| Option               | Type                                    | Default                | Description                                                          |
-| -------------------- | --------------------------------------- | ---------------------- | -------------------------------------------------------------------- |
-| `apiType`            | `string`                                | auto-detected          | `'anthropic-messages'` or `'openai-completions'`                     |
-| `model`              | `string`                                | `claude-sonnet-4-6`    | LLM model ID                                                         |
-| `apiKey`             | `string`                                | `ZERONE_AGENT_API_KEY`      | API key                                                              |
-| `baseURL`            | `string`                                | —                      | Custom API endpoint                                                  |
-| `cwd`                | `string`                                | `process.cwd()`        | Working directory                                                    |
-| `systemPrompt`       | `string`                                | —                      | System prompt override                                               |
-| `appendSystemPrompt` | `string`                                | —                      | Append to default system prompt                                      |
-| `tools`              | `ToolDefinition[]`                      | All built-in           | Available tools                                                      |
-| `allowedTools`       | `string[]`                              | —                      | Tool allow-list                                                      |
-| `disallowedTools`    | `string[]`                              | —                      | Tool deny-list                                                       |
-| `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` |
-| `canUseTool`         | `function`                              | —                      | Custom permission callback                                           |
-| `maxTurns`           | `number`                                | `10`                   | Max agentic turns                                                    |
-| `maxBudgetUsd`       | `number`                                | —                      | Spending cap                                                         |
-| `thinking`           | `ThinkingConfig`                        | `{ type: 'adaptive' }` | Extended thinking                                                    |
-| `effort`             | `string`                                | `high`                 | Reasoning effort: `low` / `medium` / `high` / `max`                  |
-| `mcpServers`         | `Record<string, McpServerConfig>`       | —                      | MCP server connections                                               |
-| `agents`             | `Record<string, AgentDefinition>`       | —                      | Subagent definitions                                                 |
-| `hooks`              | `Record<string, HookCallbackMatcher[]>` | —                      | Lifecycle hooks                                                      |
-| `resume`             | `string`                                | —                      | Resume session by ID                                                 |
-| `continue`           | `boolean`                               | `false`                | Continue most recent session                                         |
-| `persistSession`     | `boolean`                               | `true`                 | Persist session to disk                                              |
-| `sessionId`          | `string`                                | auto                   | Explicit session ID                                                  |
-| `outputFormat`       | `{ type: 'json_schema', schema }`       | —                      | Structured output                                                    |
-| `sandbox`            | `SandboxSettings`                       | —                      | Filesystem/network sandbox                                           |
-| `settingSources`     | `SettingSource[]`                       | —                      | Load skills from `~/.agents/skills/` (`user`) and/or `${cwd}/.agents/skills/` (`project`) |
-| `extraUserSkillDirs`     | `string[]`                          | —                      | Additional user-level skill directories (tagged `source='user'`)    |
-| `extraProjectSkillDirs`  | `string[]`                          | —                      | Additional project-level skill directories (tagged `source='project'`, bypass `availableSkills`) |
-| `env`                | `Record<string, string>`                | —                      | Environment variables                                                |
-| `abortController`    | `AbortController`                       | —                      | Cancellation controller                                              |
-
-### Environment variables
-
-| Variable             | Description                                              |
-| -------------------- | -------------------------------------------------------- |
-| `ZERONE_AGENT_API_KEY`    | API key (required)                                       |
-| `ZERONE_AGENT_API_TYPE`   | `anthropic-messages` (default) or `openai-completions`   |
-| `ZERONE_AGENT_MODEL`      | Default model override                                   |
-| `ZERONE_AGENT_BASE_URL`   | Custom API endpoint                                      |
-| `ZERONE_AGENT_AUTH_TOKEN` | Alternative auth token                                   |
-
-## Built-in tools
-
-| Tool                                       | Description                                  |
-| ------------------------------------------ | -------------------------------------------- |
-| **Bash**                                   | Execute shell commands                       |
-| **Read**                                   | Read files with line numbers (text, images, PDFs) |
-| **Write**                                  | Create / overwrite files                     |
-| **Edit**                                   | Precise string replacement in files          |
-| **Glob**                                   | Find files by pattern                        |
-| **Grep**                                   | Search file contents with regex              |
-| **WebFetch**                               | Fetch and parse web content                  |
-| **WebSearch**                              | Search the web                               |
-| **Agent**                                  | Spawn subagents for parallel work            |
-| **MultiTask**                              | Parallel multi-subagent dispatch             |
-| **Skill**                                  | Invoke registered skills                     |
-| **TaskCreate/List/Update/Get/Stop/Output** | Task management system                       |
-| **AskUserQuestion**                        | Ask the user for input                       |
-| **ToolSearch**                             | Discover lazy-loaded tools                   |
-| **ListMcpResources/ReadMcpResource**       | MCP resource access                          |
-| **CronCreate/Delete/List**                 | Scheduled task management                    |
-| **Config**                                 | Dynamic configuration                        |
-| **TodoWrite**                              | Session todo list                            |
-
-### PDF Support
-
-The Read tool supports extracting text content from PDF files:
-
-```typescript
-const agent = createAgent({ allowedTools: ['Read'] })
-const result = await agent.prompt('Read /path/to/document.pdf and summarize it')
-console.log(result.text)
-```
-
-**Requirements:** Install `pdfjs-dist` for PDF support:
-
-```bash
-npm install pdfjs-dist
-```
-
-**Features:**
-
-- Extracts text from each page with page markers
-- Extracts AcroForm field values
-- Works with `offset` and `limit` parameters like text files
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────┐
-│                   Your Application                    │
-│                                                       │
-│   import { createAgent } from '@zerone-agent/agent-sdk' │
-└────────────────────────┬─────────────────────────────┘
-                         │
-              ┌──────────▼──────────┐
-              │       Agent         │  Session state, tool pool,
-              │  query() / prompt() │  MCP connections, hooks
-              └──────────┬──────────┘
-                         │
-              ┌──────────▼──────────┐
-              │    QueryEngine      │  Agentic loop:
-              │   submitMessage()   │  API call → tools → repeat
-              └──────────┬──────────┘
-                         │
-         ┌───────────────┼───────────────┐
-         │               │               │
-   ┌─────▼─────┐  ┌─────▼─────┐  ┌─────▼─────┐
-   │  Provider  │  │  35 Tools │  │    MCP     │
-   │ Anthropic  │  │ Bash,Read │  │  Servers   │
-   │  OpenAI    │  │ Edit,...  │  │ stdio/SSE/ │
-   │ DeepSeek   │  │ + Skills  │  │ HTTP/SDK   │
-   └───────────┘  └───────────┘  └───────────┘
-```
-
-**Key internals:**
-
-| Component             | Description                                                        |
-| --------------------- | ------------------------------------------------------------------ |
-| **Provider layer**    | Abstracts Anthropic / OpenAI API differences                       |
-| **QueryEngine**       | Core agentic loop with auto-compact, retry, tool orchestration     |
-| **Skill system**      | Reusable prompt templates with 5 bundled skills                    |
-| **Hook system**       | 20 lifecycle events integrated into the engine                     |
-| **Auto-compact**      | Summarizes conversation when context window fills up               |
-| **Micro-compact**     | Truncates oversized tool results                                   |
-| **Retry**             | Exponential backoff for rate limits and transient errors            |
-| **Token estimation**  | Rough token counting with pricing for Claude, GPT, DeepSeek models |
-| **File cache**        | LRU cache (100 entries, 25 MB) for file reads                      |
-| **Session storage**   | Persist / resume / fork sessions on disk                           |
-| **Context injection** | Git status + AGENT.md automatically injected into system prompt    |
+| Document | Contents |
+|----------|----------|
+| [Getting Started](docs/getting-started.md) | Full quick start with 8 example patterns |
+| [API Reference](docs/api.md) | Top-level functions, Agent methods, options, env vars |
+| [Built-in Tools](docs/tools.md) | 20+ tools + PDF support details |
+| [Architecture](docs/architecture.md) | Component model and request flow |
+| [Examples](docs/examples.md) | 30+ runnable examples by category |
 
 ## Examples
 
-Full examples are in [`examples/`](examples/) organized by category:
-
-| Category | Contents |
-| --- | --- |
-| **basic/** | Simple queries, multi-tool, multi-turn, prompt API, system prompts |
-| **tools/** | Custom tools, permissions, binary read, TodoWrite, Edit tool |
-| **agents/** | Subagents, task tool modes, multitask orchestration |
-| **skills/** | In-context skills, filesystem skills agent |
-| **sessions/** | Session revert, fork, turn limits |
-| **streaming/** | Streaming responses, streaming with tools, subtask events |
-| **mcp/** | MCP server integration, custom MCP tools |
-| **advanced/** | Hooks, OpenAI/official API compat, web search, compact, reasoning effort |
-| **testing/** | Test utilities for parallel tools, max tokens, connection errors |
-
-### Basic
-
-| Example | Description |
-| --- | --- |
-| [`examples/basic/01-simple-query.ts`](examples/basic/01-simple-query.ts) | Streaming query with event handling |
-| [`examples/basic/02-multi-tool.ts`](examples/basic/02-multi-tool.ts) | Multi-tool orchestration (Glob + Bash) |
-| [`examples/basic/03-multi-turn.ts`](examples/basic/03-multi-turn.ts) | Multi-turn session persistence |
-| [`examples/basic/04-prompt-api.ts`](examples/basic/04-prompt-api.ts) | Blocking `prompt()` API |
-| [`examples/basic/05-custom-system-prompt.ts`](examples/basic/05-custom-system-prompt.ts) | Custom system prompt |
-
-### Tools & Permissions
-
-| Example | Description |
-| --- | --- |
-| [`examples/tools/07-custom-tools.ts`](examples/tools/07-custom-tools.ts) | Custom tools with `defineTool()` |
-| [`examples/tools/10-permissions.ts`](examples/tools/10-permissions.ts) | Read-only agent with tool restrictions |
-| [`examples/tools/21-test-read-binary.ts`](examples/tools/21-test-read-binary.ts) | Read tool binary file handling (images, tar.gz) |
-| [`examples/tools/22-todowrite.ts`](examples/tools/22-todowrite.ts) | TodoWrite tool for structured task tracking |
-| [`examples/tools/28-edit-tool-features.ts`](examples/tools/28-edit-tool-features.ts) | Advanced Edit tool features (old_string validation, multi-file) |
-
-### Agents & Subagents
-
-| Example | Description |
-| --- | --- |
-| [`examples/agents/09-subagents.ts`](examples/agents/09-subagents.ts) | Subagent delegation |
-| [`examples/agents/29-task-tool-modes.ts`](examples/agents/29-task-tool-modes.ts) | Task tool `subagent_type` modes (explore vs general) |
-| [`examples/agents/30-multitask.ts`](examples/agents/30-multitask.ts) | MultiTask tool for parallel subagent orchestration |
-
-### Skills
-
-| Example | Description |
-| --- | --- |
-| [`examples/skills/12-skills.ts`](examples/skills/12-skills.ts) | Skill system usage |
-| [`examples/skills/14-filesystem-skills-agent.ts`](examples/skills/14-filesystem-skills-agent.ts) | Filesystem skills loading |
-| [`examples/skills/15-nested-skills.ts`](examples/skills/15-nested-skills.ts) | Nested skill directories + frontmatter override + variable substitution |
-
-### Sessions & History
-
-| Example | Description |
-| --- | --- |
-| [`examples/sessions/23-session-revert.ts`](examples/sessions/23-session-revert.ts) | Session revert to previous message state |
-| [`examples/sessions/24-fork-from-message.ts`](examples/sessions/24-fork-from-message.ts) | Fork session from any message |
-| [`examples/sessions/25-revert-fork-guide.ts`](examples/sessions/25-revert-fork-guide.ts) | Complete guide: revert vs fork patterns |
-| [`examples/sessions/26-agent-revert-api.ts`](examples/sessions/26-agent-revert-api.ts) | Agent revert API (programmatic session revert) |
-| [`examples/sessions/27-caller-revert-flow.ts`](examples/sessions/27-caller-revert-flow.ts) | Caller-controlled revert flow |
-| [`examples/sessions/31-session-turn-limit.ts`](examples/sessions/31-session-turn-limit.ts) | `maxTurns` limit to bound session execution |
-
-### Streaming
-
-| Example | Description |
-| --- | --- |
-| [`examples/streaming/16-streaming.ts`](examples/streaming/16-streaming.ts) | Streaming responses (line-delimited JSON events) |
-| [`examples/streaming/17-streaming-with-tools.ts`](examples/streaming/17-streaming-with-tools.ts) | Streaming with tool calls and results |
-| [`examples/streaming/33-subtask-completed-event.ts`](examples/streaming/33-subtask-completed-event.ts) | Subtask completed event in streaming mode |
-| [`examples/streaming/34-streaming-tool-results.ts`](examples/streaming/34-streaming-tool-results.ts) | Streaming tool results (intermediate outputs) |
-
-### MCP Integration
-
-| Example | Description |
-| --- | --- |
-| [`examples/mcp/06-mcp-server.ts`](examples/mcp/06-mcp-server.ts) | MCP server integration |
-| [`examples/mcp/11-custom-mcp-tools.ts`](examples/mcp/11-custom-mcp-tools.ts) | `tool()` + `createSdkMcpServer()` |
-
-### Advanced Features
-
-| Example | Description |
-| --- | --- |
-| [`examples/advanced/08-official-api-compat.ts`](examples/advanced/08-official-api-compat.ts) | `query()` API pattern |
-| [`examples/advanced/13-hooks.ts`](examples/advanced/13-hooks.ts) | Lifecycle hooks |
-| [`examples/advanced/15-openai-compat.ts`](examples/advanced/15-openai-compat.ts) | OpenAI / DeepSeek models |
-| [`examples/advanced/18-system-preset-alignment.ts`](examples/advanced/18-system-preset-alignment.ts) | System preset alignment for consistent behavior |
-| [`examples/advanced/19-web-search.ts`](examples/advanced/19-web-search.ts) | Web search tool integration |
-| [`examples/advanced/20-compact-features.ts`](examples/advanced/20-compact-features.ts) | Compact features (context window management) |
-| [`examples/advanced/32-reasoning-effort.ts`](examples/advanced/32-reasoning-effort.ts) | Reasoning effort control |
-
-### Web UI
-
-| Example | Description |
-| --- | --- |
-| [`examples/web/server.ts`](examples/web/server.ts) | Web chat UI for testing |
+Browse the [`examples/`](examples/) directory or see the [curated examples index](docs/examples.md) for guidance by use case.
 
 Run any example:
 
 ```bash
 npx tsx examples/basic/01-simple-query.ts
-npx tsx examples/agents/09-subagents.ts
-npx tsx examples/streaming/34-streaming-tool-results.ts
 ```
 
-Start the web UI:
+## Community
 
-```bash
-npx tsx examples/web/server.ts
-```
+- **Issues & feature requests**: [github.com/zerone-agents/agent-sdk/issues](https://github.com/zerone-agents/agent-sdk/issues)
+- **Source code**: [github.com/zerone-agents/agent-sdk](https://github.com/zerone-agents/agent-sdk)
 
 ## License
 
