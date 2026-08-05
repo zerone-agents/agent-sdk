@@ -35,7 +35,7 @@ async function main() {
   console.log(`  ${r3.text}`)
   console.log(`  Tokens: ${r3.usage.input_tokens} in / ${r3.usage.output_tokens} out | Cache read: ${r3.usage.cache_read_input_tokens ?? 0} / Cache creation: ${r3.usage.cache_creation_input_tokens ?? 0}\n`)
 
-  console.log(`Session history: ${agent.getMessages().length} messages`)
+  console.log(`Session history: ${agent.getMessageLog().length} messages`)
 }
 
 main().catch(console.error)

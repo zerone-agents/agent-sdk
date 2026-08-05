@@ -48,13 +48,12 @@ async function main() {
     })
     console.log(`  ${result.text}`)
     console.log(`  Tokens: ${result.usage.input_tokens} in / ${result.usage.output_tokens} out`)
-    console.log(`  Session history: ${agent.getMessages().length} messages\n`)
+    console.log(`  Audit log:       ${agent.getMessageLog().length} messages`)
+    console.log(`  Engine history:  ${(await agent.getMessageHistory()).length} messages (post-compaction)\n`)
   }
 
   // Show the persistent transcript: old rounds have been replaced by a
   // summary, recent rounds remain verbatim.
-  // NOTE: getMessages() returns the append-only audit log (never compacted);
-  // getMessageHistory() returns the live engine transcript (compacted).
   const fullMessages = await agent.getMessageHistory()
   console.log('--- Persistent transcript (older rounds compacted into a summary) ---')
   for (const msg of fullMessages) {

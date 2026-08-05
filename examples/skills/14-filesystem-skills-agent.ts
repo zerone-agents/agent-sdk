@@ -98,7 +98,7 @@ Arguments: \${args}
     console.log('Event types:', messages.map(m => m.type).join(', '))
 
     // Get session messages
-    const sessionMessages = agent.getMessages()
+    const sessionMessages = agent.getMessageLog()
     console.log('\n=== Session Messages (full history) ===')
     console.log(JSON.stringify(sessionMessages, null, 2))
 
