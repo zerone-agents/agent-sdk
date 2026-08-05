@@ -4,6 +4,8 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
+**English** | [简体中文](./README.zh-CN.md)
+
 Open-source Agent SDK that runs the full agent loop **in-process** — no subprocess or CLI required. Supports both **Anthropic** and **OpenAI-compatible** APIs. Deploy anywhere: cloud, serverless, Docker, CI/CD.
 
 ## Features
@@ -21,7 +23,7 @@ Open-source Agent SDK that runs the full agent loop **in-process** — no subpro
 Five core abstractions compose every agent run:
 
 - **Agent** — stateful wrapper around a session. Holds the tool pool, MCP connections, hooks, and history. Created via `createAgent()`.
-- **QueryEngine** — runs the agentic loop on each `prompt()` / `streamingQuery()` call: API request → tool calls → repeat until turn limit or completion.
+- **QueryEngine** — runs the agentic loop on each `prompt()` / `query()` call: API request → tool calls → repeat until turn limit or completion.
 - **Tool** — a function the model can invoke. The SDK ships 20+ built-in tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch, ...). Custom tools are defined with `tool()` (Zod schema) or `defineTool()` (low-level).
 - **Provider** — LLM backend abstraction. `AnthropicProvider` and `OpenAIProvider` ship built-in; custom providers implement the `LLMProvider` interface.
 - **Skill** — a reusable prompt template (Claude-Code-compatible). Five ship built-in (`commit`, `review`, `debug`, `simplify`, `test`); custom skills load from `.agents/skills/<name>/SKILL.md`.
