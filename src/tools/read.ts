@@ -8,7 +8,7 @@
  */
 
 import { readFile, stat, readdir, lstat } from 'fs/promises'
-import { resolve, extname, dirname, join } from 'path'
+import { resolve, extname, join } from 'path'
 import { fileURLToPath } from 'url'
 import type { Stats } from 'fs'
 import { defineTool } from './types.js'
@@ -124,11 +124,18 @@ export async function extractPdfText(filePath: string): Promise<ExtractPdfResult
 
   const data = new Uint8Array(await readFile(filePath))
 
-  let standardFontDataUrl: string | undefined
+  let standardFontDataUrl: string
   try {
-    const pdfjsPkgPath = require.resolve('pdfjs-dist/package.json')
-    standardFontDataUrl = dirname(pdfjsPkgPath) + '/standard_fonts/'
-  } catch {}
+    const pdfjsPkgUrl = import.meta.resolve('pdfjs-dist/package.json')
+    standardFontDataUrl = new URL('./standard_fonts/', pdfjsPkgUrl).href
+  } catch (cause) {
+    throw new Error(
+      'Cannot locate pdfjs-dist/standard_fonts/. If pdfjs-dist is installed ' +
+      'this should not happen; if you bundle this SDK (ncc/electron/Next.js), ' +
+      'ensure pdfjs-dist assets are traced.',
+      { cause },
+    )
+  }
 
   const doc = await pdfjs.getDocument({ data, standardFontDataUrl, disableWorker: true }).promise
   const pageCount = doc.numPages
