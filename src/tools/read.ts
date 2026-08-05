@@ -103,7 +103,7 @@ interface ExtractPdfResult {
   fieldCount: number
 }
 
-async function extractPdfText(filePath: string): Promise<ExtractPdfResult> {
+export async function extractPdfText(filePath: string): Promise<ExtractPdfResult> {
   let pdfjs: any
   try {
     if (typeof window === 'undefined' && typeof document === 'undefined') {
