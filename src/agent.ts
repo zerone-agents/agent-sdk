@@ -571,6 +571,16 @@ export class Agent {
 
     // Run the engine (try/finally ensures persistence even on abort)
     try {
+      // Push user prompt FIRST so the log is chronologically correct.
+      // (Previously pushed in finally after assistant events, causing user
+      // messages to appear after their own assistant responses.)
+      this.messageLog.push({
+        type: 'user',
+        message: { role: 'user', content: prompt },
+        uuid: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+      })
+
       for await (const event of engine.submitMessage(prompt)) {
         if (event.type === 'assistant') {
           const timestamp = new Date().toISOString()
@@ -592,12 +602,7 @@ export class Agent {
       this.lastInputTokens = engineState.lastInputTokens
       this.lastOutputTokens = engineState.lastOutputTokens
 
-      this.messageLog.push({
-        type: 'user',
-        message: { role: 'user', content: prompt },
-        uuid: crypto.randomUUID(),
-        timestamp: new Date().toISOString(),
-      })
+      // (User message push removed from here — moved above the stream loop.)
 
       if (this.cfg.persistSession !== false && this.history.length > 0) {
         try {
@@ -655,9 +660,13 @@ export class Agent {
   }
 
   /**
-   * Get conversation messages.
+   * Append-only audit log of every user prompt + assistant response emitted to
+   * this agent, in chronological order. Never affected by compaction.
+   *
+   * Contrast with {@link getMessageHistory}, which returns what the engine
+   * actually sees on the next turn (post-compaction when triggered).
    */
-  getMessages(): Message[] {
+  getMessageLog(): Message[] {
     return [...this.messageLog]
   }
 
@@ -681,8 +690,15 @@ export class Agent {
   // --------------------------------------------------------------------------
 
   /**
-   * Get conversation messages with IDs (for revert/fork targeting).
-   * Returns NormalizedMessageParam[] — same format as engine messages.
+   * Engine's persistent conversation history — what the LLM actually sees on
+   * the next turn. Post-compaction (when maxSessionTurns triggers halved
+   * compaction), this is `[summary_pair, ...recent_turns]`.
+   *
+   * Use this for revert/fork targeting, session persistence, or any logic
+   * that needs to mirror the engine's view of the conversation.
+   *
+   * Contrast with {@link getMessageLog}, which returns the append-only audit
+   * log of every emitted user/assistant message (never compacted).
    */
   async getMessageHistory(): Promise<NormalizedMessageParam[]> {
     await this.setupDone
