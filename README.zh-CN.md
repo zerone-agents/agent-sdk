@@ -26,7 +26,7 @@
 - **QueryEngine** —— 在每次 `prompt()` / `query()` 调用上运行 agentic loop：API 请求 → 工具调用 → 重复，直到达到轮次上限或任务完成。
 - **Tool** —— 模型可调用的函数。SDK 自带 20+ 内建工具（Bash、Read、Write、Edit、Glob、Grep、WebFetch……）。自定义工具用 `tool()`（Zod schema）或 `defineTool()`（底层 API）定义。
 - **Provider** —— LLM 后端抽象。内建 `AnthropicProvider` 和 `OpenAIProvider`；自定义 provider 实现 `LLMProvider` 接口即可。
-- **Skill** —— 可复用的 prompt 模板（与 Claude Code 兼容）。内建 5 个（`commit`、`review`、`debug`、`simplify`、`test`）；自定义 skill 从 `.agents/skills/<name>/SKILL.md` 加载。
+- **Skill** —— 可复用的 prompt 模板（与 Claude Code 兼容）。SDK 本身不附带内建 skill；自定义 skill 通过 `registerSkill()` 程序注册或从文件系统（`.agents/skills/<name>/SKILL.md`）加载。
 
 完整的组件模型与请求流程见 [Architecture](docs/architecture.md) *(English)*。
 
@@ -41,9 +41,9 @@ npm install @zerone-agent/agent-sdk
 设置 API key（或代码里用 `apiKey` 选项传入）：
 
 ```bash
-export ANTHROPIC_API_KEY=...        # Claude
+export ZERONE_AGENT_API_KEY=...     # 主 key
 # 或
-export OPENAI_API_KEY=...           # GPT / DeepSeek / Qwen / Mistral
+export ZERONE_AGENT_AUTH_TOKEN=...  # 备选 auth token
 ```
 
 其他 provider（DeepSeek、第三方 Anthropic 兼容端点、自定义 base URL）见 [Provider Configuration](docs/api.md#provider-configuration) *(English)*。

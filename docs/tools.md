@@ -12,10 +12,9 @@ Agent SDK ships with 20+ tools covering file I/O, search, command execution, web
 | **Grep**                                   | Search file contents with regex              |
 | **WebFetch**                               | Fetch and parse web content                  |
 | **WebSearch**                              | Search the web                               |
-| **Agent**                                  | Spawn subagents for parallel work            |
+| **Task**                                  | Spawn a subagent for delegated work                      |
 | **MultiTask**                              | Parallel multi-subagent dispatch             |
 | **Skill**                                  | Invoke registered skills                     |
-| **TaskCreate/List/Update/Get/Stop/Output** | Task management system                       |
 | **AskUserQuestion**                        | Ask the user for input                       |
 | **ToolSearch**                             | Discover lazy-loaded tools                   |
 | **ListMcpResources/ReadMcpResource**       | MCP resource access                          |

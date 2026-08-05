@@ -56,7 +56,7 @@ const result = await agent.prompt("What files are in this project?");
 console.log(result.text);
 ```
 
-The `apiType` is auto-detected from model name — models containing `gpt-`, `o1`, `o3`, `deepseek`, `qwen`, `mistral`, etc. automatically use `openai-completions`.
+The `apiType` is auto-detected from model name — models containing `gpt-`, `o1`, `o3`, `o4`, `deepseek`, `qwen`, `yi-`, `glm`, `mistral`, `gemma` automatically use `openai-completions`.
 
 ### Multi-turn conversation
 
@@ -133,7 +133,7 @@ console.log(r.text);
 
 ### Skills
 
-Skills are reusable prompt templates that extend agent capabilities. Five bundled skills are included: `simplify`, `commit`, `review`, `debug`, `test`.
+Skills are reusable prompt templates that extend agent capabilities. The SDK ships no built-in skills — register your own via `registerSkill()` or load them from the filesystem (`.agents/skills/<name>/SKILL.md`).
 
 #### Programmatic Registration
 
@@ -250,7 +250,7 @@ const hooks = createHookRegistry({
 });
 ```
 
-20 lifecycle events: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SessionStart`, `SessionEnd`, `Stop`, `SubagentStart`, `SubagentStop`, `UserPromptSubmit`, `PermissionRequest`, `PermissionDenied`, `TaskCreated`, `TaskCompleted`, `ConfigChange`, `CwdChanged`, `FileChanged`, `Notification`, `PreCompact`, `PostCompact`, `TeammateIdle`.
+24 lifecycle events: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SessionStart`, `SessionEnd`, `Stop`, `SubagentStart`, `SubagentStop`, `UserPromptSubmit`, `PermissionRequest`, `PermissionDenied`, `TaskCreated`, `TaskCompleted`, `ConfigChange`, `CwdChanged`, `FileChanged`, `Notification`, `PreCompact`, `PostCompact`, `TeammateIdle`, `CronTaskCreated`, `CronTaskFired`, `CronTaskExpired`, `CronTaskDeleted`.
 
 ### MCP server integration
 
@@ -279,11 +279,11 @@ import { query } from "@zerone-agent/agent-sdk";
 for await (const msg of query({
   prompt: "Use the code-reviewer agent to review src/index.ts",
   options: {
-    agents: {
+    subAgents: {
       "code-reviewer": {
         description: "Expert code reviewer",
         prompt: "Analyze code quality. Focus on security and performance.",
-        tools: ["Read", "Glob", "Grep"],
+        allowedTools: ["Read", "Glob", "Grep"],
       },
     },
   },

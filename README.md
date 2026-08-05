@@ -26,7 +26,7 @@ Five core abstractions compose every agent run:
 - **QueryEngine** — runs the agentic loop on each `prompt()` / `query()` call: API request → tool calls → repeat until turn limit or completion.
 - **Tool** — a function the model can invoke. The SDK ships 20+ built-in tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch, ...). Custom tools are defined with `tool()` (Zod schema) or `defineTool()` (low-level).
 - **Provider** — LLM backend abstraction. `AnthropicProvider` and `OpenAIProvider` ship built-in; custom providers implement the `LLMProvider` interface.
-- **Skill** — a reusable prompt template (Claude-Code-compatible). Five ship built-in (`commit`, `review`, `debug`, `simplify`, `test`); custom skills load from `.agents/skills/<name>/SKILL.md`.
+- **Skill** — a reusable prompt template (Claude-Code-compatible). Skills are loaded programmatically via `registerSkill()` or from the filesystem (`.agents/skills/<name>/SKILL.md`); the SDK ships no built-in skills.
 
 For the full component model and request flow, see [Architecture](docs/architecture.md).
 
@@ -41,9 +41,9 @@ Requires Node.js 22 or later.
 Set your API key (or use the `apiKey` option in code):
 
 ```bash
-export ANTHROPIC_API_KEY=...        # for Claude
+export ZERONE_AGENT_API_KEY=...     # primary
 # or
-export OPENAI_API_KEY=...           # for GPT / DeepSeek / Qwen / Mistral
+export ZERONE_AGENT_AUTH_TOKEN=...  # alternative auth token
 ```
 
 For other providers (DeepSeek, third-party Anthropic-compatible endpoints, custom base URLs), see [Provider Configuration](docs/api.md#provider-configuration).

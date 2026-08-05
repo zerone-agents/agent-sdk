@@ -63,7 +63,7 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | -------------------- | --------------------------------------- | ---------------------- | -------------------------------------------------------------------- |
 | `apiType`            | `string`                                | auto-detected          | `'anthropic-messages'` or `'openai-completions'`                     |
 | `model`              | `string`                                | `claude-sonnet-4-6`    | LLM model ID                                                         |
-| `apiKey`             | `string`                                | `ZERONE_AGENT_API_KEY`      | API key                                                              |
+| `apiKey`             | `string`                                | `ZERONE_AGENT_API_KEY` env var | API key                                                              |
 | `baseURL`            | `string`                                | —                      | Custom API endpoint                                                  |
 | `cwd`                | `string`                                | `process.cwd()`        | Working directory                                                    |
 | `systemPrompt`       | `string`                                | —                      | System prompt override                                               |
@@ -74,11 +74,12 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` |
 | `canUseTool`         | `function`                              | —                      | Custom permission callback                                           |
 | `maxTurns`           | `number`                                | `10`                   | Max agentic turns                                                    |
+| `maxSessionTurns`    | `number`                                | —                      | Max rounds included in LLM context; older rounds trigger halved compaction |
 | `maxBudgetUsd`       | `number`                                | —                      | Spending cap                                                         |
 | `thinking`           | `ThinkingConfig`                        | `{ type: 'adaptive' }` | Extended thinking                                                    |
 | `effort`             | `string`                                | `high`                 | Reasoning effort: `low` / `medium` / `high` / `max`                  |
 | `mcpServers`         | `Record<string, McpServerConfig>`       | —                      | MCP server connections                                               |
-| `agents`             | `Record<string, AgentDefinition>`       | —                      | Subagent definitions                                                 |
+| `subAgents`          | `Record<string, AgentDefinition>`       | —                      | Subagent definitions for Task/MultiTask                              |
 | `hooks`              | `Record<string, HookCallbackMatcher[]>` | —                      | Lifecycle hooks                                                      |
 | `resume`             | `string`                                | —                      | Resume session by ID                                                 |
 | `continue`           | `boolean`                               | `false`                | Continue most recent session                                         |
@@ -94,10 +95,11 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 
 ### Environment variables
 
-| Variable             | Description                                              |
-| -------------------- | -------------------------------------------------------- |
-| `ZERONE_AGENT_API_KEY`    | API key (required)                                       |
-| `ZERONE_AGENT_API_TYPE`   | `anthropic-messages` (default) or `openai-completions`   |
-| `ZERONE_AGENT_MODEL`      | Default model override                                   |
-| `ZERONE_AGENT_BASE_URL`   | Custom API endpoint                                      |
-| `ZERONE_AGENT_AUTH_TOKEN` | Alternative auth token                                   |
+| Variable                 | Description                                              |
+| ------------------------ | -------------------------------------------------------- |
+| `ZERONE_AGENT_API_KEY`       | API key (primary)                                        |
+| `ZERONE_AGENT_AUTH_TOKEN`    | Alternative auth token                                   |
+| `ZERONE_AGENT_API_TYPE`      | `anthropic-messages` (default) or `openai-completions`   |
+| `ZERONE_AGENT_MODEL`         | Default model override                                   |
+| `ZERONE_AGENT_BASE_URL`      | Custom API endpoint                                      |
+| `ZERONE_AGENT_MCP_GRACE_MS`  | MCP server shutdown grace period in ms (default: 30000)  |
