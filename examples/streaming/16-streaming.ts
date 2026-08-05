@@ -22,7 +22,7 @@ async function main() {
   console.log('=== USER PROMPT ===')
   console.log(userPrompt)
   console.log('\n=== EXISTING MESSAGES ===')
-  for (const msg of agent.getMessages()) {
+  for (const msg of agent.getMessageLog()) {
     const role = (msg as any).role || msg.type
     const content = (msg as any).message?.content || (msg as any).content
     if (typeof content === 'string') {

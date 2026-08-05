@@ -108,7 +108,7 @@ console.log(r1.text);
 const r2 = await agent.prompt("Read back the file you just created");
 console.log(r2.text);
 
-console.log(`Session messages: ${agent.getMessages().length}`);
+console.log(`Audit log entries: ${agent.getMessageLog().length}`);
 ```
 
 ### Custom tools (Zod schema)
@@ -378,7 +378,8 @@ npx tsx examples/web/server.ts
 | ------------------------------- | ----------------------------------------------------- |
 | `agent.query(prompt)`           | Streaming query, returns `AsyncGenerator<SDKMessage>` |
 | `agent.prompt(text)`            | Blocking query, returns `Promise<QueryResult>`        |
-| `agent.getMessages()`           | Get conversation history                              |
+| `agent.getMessageLog()`         | Append-only audit log of all emitted messages         |
+| `agent.getMessageHistory()`     | Engine's persistent history (post-compaction view)    |
 | `agent.clear()`                 | Reset session                                         |
 | `agent.interrupt()`             | Abort current query                                   |
 | `agent.setModel(model)`         | Change model mid-session                              |

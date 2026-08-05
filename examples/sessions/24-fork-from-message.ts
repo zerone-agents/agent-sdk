@@ -29,7 +29,7 @@ async function main() {
 
   console.log('> What is 2+2? Answer in one word.')
   await agentA.prompt('What is 2+2? Answer in one word.')
-  console.log(`  Session A messages: ${agentA.getMessages().length}\n`)
+  console.log(`  Session A messages: ${agentA.getMessageLog().length}\n`)
 
   // Get session A's ID and the first assistant message (fork point)
   const sidA = (agentA as any).sid as string
@@ -84,7 +84,7 @@ async function main() {
 
   console.log('> What is 3+3? Answer in one word.')
   await agentB.prompt('What is 3+3? Answer in one word.')
-  console.log(`  Session B messages: ${agentB.getMessages().length}\n`)
+  console.log(`  Session B messages: ${agentB.getMessageLog().length}\n`)
 
   // === Compare sessions ===
   console.log('=== Comparison ===')
