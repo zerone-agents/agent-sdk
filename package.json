@@ -33,8 +33,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:examples": "npx tsx examples/01-simple-query.ts",
-    "test:examples:all": "for f in examples/*.ts; do echo \"--- Running $f ---\"; npx tsx $f; echo; done",
+    "test:examples": "npx tsx examples/basic/01-simple-query.ts",
+    "test:examples:all": "for f in examples/*/*.ts; do echo \"--- Running $f ---\"; npx tsx $f; echo; done",
     "web": "npx tsx examples/web/server.ts"
   },
   "engines": {
