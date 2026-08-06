@@ -66,21 +66,17 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | `apiKey`             | `string`                                | `ZERONE_AGENT_API_KEY` env var | API key                                                              |
 | `baseURL`            | `string`                                | —                      | Custom API endpoint                                                  |
 | `cwd`                | `string`                                | `process.cwd()`        | Working directory                                                    |
-| `systemPrompt`       | `string`                                | —                      | System prompt override                                               |
-| `appendSystemPrompt` | `string`                                | —                      | Append to default system prompt                                      |
-| `tools`              | `ToolDefinition[]`                      | All built-in           | Available tools                                                      |
-| `allowedTools`       | `string[]`                              | —                      | Tool allow-list                                                      |
-| `disallowedTools`    | `string[]`                              | —                      | Tool deny-list                                                       |
-| `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` |
+| `agent`             | `AgentDefinition`                       | —                      | Main agent definition: `prompt` (system prompt), `appendPrompt`, `allowedTools` / `disallowedTools`, `availableSkills`, `maxTurns` (default `10`) |
+| `customTools`        | `ToolDefinition[]`                      | —                      | Custom tools, merged with the built-in tool pool                     |
+| `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` / `auto` |
 | `canUseTool`         | `function`                              | —                      | Custom permission callback                                           |
-| `maxTurns`           | `number`                                | `10`                   | Max agentic turns                                                    |
 | `maxSessionTurns`    | `number`                                | —                      | Max rounds included in LLM context; older rounds trigger halved compaction |
 | `maxBudgetUsd`       | `number`                                | —                      | Spending cap                                                         |
-| `thinking`           | `ThinkingConfig`                        | `{ type: 'adaptive' }` | Extended thinking                                                    |
-| `effort`             | `string`                                | `high`                 | Reasoning effort: `low` / `medium` / `high` / `max`                  |
+| `thinking`           | `ThinkingConfig`                        | —                      | Extended thinking (`{ type: 'adaptive' \| 'enabled' \| 'disabled', budgetTokens? }`); disabled unless set |
+| `effort`             | `string`                                | —                      | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`; not sent unless set |
 | `mcpServers`         | `Record<string, McpServerConfig>`       | —                      | MCP server connections                                               |
 | `subAgents`          | `Record<string, AgentDefinition>`       | —                      | Subagent definitions for Task/MultiTask                              |
-| `hooks`              | `Record<string, HookCallbackMatcher[]>` | —                      | Lifecycle hooks                                                      |
+| `hooks`              | `Record<string, Array<{ matcher?, hooks, timeout? }>>` | —            | Lifecycle hooks                                                      |
 | `resume`             | `string`                                | —                      | Resume session by ID                                                 |
 | `continue`           | `boolean`                               | `false`                | Continue most recent session                                         |
 | `persistSession`     | `boolean`                               | `true`                 | Persist session to disk                                              |

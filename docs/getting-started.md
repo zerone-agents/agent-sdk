@@ -63,7 +63,13 @@ The `apiType` is auto-detected from model name — models containing `gpt-`, `o1
 ```typescript
 import { createAgent } from "@zerone-agent/agent-sdk";
 
-const agent = createAgent({ maxTurns: 5 });
+const agent = createAgent({
+  agent: {
+    description: "Multi-turn assistant",
+    prompt: "You are a helpful assistant.",
+    maxTurns: 5,
+  },
+});
 
 const r1 = await agent.prompt(
   'Create a file /tmp/hello.txt with "Hello World"',
@@ -105,11 +111,7 @@ for await (const msg of query({
 ### Custom tools (low-level)
 
 ```typescript
-import {
-  createAgent,
-  getAllBaseTools,
-  defineTool,
-} from "@zerone-agent/agent-sdk";
+import { createAgent, defineTool } from "@zerone-agent/agent-sdk";
 
 const calculator = defineTool({
   name: "Calculator",
@@ -126,7 +128,8 @@ const calculator = defineTool({
   },
 });
 
-const agent = createAgent({ tools: [...getAllBaseTools(), calculator] });
+// customTools are merged with the built-in tool pool automatically
+const agent = createAgent({ customTools: [calculator] });
 const r = await agent.prompt("Calculate 2**10 * 3");
 console.log(r.text);
 ```
@@ -174,14 +177,13 @@ Create `.agents/skills/my-skill/SKILL.md`:
 ```yaml
 ---
 description: Analyze code quality
-model: claude-sonnet-4-6
-allowed-tools:
-  - Read
-  - Glob
+when-to-use: When the user asks for a code quality review
 ---
 
 Analyze the codebase structure and provide recommendations.
 ```
+
+Supported frontmatter fields: `description` (required), `name`, `when-to-use`, `argument-hint`, `user-invocable`, `aliases`.
 
 Skills can be organized **flat** (one level deep) or **nested** at any depth — useful for grouping related skills:
 
@@ -192,7 +194,7 @@ Skills can be organized **flat** (one level deep) or **nested** at any depth —
 └── team-b/sub/deep/SKILL.md       # deeply nested
 ```
 
-The skill name is the **immediate parent directory** of `SKILL.md` (e.g. `team-a/review/SKILL.md` → skill name `review`).
+The skill name defaults to the **immediate parent directory** of `SKILL.md` (e.g. `team-a/review/SKILL.md` → skill name `review`), unless overridden by the `name` frontmatter field.
 
 Load in your application:
 

@@ -24,7 +24,7 @@ No build step is needed for development — `vitest` and `tsx` transpile TypeScr
 | `npm run typecheck` | `tsc --noEmit` — catch type errors across the repo |
 | `npm run build` | Compile `src/` → `dist/` via `tsc -p tsconfig.build.json` (also copies tool `.txt` resources) |
 | `npm run dev` | Watch-mode `tsc` for background compilation |
-| `npm run test:examples` | Run `examples/01-simple-query.ts` as a smoke test |
+| `npm run test:examples` | Run `examples/basic/01-simple-query.ts` as a smoke test |
 | `npm run test:examples:all` | Iterate every example under `examples/` (needs API keys for most) |
 | `npm run web` | Launch the example web chat server at `examples/web/server.ts` |
 

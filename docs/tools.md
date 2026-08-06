@@ -27,16 +27,18 @@ Agent SDK ships with 20+ tools covering file I/O, search, command execution, web
 The Read tool supports extracting text content from PDF files:
 
 ```typescript
-const agent = createAgent({ allowedTools: ['Read'] })
+const agent = createAgent({
+  agent: {
+    description: 'PDF reader',
+    prompt: 'You are a helpful assistant.',
+    allowedTools: ['Read'],
+  },
+})
 const result = await agent.prompt('Read /path/to/document.pdf and summarize it')
 console.log(result.text)
 ```
 
-**Requirements:** Install `pdfjs-dist` for PDF support:
-
-```bash
-npm install pdfjs-dist
-```
+**Requirements:** PDF support uses `pdfjs-dist`, which ships as a dependency of the SDK — no separate install needed.
 
 **Features:**
 
