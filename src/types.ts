@@ -318,6 +318,10 @@ export interface ToolContext {
   agentId: string
   /** Per-agent tool services for state isolation */
   services: ToolServices
+  /** Resolved environment for tool subprocesses. Pre-computed by the engine
+   *  from AgentOptions.toolEnv + toolEnvInherit. Tools should pass this
+   *  directly to spawn() / crossSpawn() as the env option. */
+  subprocessEnv: Record<string, string | undefined>
 }
 
 /** Context available to the Skill tool: resolved skill set + registry. */
@@ -440,6 +444,8 @@ export interface AgentEnvironment {
   skillRegistry: import('./skills/registry.js').SkillRegistry
   /** Per-agent tool services for state isolation */
   toolServices?: ToolServices
+  /** Pre-computed subprocess env for Bash/Grep tools. */
+  subprocessEnv: Record<string, string | undefined>
 }
 
 /** An agent's effective capabilities, resolved exactly once by resolveAgent. */
@@ -567,6 +573,13 @@ export interface AgentOptions {
   cwd?: string
   /** Environment variables. */
   env?: Record<string, string | undefined>
+  /** Environment variables passed to tool subprocesses (Bash, Grep).
+   *  Merged with process.env by default; use toolEnvInherit:false to replace entirely. */
+  toolEnv?: Record<string, string | undefined>
+  /** Whether tool subprocesses inherit process.env (default: true).
+   *  - true:  env = { ...process.env, ...(toolEnv ?? {}) }  ← toolEnv overrides
+   *  - false: env = toolEnv ?? {}                            ← host fully controls */
+  toolEnvInherit?: boolean
   /** Sandbox configuration. */
   sandbox?: SandboxSettings
   /** Additional working directories. */

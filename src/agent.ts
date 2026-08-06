@@ -49,6 +49,7 @@ import { createProvider, type LLMProvider, type ApiType } from './providers/inde
 import type { NormalizedMessageParam } from './providers/types.js'
 import { DEFAULT_MAX_TOKENS } from './engine.js'
 import { compactConversationWithProtectedTail, type AutoCompactState } from './utils/compact.js'
+import { resolveSubprocessEnv } from './utils/subprocess-env.js'
 import { DefaultToolServices } from './tools/default-services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
@@ -78,6 +79,8 @@ interface ProviderConfig {
 interface EnvironmentConfig {
   cwd?: string
   env?: Record<string, string | undefined>
+  toolEnv?: Record<string, string | undefined>
+  toolEnvInherit?: boolean
   sandbox?: import('./types.js').SandboxSettings
   additionalDirectories?: string[]
   mcpServers?: Record<string, import('./types.js').McpServerConfig | any>
@@ -298,6 +301,8 @@ export class Agent {
     return {
       cwd: opts.cwd,
       env: opts.env,
+      toolEnv: opts.toolEnv,
+      toolEnvInherit: opts.toolEnvInherit,
       sandbox: opts.sandbox,
       additionalDirectories: opts.additionalDirectories,
       mcpServers: opts.mcpServers,
@@ -395,6 +400,10 @@ export class Agent {
       settingSources: skillConfig.settingSources,
       skillRegistry: this.skillRegistry,
       toolServices: opts.toolServices ?? new DefaultToolServices(),
+      subprocessEnv: resolveSubprocessEnv({
+        toolEnv: envConfig.toolEnv,
+        toolEnvInherit: envConfig.toolEnvInherit,
+      }),
     }
   }
 

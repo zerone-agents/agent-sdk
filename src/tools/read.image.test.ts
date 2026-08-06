@@ -11,6 +11,7 @@ const ctx = (): ToolContext => ({
   toolUseId: 'test',
   agentId: 'test-image-suite',
   services: new DefaultToolServices() as any,
+  subprocessEnv: { ...process.env },
 })
 
 async function callRead(file_path: string) {

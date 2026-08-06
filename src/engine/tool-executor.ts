@@ -299,6 +299,8 @@ export async function runToolsBackground(
     toolUseId: block.id,
     // Per-agent tool services (use provided or create empty)
     services: ctx.config.env.toolServices ?? createEmptyServices(),
+    // Pre-computed subprocess env for Bash/Grep
+    subprocessEnv: ctx.config.env.subprocessEnv,
     // SkillContext
     resolvedSkills: ctx.config.resolved.skills,
     skillRegistry: ctx.config.env.skillRegistry,
