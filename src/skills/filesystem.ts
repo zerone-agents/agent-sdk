@@ -5,7 +5,7 @@
  * Supports nested directory structure via fs.promises.glob (Node 22+).
  */
 
-import { glob, readFile } from 'fs/promises'
+import { glob, readFile, readdir, stat } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
 import { parseSkillMarkdown } from './yaml.js'
@@ -87,12 +87,17 @@ export async function loadSkillsFromFilesystem(
 /**
  * Load all skills from a directory tree.
  *
- * Uses fs.promises.glob (Node 22+) to find every SKILL.md anywhere in
- * the tree, supporting nested grouping directories like
+ * Uses fs.promises.glob (Node 22+) to find every SKILL.md anywhere in the
+ * tree, supporting nested grouping directories like
  * skills/team/commit/SKILL.md.
  * The skill name is the immediate parent directory name of SKILL.md.
- * Symlinked directories at the top level are followed; symlinks inside
- * symlinks are not (loop protection).
+ *
+ * Symlinks: fs.glob does NOT descend into symlinked top-level directories
+ * (Dirent.isDirectory() returns false for symlinks on macOS/Linux). We
+ * enumerate top-level entries ourselves and recurse into symlinked dirs
+ * explicitly. The skill's skillDir stays pointing at the symlink path
+ * (stable across link target changes); symlinks nested deeper than the
+ * top level are not followed (loop protection, same as before).
  */
 async function loadSkillsFromDir(
   dir: string,
@@ -102,24 +107,58 @@ async function loadSkillsFromDir(
   const errors: Error[] = []
   let loaded = 0
 
-  try {
-    const skillPaths: string[] = []
-    for await (const entry of glob('**/SKILL.md', { cwd: dir })) {
-      skillPaths.push(join(dir, entry))
+  const skillPaths: string[] = []
+  const collectFromGlob = async (root: string) => {
+    try {
+      for await (const entry of glob('**/SKILL.md', { cwd: root })) {
+        skillPaths.push(join(root, entry))
+      }
+    } catch (error) {
+      errors.push(error instanceof Error ? error : new Error(String(error)))
     }
+  }
 
-    for (const skillPath of skillPaths) {
-      try {
-        const definition = await loadSkillFile(skillPath)
-        registry.register(definition, source)
-        loaded++
-      } catch (error) {
-        errors.push(error instanceof Error ? error : new Error(String(error)))
+  try {
+    // Walk top-level entries. Real directories are scanned directly with
+    // glob (handles nested layouts). Symlinked top-level directories need
+    // an explicit stat — Dirent from readdir treats them as non-directories.
+    const entries = await readdir(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const entryPath = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await collectFromGlob(entryPath)
+      } else if (entry.isSymbolicLink()) {
+        try {
+          const s = await stat(entryPath) // follows the link
+          if (s.isDirectory()) {
+            await collectFromGlob(entryPath)
+          }
+        } catch {
+          // Broken symlink — ignore.
+        }
       }
     }
+    // Also cover a SKILL.md sitting directly at the root (non-recursive).
+    try {
+      for await (const entry of glob('SKILL.md', { cwd: dir })) {
+        skillPaths.push(join(dir, entry))
+      }
+    } catch {
+      // root unreadable — nothing to add
+    }
   } catch (error) {
-    // Unexpected error from glob itself — surface it
+    // Unexpected error from readdir itself — surface it
     errors.push(error instanceof Error ? error : new Error(String(error)))
+  }
+
+  for (const skillPath of skillPaths) {
+    try {
+      const definition = await loadSkillFile(skillPath)
+      registry.register(definition, source)
+      loaded++
+    } catch (error) {
+      errors.push(error instanceof Error ? error : new Error(String(error)))
+    }
   }
 
   return { loaded, errors }

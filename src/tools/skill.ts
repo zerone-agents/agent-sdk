@@ -146,7 +146,12 @@ export const SkillTool: ToolDefinition = {
 
     const skill = ctx.skillRegistry.get(skillName)
     if (!skill) {
-      const available = ctx.resolvedSkills.map((s) => s.name).join(', ')
+      // Runtime may load ANY registered skill (resolvedSkills is only the
+      // system-prompt allowlist, see comment below). So the error message
+      // must surface everything actually queryable in the registry —
+      // listing only resolvedSkills would mislead the model into thinking
+      // allowlisted skills are the only ones it can invoke.
+      const available = ctx.skillRegistry.getUserInvocable().map((s) => s.name).join(', ')
       return {
         type: 'tool_result',
         tool_use_id: toolUseId,

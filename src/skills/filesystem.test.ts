@@ -83,21 +83,29 @@ describe('loadSkillsFromFilesystem', () => {
 
   // Regression for issue #97 (symlink case): a skill directory that is itself
   // a symlink must be loaded and tagged the same as a regular directory.
+  //
+  // IMPORTANT: the real skill dir lives OUTSIDE the scanned root, so the test
+  // only passes if the loader actually follows the symlink. (A prior version
+  // placed both the real dir and the symlink inside the scanned root; glob
+  // found the real dir directly, so the test passed even though symlinks
+  // were silently skipped — a false positive.)
   it('loads symlinked skill directories under extraProjectSkillDirs with source=project', async () => {
     if (process.platform === 'win32') {
       // Symlinks on Windows require elevated privileges; skip.
       return
     }
 
-    const projectSkillsRoot = await mkdtemp(join(tmpdir(), 'project-symlink-'))
-    const realSkillDir = join(projectSkillsRoot, 'linked-skill.real')
+    // Real skill dir OUTSIDE the scanned root.
+    const realSkillRoot = await mkdtemp(join(tmpdir(), 'real-skill-src-'))
+    const realSkillDir = join(realSkillRoot, 'linked-skill.real')
     await mkdir(realSkillDir, { recursive: true })
     await writeFile(
       join(realSkillDir, 'SKILL.md'),
       '---\nname: linked-skill\ndescription: x\n---\nBody.\n',
     )
 
-    // Create the skill directory entry as a symlink pointing at the real dir.
+    // Scanned root contains ONLY the symlink.
+    const projectSkillsRoot = await mkdtemp(join(tmpdir(), 'project-symlink-'))
     const symlinkedSkillDir = join(projectSkillsRoot, 'linked-skill')
     await symlink(realSkillDir, symlinkedSkillDir, 'dir')
 
@@ -112,8 +120,45 @@ describe('loadSkillsFromFilesystem', () => {
     const skill = registry.get('linked-skill')
     expect(skill).toBeDefined()
     expect(skill?.source).toBe('project')
+    // skillDir should be the symlink path (stable), not the resolved target.
+    expect(skill?.skillDir).toBe(symlinkedSkillDir)
 
+    await rm(realSkillRoot, { recursive: true, force: true })
     await rm(projectSkillsRoot, { recursive: true, force: true })
+  })
+
+  // Regression: fs.glob on macOS does NOT descend into symlinked top-level
+  // directories (Dirent.isDirectory() returns false for symlinks). The
+  // default user-level skills dir (~/.agents/skills/) is the canonical case
+  // where users drop symlinks to skill repos elsewhere on disk. The loader
+  // must follow such top-level symlinks.
+  it('loads a top-level symlinked skill dir under the default skills root', async () => {
+    if (process.platform === 'win32') return
+
+    // Real skill dir lives outside the scanned root.
+    const realSkillRoot = await mkdtemp(join(tmpdir(), 'real-skill-src-'))
+    const realSkillDir = join(realSkillRoot, 'external-skill')
+    await mkdir(realSkillDir, { recursive: true })
+    await writeFile(
+      join(realSkillDir, 'SKILL.md'),
+      '---\nname: external-skill\ndescription: x\n---\nBody.\n',
+    )
+
+    // Mimic ~/.agents/skills/ structure: project skills root with one symlink.
+    const skillsRoot = join(cwd, '.agents', 'skills')
+    await mkdir(skillsRoot, { recursive: true })
+    const symlinkedEntry = join(skillsRoot, 'external-skill')
+    await symlink(realSkillDir, symlinkedEntry, 'dir')
+
+    const registry = new SkillRegistry()
+    await loadSkillsFromFilesystem(cwd, ['project'], {}, registry)
+
+    const skill = registry.get('external-skill')
+    expect(skill).toBeDefined()
+    expect(skill?.source).toBe('project')
+    expect(skill?.skillDir).toBe(symlinkedEntry)
+
+    await rm(realSkillRoot, { recursive: true, force: true })
   })
 
   // Nested directory support: SKILL.md can live at any depth under the
