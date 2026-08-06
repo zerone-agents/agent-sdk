@@ -561,6 +561,8 @@ export class Agent {
       maxSessionTurns: opts.maxSessionTurns,
       effort: opts.effort,
       snapshotEngine: opts.snapshotEngine ?? this.cfg.snapshotEngine,
+      logger: opts.logger ?? this.cfg.logger,
+      logLevel: opts.logLevel ?? this.cfg.logLevel,
     }, { lastInputTokens: this.lastInputTokens, lastOutputTokens: this.lastOutputTokens })
     this.currentEngine = engine
 

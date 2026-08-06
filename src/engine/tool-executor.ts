@@ -30,7 +30,7 @@ import { AsyncQueue } from '../utils/async-queue.js'
 import type { HookRegistry } from '../hooks.js'
 import { createEmptyServices } from '../tools/services.js'
 import type { Logger } from '../utils/logger.js'
-import { formatInputPreview } from '../utils/helpers.js'
+import { formatInputPreview, redactSensitiveFields } from '../utils/helpers.js'
 
 // ============================================================================
 // Types
@@ -534,8 +534,11 @@ export async function executeSingleTool(
 
   // Execute the tool
   try {
-    log.debug(
-      `executeSingleTool(${block.name}) input=${formatInputPreview(block.input)}`,
+    // Debug: metadata only — never log raw tool input by default (#28).
+    log.debug(`executeSingleTool(${block.name}) started tool_use_id=${block.id}`)
+    // Trace (explicit opt-in): input preview with sensitive fields redacted.
+    log.trace(
+      `executeSingleTool(${block.name}) input=${formatInputPreview(redactSensitiveFields(block.input))}`,
     )
     const result = await tool.call(block.input, toolContext)
 

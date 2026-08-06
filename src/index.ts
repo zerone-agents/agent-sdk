@@ -474,3 +474,7 @@ export type {
   // Model info
   ModelInfo,
 } from './types.js'
+
+// Logger (host-configurable engine logging)
+export { createLogger } from './utils/logger.js'
+export type { Logger, LogLevel } from './utils/logger.js'
