@@ -692,6 +692,18 @@ export interface AgentOptions {
   debug?: boolean
   /** Debug log file. */
   debugFile?: string
+  /**
+   * Host-provided logger for engine/tool-executor output. Replaces the
+   * default console logger; `logLevel` is ignored when this is set.
+   */
+  logger?: import('./utils/logger.js').Logger
+  /**
+   * Minimum log level for the default console logger.
+   * Default: 'debug' (metadata only — tool input is never logged).
+   * Use 'trace' to include redacted tool-input previews, 'error' to
+   * silence debug output.
+   */
+  logLevel?: import('./utils/logger.js').LogLevel
   /** Tool-specific configuration. */
   toolConfig?: Record<string, unknown>
   /** Extra CLI arguments. */
@@ -759,6 +771,17 @@ export interface QueryEngineConfig {
   snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   /** Maximum number of retries for streaming LLM calls on disconnect/overload. Default: 5. */
   maxStreamRetries?: number
+  /**
+   * Host-provided logger. When set, replaces the default console logger
+   * (and `logLevel` is ignored — the host logger controls its own level).
+   */
+  logger?: import('./utils/logger.js').Logger
+  /**
+   * Minimum log level for the default console logger.
+   * Default: 'debug' (metadata only). Use 'trace' to include redacted
+   * tool-input previews, or 'error' to silence debug output.
+   */
+  logLevel?: import('./utils/logger.js').LogLevel
 }
 
 /**

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
 import type { QueryEngineConfig, SDKMessage, SDKResultMessage, SDKToolResultMessage, ToolDefinition } from './types.js'
 import type { LLMProvider, StreamChunk } from './providers/types.js'
+import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
+import { vi } from 'vitest'
 
 // Mirrors the real @anthropic-ai/sdk APIConnectionError: a plain Error with
 // name='Error', fixed message, and the underlying failure on `cause`.
@@ -611,5 +613,93 @@ describe('maxSessionTurns halved compaction', () => {
     expect(json).not.toContain('SESSION SUMMARY')
     expect(json).not.toContain('seed turn 1')
     expect(json).toContain('seed turn 3')
+  })
+})
+
+describe('QueryEngine logging (issue #28)', () => {
+  const SECRET = 'sk-live-secret-12345'
+
+  const okTool: ToolDefinition = {
+    name: 'Bash',
+    description: 'runs a command',
+    inputSchema: { type: 'object', properties: {} },
+    async call() {
+      return { type: 'tool_result', tool_use_id: '', content: 'done' }
+    },
+  }
+
+  function makeToolProvider(): LLMProvider {
+    let pass = 0
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        if (pass++ === 0) {
+          yield {
+            type: 'tool_use',
+            index: 1,
+            id: 'tu_1',
+            name: 'Bash',
+            input: JSON.stringify({ command: `echo ${SECRET}` }),
+          }
+          yield { type: 'done', index: -1 }
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' }
+          yield { type: 'done', index: -1 }
+        }
+      },
+    }
+  }
+
+  it('uses the host-provided logger and never logs raw tool input', async () => {
+    const logged: string[] = []
+    const logger: Logger = {
+      debug: (msg: string) => logged.push(msg),
+      trace: (msg: string) => logged.push(msg),
+      error: (msg: string) => logged.push(msg),
+      child: () => logger,
+    }
+
+    const config: QueryEngineConfig = {
+      ...makeConfig(makeToolProvider(), [okTool]),
+      logger,
+    }
+    await run(new QueryEngine(config))
+
+    expect(logged.length).toBeGreaterThan(0)
+    expect(logged.join('\n')).not.toContain(SECRET)
+  })
+
+  it('suppresses debug output on the default logger when logLevel is error', async () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      const config: QueryEngineConfig = {
+        ...makeConfig(makeToolProvider(), [okTool]),
+        logLevel: 'error',
+      }
+      await run(new QueryEngine(config))
+      expect(debugSpy).not.toHaveBeenCalled()
+    } finally {
+      debugSpy.mockRestore()
+    }
+  })
+
+  it('logs redacted tool input only when logLevel is trace', async () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      const config: QueryEngineConfig = {
+        ...makeConfig(makeToolProvider(), [okTool]),
+        logLevel: 'trace',
+      }
+      await run(new QueryEngine(config))
+
+      const all = debugSpy.mock.calls.map((c) => String(c[0])).join('\n')
+      expect(all).toContain('[REDACTED]')
+      expect(all).not.toContain(SECRET)
+    } finally {
+      debugSpy.mockRestore()
+    }
   })
 })

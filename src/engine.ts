@@ -109,7 +109,7 @@ export class QueryEngine {
     this.sessionId = config.sessionId || crypto.randomUUID()
     this.hookRegistry = config.hookRegistry
     this.snapshotEngine = config.snapshotEngine
-    this.logger = createLogger('engine')
+    this.logger = config.logger ?? createLogger('engine', { level: config.logLevel })
   }
 
   /**

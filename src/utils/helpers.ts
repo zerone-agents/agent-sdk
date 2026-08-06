@@ -41,3 +41,30 @@ export function formatInputPreview(input: unknown, maxLength = 200): string {
   if (str.length <= maxLength) return str
   return str.slice(0, maxLength) + '...'
 }
+
+/**
+ * Keys whose values may carry credentials or other sensitive data.
+ * Matching is case-insensitive and covers common spellings
+ * (api_key / apiKey / api-key, access_token, etc.).
+ */
+const SENSITIVE_KEY =
+  /^(command|env|headers|password|passwd|secret|token|authorization|auth|cookie|credential|credentials|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|private[-_]?key|session[-_]?id|.*[-_]?(secret|token|password|credential)s?)$/i
+
+export const REDACTED = '[REDACTED]'
+
+/**
+ * Deep-copy a value with sensitive fields replaced by `[REDACTED]`.
+ *
+ * Used before logging tool input: redaction is field-aware (applied before
+ * truncation) so secrets never leak into log output, even partially.
+ * Primitives pass through unchanged; the original value is never mutated.
+ */
+export function redactSensitiveFields(input: unknown): unknown {
+  if (input === null || typeof input !== 'object') return input
+  if (Array.isArray(input)) return input.map(redactSensitiveFields)
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(input)) {
+    out[key] = SENSITIVE_KEY.test(key) ? REDACTED : redactSensitiveFields(value)
+  }
+  return out
+}

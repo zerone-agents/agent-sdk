@@ -23,9 +23,21 @@ import type { Logger } from '../utils/logger.js'
 function noopLogger(): Logger {
   return {
     debug: () => {},
+    trace: () => {},
     error: () => {},
     child: () => noopLogger(),
   }
+}
+
+function spyLogger() {
+  const calls = { debug: [] as string[], trace: [] as string[], error: [] as string[] }
+  const logger: Logger = {
+    debug: (msg: string) => calls.debug.push(msg),
+    trace: (msg: string) => calls.trace.push(msg),
+    error: (msg: string) => calls.error.push(msg),
+    child: () => logger,
+  }
+  return { logger, calls }
 }
 
 function makeTool(overrides: Partial<ToolDefinition> & { name: string }): ToolDefinition {
@@ -610,5 +622,92 @@ describe('executeTools', () => {
     const complete = events.find(e => e.type === 'tools_complete')
     expect(complete.tool_use_ids).toEqual(['a', 'b'])
     expect(complete.tool_results_count).toBe(2)
+  })
+})
+
+// ============================================================================
+// Logging security (issue #28)
+// ============================================================================
+
+describe('executeSingleTool logging security', () => {
+  const SECRET = 'sk-live-secret-12345'
+
+  function runWithLogger(logger: Logger, input: unknown) {
+    const ctx = makeCtx({ logger })
+    const block = makeBlock({ id: 't1', name: 'Bash', input })
+    const tool = makeTool({ name: 'Bash' })
+    return executeSingleTool(ctx, block, tool, {
+      cwd: '/test',
+      abortSignal: undefined,
+      agentId: 'test',
+      sessionId: 's1',
+      toolUseId: 't1',
+      resolvedSkills: [],
+      skillRegistry: undefined as any,
+      env: {} as any,
+      subAgents: {},
+    })
+  }
+
+  it('does not log tool input at debug level (metadata only)', async () => {
+    const { logger, calls } = spyLogger()
+    await runWithLogger(logger, { command: `echo ${SECRET}` })
+
+    expect(calls.debug.length).toBeGreaterThan(0)
+    const allDebug = calls.debug.join('\n')
+    expect(allDebug).toContain('Bash')
+    expect(allDebug).not.toContain(SECRET)
+    expect(allDebug).not.toContain('command')
+    expect(allDebug).not.toContain('input=')
+  })
+
+  it('does not log tool input via error path either', async () => {
+    const { logger, calls } = spyLogger()
+    const ctx = makeCtx({ logger })
+    const block = makeBlock({ id: 't1', name: 'Bash', input: { command: `echo ${SECRET}` } })
+    const tool = makeTool({
+      name: 'Bash',
+      call: vi.fn().mockRejectedValue(new Error('boom')),
+    })
+    await executeSingleTool(ctx, block, tool, {
+      cwd: '/test',
+      abortSignal: undefined,
+      agentId: 'test',
+      sessionId: 's1',
+      toolUseId: 't1',
+      resolvedSkills: [],
+      skillRegistry: undefined as any,
+      env: {} as any,
+      subAgents: {},
+    })
+
+    const allLogged = [...calls.debug, ...calls.trace, ...calls.error].join('\n')
+    expect(allLogged).not.toContain(SECRET)
+  })
+
+  it('trace-level input logging redacts sensitive fields', async () => {
+    const { logger, calls } = spyLogger()
+    await runWithLogger(logger, {
+      command: `echo ${SECRET}`,
+      env: { AWS_SECRET_ACCESS_KEY: SECRET },
+      file_path: '/tmp/safe',
+    })
+
+    expect(calls.trace.length).toBeGreaterThan(0)
+    const allTrace = calls.trace.join('\n')
+    expect(allTrace).toContain('[REDACTED]')
+    expect(allTrace).toContain('/tmp/safe')
+    expect(allTrace).not.toContain(SECRET)
+    expect(allTrace).not.toContain('AWS_SECRET_ACCESS_KEY')
+  })
+
+  it('trace-level logging redacts multiline/heredoc credentials', async () => {
+    const { logger, calls } = spyLogger()
+    await runWithLogger(logger, {
+      command: `cat <<EOF\npassword=${SECRET}\nEOF`,
+    })
+
+    const allLogged = [...calls.debug, ...calls.trace, ...calls.error].join('\n')
+    expect(allLogged).not.toContain(SECRET)
   })
 })
