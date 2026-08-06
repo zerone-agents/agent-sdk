@@ -247,7 +247,7 @@ export const BashTool = defineTool({
       const isWindowsPowerShell = process.platform === 'win32' && isPowerShell
       const proc = crossSpawn(activeShell.shell, [...activeShell.args, finalCommand], {
         cwd,
-        env: { ...process.env },
+        env: context.subprocessEnv,
         timeout: timeoutMs,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,

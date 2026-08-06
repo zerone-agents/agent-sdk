@@ -5,6 +5,7 @@ const mockContext: ToolContext = {
   cwd: '/tmp/test',
   agentId: 'test-agent',
   sessionId: 'test-session-001',
+  subprocessEnv: { ...process.env },
 }
 
 describe('TodoWriteTool', () => {

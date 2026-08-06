@@ -352,6 +352,7 @@ export const GrepTool = defineTool({
     return new Promise<string>((resolvePromise) => {
       const proc = spawn(cmd, args, {
         cwd: context.cwd,
+        env: context.subprocessEnv,
         timeout: 30000,
       })
 
@@ -379,6 +380,7 @@ export const GrepTool = defineTool({
 
           const grepProc = spawn('grep', grepArgs, {
             cwd: context.cwd,
+            env: context.subprocessEnv,
             timeout: 30000,
           })
 
@@ -444,6 +446,7 @@ export const GrepTool = defineTool({
         const grepArgs = ['-r', '-n', '--', input.pattern, searchPath]
         const grepProc = spawn('grep', grepArgs, {
           cwd: context.cwd,
+          env: context.subprocessEnv,
           timeout: 30000,
         })
 

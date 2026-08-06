@@ -217,6 +217,7 @@ function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
     model: 'test',
     provider: {} as any,
     agents: {},
+    subprocessEnv: { ...process.env },
     ...overrides,
   }
 }

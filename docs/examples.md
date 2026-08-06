@@ -35,6 +35,8 @@ Full examples are in [`examples/`](../examples/) organized by category:
 | [`examples/tools/21-test-read-binary.ts`](../examples/tools/21-test-read-binary.ts) | Read tool binary file handling (images, tar.gz) |
 | [`examples/tools/22-todowrite.ts`](../examples/tools/22-todowrite.ts) | TodoWrite tool for structured task tracking |
 | [`examples/tools/28-edit-tool-features.ts`](../examples/tools/28-edit-tool-features.ts) | Advanced Edit tool features (old_string validation, multi-file) |
+| [`examples/tools/37-read-directory.ts`](../examples/tools/37-read-directory.ts) | Directory listing with the Read tool |
+| [`examples/tools/38-tool-env-isolation.ts`](../examples/tools/38-tool-env-isolation.ts) | Control env vars visible to Bash/Grep subprocesses (host-embed isolation) |
 
 ### Agents & Subagents
 
