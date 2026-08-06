@@ -12,7 +12,7 @@ Open-source Agent SDK that runs the full agent loop **in-process** — no subpro
 
 - **In-process agent loop** — runs anywhere Node runs: cloud, serverless, Docker, CI/CD
 - **Multi-provider** — Anthropic, OpenAI / DeepSeek, or custom providers
-- **30+ built-in tools** — file I/O, search, bash, web, MCP, subagents, skills
+- **20 built-in tools** — file I/O, search, bash, web, MCP, subagents, skills
 - **Streaming + blocking** — `query()` for events, `prompt()` for promises
 - **Session persistence** — automatic compaction when context grows
 - **Permission system** — per-tool allow/deny with hooks for custom policy
@@ -82,7 +82,7 @@ For the full set of patterns (multi-turn, custom tools, skills, hooks, MCP, suba
 
 | Document | Contents |
 |----------|----------|
-| [Getting Started](docs/getting-started.md) | Full quick start with 8 example patterns |
+| [Getting Started](docs/getting-started.md) | Full quick start with 12 example patterns |
 | [API Reference](docs/api.md) | Top-level functions, Agent methods, options, env vars |
 | [Built-in Tools](docs/tools.md) | 20+ tools + PDF support details |
 | [Architecture](docs/architecture.md) | Component model and request flow |
