@@ -8,7 +8,7 @@
  */
 
 import type { SkillDefinition } from './types.js'
-import type { SkillSource } from '../types.js'
+import type { SkillSource, SettingSource } from '../types.js'
 
 export class SkillRegistry {
   private own = new Map<string, SkillDefinition>()
@@ -129,26 +129,50 @@ export function filterSkillsByAllowlist(
 // Prompt formatting (unchanged from before)
 // --------------------------------------------------------------------------
 
-export function formatSkillsForSystemPrompt(skills?: SkillDefinition[]): string {
+export interface SkillSourcesInfo {
+  cwd?: string
+  settingSources?: SettingSource[]
+}
+
+export function formatSkillsForSystemPrompt(
+  skills?: SkillDefinition[],
+  sourcesInfo?: SkillSourcesInfo,
+): string {
   const invocable = skills ?? getUserInvocableSkills()
   if (invocable.length === 0) return ''
 
   const sorted = [...invocable].sort((a, b) => a.name.localeCompare(b.name))
 
-  const skillXml = sorted.map((skill) => {
-    return [
+  const lines: string[] = ['<available_skills>']
+
+  const sourcesBlock = buildSourcesBlock(sourcesInfo)
+  if (sourcesBlock) {
+    lines.push(sourcesBlock)
+  }
+
+  for (const skill of sorted) {
+    lines.push([
       '  <skill>',
       `    <name>${skill.name}</name>`,
       `    <description>${skill.description}</description>`,
       '  </skill>',
-    ].join('\n')
-  })
+    ].join('\n'))
+  }
+  lines.push('</available_skills>')
+  return lines.join('\n')
+}
 
-  return [
-    '<available_skills>',
-    ...skillXml,
-    '</available_skills>',
-  ].join('\n')
+function buildSourcesBlock(info?: SkillSourcesInfo): string {
+  if (!info?.settingSources || info.settingSources.length === 0) return ''
+  const rows: string[] = []
+  if (info.settingSources.includes('user')) {
+    rows.push('    user: ~/.agents/skills')
+  }
+  if (info.settingSources.includes('project') && info.cwd) {
+    rows.push(`    project: ${info.cwd}/.agents/skills`)
+  }
+  if (rows.length === 0) return ''
+  return ['  <sources>', ...rows, '  </sources>'].join('\n')
 }
 
 export function formatSkillsForToolDescription(
