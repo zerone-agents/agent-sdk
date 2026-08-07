@@ -72,6 +72,36 @@ describe('resolveAgent', () => {
     const r = resolveAgent(env, { description: 'd', prompt: 'p', availableSkills: ['commit'] })
     expect(r.skills.map(s => s.name)).toEqual(['commit'])
   })
+
+  it('drops skills when Skill tool is filtered out via allowedTools', () => {
+    const env = makeEnv()  // 'commit' skill is registered by makeEnv
+    const r = resolveAgent(env, {
+      description: 'd', prompt: 'p',
+      allowedTools: ['Read'],  // Skill not listed
+    })
+    expect(r.tools.map(t => t.name)).toEqual(['Read'])
+    expect(r.skills).toEqual([])
+  })
+
+  it('drops skills when Skill tool is excluded via disallowedTools', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, {
+      description: 'd', prompt: 'p',
+      disallowedTools: ['Skill'],
+    })
+    expect(r.tools.map(t => t.name)).not.toContain('Skill')
+    expect(r.skills).toEqual([])
+  })
+
+  it('preserves skills when Skill tool is in allowedTools (regression)', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, {
+      description: 'd', prompt: 'p',
+      allowedTools: ['Read', 'Skill'],
+    })
+    expect(r.tools.map(t => t.name)).toEqual(['Read', 'Skill'])
+    expect(r.skills.map(s => s.name)).toEqual(['commit'])
+  })
 })
 
 describe('resolvePrompt', () => {
