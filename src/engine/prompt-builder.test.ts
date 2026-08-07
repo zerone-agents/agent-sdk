@@ -48,4 +48,20 @@ describe('buildEnvironmentPrompt', () => {
     const envPrompt = await buildEnvironmentPrompt(config)
     expect(typeof envPrompt).toBe('string')
   })
+
+  it('omits Skills section when resolved.skills is empty (matches post-resolveAgent state)', async () => {
+    // Simulate what resolveAgent produces when Skill tool is filtered out:
+    // tools has no Skill, skills is []. prompt-builder should not inject the
+    // Skills section.
+    const config = makeConfig({
+      resolved: {
+        definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
+        tools: [{ name: 'Read', call: () => Promise.resolve({}) } as any],
+        skills: [],  // resolveAgent already zeroed this
+      },
+    } as any)
+    const envPrompt = await buildEnvironmentPrompt(config)
+    expect(envPrompt).not.toContain('## Skills')
+    expect(envPrompt).not.toContain('<available_skills>')
+  })
 })
