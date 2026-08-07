@@ -23,3 +23,15 @@ Use this tool to create and manage a structured task list for your current sessi
 - Cancel tasks that become irrelevant
 - Create specific, actionable items with clear descriptions
 - Break complex tasks into smaller steps
+
+## Output Format
+After every TodoWrite call and in ambient system reminders, the task list is rendered as:
+
+  N. <content> [<status>|<priority>]
+
+Example:
+
+  1. Implement login page [in_progress|high]
+  2. Write tests for auth [pending|medium]
+
+Status is one of `pending` / `in_progress` / `completed` / `cancelled`. Priority is one of `high` / `medium` / `low`.

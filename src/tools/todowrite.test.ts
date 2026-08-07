@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolContext, ToolResult } from '../types.js'
+import { formatTodosReminder } from './todowrite.js'
 
 const mockContext: ToolContext = {
   cwd: '/tmp/test',
@@ -172,7 +173,7 @@ describe('TodoWriteTool', () => {
   })
 
   describe('output formatting', () => {
-    it('includes formatted text with status icons', async () => {
+    it('includes formatted text with content', async () => {
       const result = await TodoWriteTool.call({
         todos: [
           { content: 'Done task', status: 'completed', priority: 'high' },
@@ -200,7 +201,7 @@ describe('TodoWriteTool', () => {
       expect((result.metadata as any).todos).toEqual(todos)
     })
 
-    it('shows status marks for each todo', async () => {
+    it('renders each todo with status keyword and priority in trailing brackets', async () => {
       const result = await TodoWriteTool.call({
         todos: [
           { content: 'Task 1', status: 'completed', priority: 'high' },
@@ -210,9 +211,9 @@ describe('TodoWriteTool', () => {
       }, mockContext)
 
       const output = typeof result.content === 'string' ? result.content : JSON.stringify(result.content)
-      expect(output).toContain('[✓] Task 1')
-      expect(output).toContain('[ ] Task 2')
-      expect(output).toContain('[•] Task 3')
+      expect(output).toContain('1. Task 1 [completed|high]')
+      expect(output).toContain('2. Task 2 [pending|medium]')
+      expect(output).toContain('3. Task 3 [in_progress|low]')
     })
   })
 
@@ -249,5 +250,42 @@ describe('TodoWriteTool', () => {
       const todos = await getTodos('test-session-001')
       expect(todos).toHaveLength(0)
     })
+  })
+})
+
+describe('formatTodosReminder', () => {
+  it('emits each status keyword verbatim (no glyph mapping)', () => {
+    const todos = [
+      { content: 'p', status: 'pending' as const, priority: 'low' as const },
+      { content: 'i', status: 'in_progress' as const, priority: 'medium' as const },
+      { content: 'c', status: 'completed' as const, priority: 'high' as const },
+      { content: 'x', status: 'cancelled' as const, priority: 'medium' as const },
+    ]
+    const out = formatTodosReminder(todos)
+    expect(out).toContain('[pending|low]')
+    expect(out).toContain('[in_progress|medium]')
+    expect(out).toContain('[completed|high]')
+    expect(out).toContain('[cancelled|medium]')
+  })
+
+  it('wraps lines in <system-reminder> with 2-space indent', () => {
+    const out = formatTodosReminder([
+      { content: 'task', status: 'pending', priority: 'high' },
+    ])
+    expect(out.startsWith('<system-reminder>\n  Current task list:\n')).toBe(true)
+    expect(out.endsWith('\n</system-reminder>')).toBe(true)
+    // The single todo line must be 2-space indented and match the format spec.
+    // Use endsWith to avoid matching 'Current task list:' (which also contains 'task').
+    const bodyLine = out.split('\n').find((l) => l.endsWith('[pending|high]'))!
+    expect(bodyLine).toMatch(/^\s{2}\d+\. .+ \[(pending|in_progress|completed|cancelled)\|(high|medium|low)\]$/)
+  })
+
+  it('produces valid scaffolding for empty input (defensive)', () => {
+    const out = formatTodosReminder([])
+    expect(out).toContain('<system-reminder>')
+    expect(out).toContain('Current task list:')
+    expect(out).toContain('</system-reminder>')
+    // No todo-numbered lines.
+    expect(out.split('\n').find((l) => l.match(/^\s+\d+\./))).toBeUndefined()
   })
 })
