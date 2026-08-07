@@ -51,8 +51,8 @@ ALL_TOOLS (20个)  →  buildToolPool()        →  executeTools()
 | | MultiTask | ✗ | ✗ | `multi-task.ts` |
 | **用户交互** | AskUserQuestion | ✓ | ✗ | `ask-user.ts` |
 | **发现** | ToolSearch | ✓ | ✓ | `tool-search.ts` |
-| **MCP 资源** | ListMcpResources | ✓ | ✓ | `mcp-resource-tools.ts` |
-| | ReadMcpResource | ✓ | ✓ | `mcp-resource-tools.ts` |
+| ~~**MCP 资源**~~ | ~~ListMcpResources~~ | ✗ | ✗ | `mcp-resource-tools.ts`（**已在 #3 删除**） |
+| | ~~ReadMcpResource~~ | ✗ | ✗ | 同上（**已在 #3 删除**） |
 | **调度** | CronCreate | ✗ | ✓ | `cron-tools.ts` |
 | | CronDelete | ✗ | ✓ | `cron-tools.ts` |
 | | CronList | ✓ | ✓ | `cron-tools.ts` |
@@ -311,15 +311,19 @@ AskUserQuestion：向用户提问并等待回复。
 
 **激活条件**：需要在 Agent 初始化时将部分工具设为 deferred。
 
-### 5.2 MCP Resource 工具（`mcp-resource-tools.ts`）
+### 5.2 MCP Resource 工具（`mcp-resource-tools.ts`）— **已在 #3 删除**
 
-**设计目标**：让 LLM 访问 MCP Server 暴露的 Resources（区别于 Tools）。
+> **状态（2026-08-07）**：两个工具 + `setMcpConnections` setter 已从 SDK 移除（issue #3 方向 B）。原始问题与决策记录保留如下供历史参考。
 
-**当前状态**：
+**原始设计目标**：让 LLM 访问 MCP Server 暴露的 Resources（区别于 Tools）。
+
+**原始问题状态**：
 - `setMcpConnections()` 已导出，但 **Agent 中从未调用**
 - `mcpConnections` 永远为空数组
 - ListMcpResources 返回 `"No MCP servers connected."`
 - 实现依赖 `(conn as any)._client?.listResources?.()` 访问内部属性
+
+**删除理由**：与 MCP 协议原始设计（resources 是 application-controlled）对齐。需要访问 MCP resources 的使用方应在 host 侧调用 `connection.client.listResources()`，自行决定何时塞入 context。
 
 ### 5.3 Cron 工具链
 
@@ -346,8 +350,8 @@ AskUserQuestion：向用户提问并等待回复。
 | 工具 | 缺失环节 | 激活方式 |
 |------|---------|---------|
 | ToolSearch | 无调用方为 deferredTools 喂数据 | 在 Agent.setup() 中调用 `setDeferredTools()` |
-| ListMcpResources | 无调用方注入 MCP connections | 在 Agent.setup() 中调用 `setMcpConnections()` |
-| ReadMcpResource | 同上 | 同上 |
+| ~~ListMcpResources~~ | ~~无调用方注入 MCP connections~~ | **已在 #3 删除** |
+| ~~ReadMcpResource~~ | ~~同上~~ | **已在 #3 删除** |
 | CronCreate/Delete/List | Agent 未调用 `initCronTools()` 注入 storage | 在 Agent 构造函数中消费 `cronStorage` 选项 |
 
 > 注：`RemoteTrigger` 在源代码中处于注释状态（`src/tools/cron.ts:238-266`），未注册到 `ALL_TOOLS`，因此不计入空壳工具（既非内置工具也非可调用工具）。

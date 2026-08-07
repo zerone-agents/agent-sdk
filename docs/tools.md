@@ -17,7 +17,6 @@ Agent SDK ships with 20+ tools covering file I/O, search, command execution, web
 | **Skill**                                  | Invoke registered skills                     |
 | **AskUserQuestion**                        | Ask the user for input                       |
 | **ToolSearch**                             | Discover lazy-loaded tools                   |
-| **ListMcpResources/ReadMcpResource**       | MCP resource access                          |
 | **CronCreate/Delete/List**                 | Scheduled task management                    |
 | **Config**                                 | Dynamic configuration                        |
 | **TodoWrite**                              | Session todo list                            |

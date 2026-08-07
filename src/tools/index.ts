@@ -29,9 +29,6 @@ import { AskUserQuestionTool } from './ask-user.js'
 // Discovery
 import { ToolSearchTool } from './tool-search.js'
 
-// MCP Resources
-import { ListMcpResourcesTool, ReadMcpResourceTool } from './mcp-resource.js'
-
 // Scheduling
 import { CronCreateTool, CronDeleteTool, CronListTool, initCronTools } from './cron.js'
 
@@ -69,10 +66,6 @@ const ALL_TOOLS: ToolDefinition[] = [
 
   // Discovery
   ToolSearchTool,
-
-  // MCP Resources
-  ListMcpResourcesTool,
-  ReadMcpResourceTool,
 
   // Scheduling
   CronCreateTool,
@@ -158,9 +151,6 @@ export {
   AskUserQuestionTool,
   // Discovery
   ToolSearchTool,
-  // MCP
-  ListMcpResourcesTool,
-  ReadMcpResourceTool,
   // Scheduling
   CronCreateTool,
   CronDeleteTool,
