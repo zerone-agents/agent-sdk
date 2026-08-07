@@ -21,7 +21,7 @@ Runs the full agent loop in-process — no subprocess or CLI required.
 
 - **In-process agent loop** — runs anywhere Node runs: cloud, serverless, Docker, CI/CD
 - **Multi-provider** — Anthropic, OpenAI / DeepSeek, or custom providers
-- **20 built-in tools** — file I/O, search, bash, web, MCP, subagents, skills
+- **18 built-in tools** — file I/O, search, bash, web, subagents, skills
 - **Streaming + blocking** — `query()` for events, `prompt()` for promises
 - **Session persistence** — automatic compaction when context grows
 - **Permission system** — per-tool allow/deny with hooks for custom policy

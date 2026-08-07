@@ -22,7 +22,7 @@ Overview of the Agent SDK component model and request flow.
          ┌───────────────┼───────────────┐
          │               │               │
    ┌─────▼─────┐  ┌─────▼─────┐  ┌─────▼─────┐
-   │  Provider  │  │  20 Tools │  │    MCP     │
+   │  Provider  │  │ 18 Tools │  │    MCP     │
    │ Anthropic  │  │ Bash,Read │  │  Servers   │
    │  OpenAI    │  │ Edit,...  │  │ stdio/SSE/ │
    │ DeepSeek   │  │ + Skills  │  │ HTTP/SDK   │

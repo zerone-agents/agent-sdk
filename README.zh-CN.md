@@ -21,7 +21,7 @@
 
 - **进程内 agent loop** —— Node 能跑的地方就能跑：云、serverless、Docker、CI/CD
 - **多 provider** —— Anthropic、OpenAI / DeepSeek，或自定义 provider
-- **20 个内建工具** —— 文件 I/O、搜索、bash、web、MCP、subagents、skills
+- **18 个内建工具** —— 文件 I/O、搜索、bash、web、subagents、skills
 - **Streaming + blocking** —— `query()` 返回事件流，`prompt()` 返回 Promise
 - **会话持久化** —— 上下文增长时自动压缩
 - **权限系统** —— 按工具粒度允许/拒绝，支持 hooks 自定义策略

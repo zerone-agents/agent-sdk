@@ -49,7 +49,7 @@ src/
 ├── session.ts              # Session persistence / resume / fork
 ├── session-revert.ts       # Programmatic revert API
 ├── providers/              # LLM backends: Anthropic, OpenAI; createProvider()
-├── tools/                  # 20 built-in tools + defineTool + tool registry
+├── tools/                  # 18 built-in tools + defineTool + tool registry
 ├── skills/                 # Skill registry + filesystem loader
 ├── mcp/                    # MCP client (stdio/SSE/HTTP) + connection pool
 ├── prompts/                # System prompt builders + presets
