@@ -64,4 +64,28 @@ describe('buildEnvironmentPrompt', () => {
     expect(envPrompt).not.toContain('## Skills')
     expect(envPrompt).not.toContain('<available_skills>')
   })
+
+  it('includes <sources> block when settingSources is non-empty', async () => {
+    const config = makeConfig({
+      env: {
+        cwd: '/test/project',
+        model: 'test-model',
+        provider: {} as any,
+        tools: [],
+        skills: [],
+        settingSources: ['user', 'project'],
+      },
+      resolved: {
+        definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
+        tools: [{ name: 'Skill', call: () => Promise.resolve({}) } as any],
+        skills: [
+          { name: 'demo', description: 'desc', getPrompt: async () => [] } as any,
+        ],
+      },
+    } as any)
+    const envPrompt = await buildEnvironmentPrompt(config)
+    expect(envPrompt).toContain('<sources>')
+    expect(envPrompt).toContain('user: ~/.agents/skills')
+    expect(envPrompt).toContain('project: /test/project/.agents/skills')
+  })
 })
