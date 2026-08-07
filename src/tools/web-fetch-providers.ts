@@ -365,10 +365,16 @@ export class JinaProvider implements WebFetchProvider {
     }
 
     if (!response.ok) {
-      const retryable = response.status === 429 || response.status >= 500
+      // Cloud provider errors are opaque: a 4xx may come from the target
+      // site OR from Jina's own anti-abuse layer (e.g. AbuseAlleviationError
+      // blocking a domain for anonymous users). We can't distinguish without
+      // fragile body parsing, so treat ALL non-2xx as retryable and let the
+      // chain fall back to local — a wasted local attempt on real 404s is
+      // harmless, but stopping the chain on Jina's 403 loses content the
+      // local provider could have served. See spec §3.6.
       return {
         ok: false,
-        retryable,
+        retryable: true,
         message: `Jina HTTP ${response.status} ${response.statusText}`,
       }
     }
@@ -482,10 +488,12 @@ export class FirecrawlProvider implements WebFetchProvider {
     }
 
     if (!response.ok) {
-      const retryable = response.status === 429 || response.status >= 500
+      // Cloud provider: treat all non-2xx as retryable (see JinaProvider
+      // comment for the rationale — we can't distinguish Firecrawl-internal
+      // errors from target-site errors).
       return {
         ok: false,
-        retryable,
+        retryable: true,
         message: `Firecrawl HTTP ${response.status} ${response.statusText}`,
       }
     }
@@ -506,9 +514,12 @@ export class FirecrawlProvider implements WebFetchProvider {
         const errMsg = Array.isArray(parsed.errors)
           ? parsed.errors.join(', ')
           : 'unknown error'
+        // Firecrawl's success:false is ambiguous — could be target failure
+        // or Firecrawl-internal issue. Treat as retryable so the chain can
+        // fall back (same rationale as HTTP non-2xx handling above).
         return {
           ok: false,
-          retryable: false,
+          retryable: true,
           message: `Firecrawl error: ${errMsg}`,
         }
       }
