@@ -7,8 +7,9 @@
  *
  * Log levels:
  * - `error` — only errors are printed
- * - `debug` (default) — errors + operational metadata (tool name, status)
- * - `trace`  — everything, including redacted tool input previews
+ * - `debug` (default) — errors only; tool metadata/input are silent
+ * - `trace`  — everything, including tool-start metadata and redacted
+ *   input previews
  */
 
 export type LogLevel = 'error' | 'debug' | 'trace'
@@ -50,8 +51,9 @@ function makeLogger(prefix: string, level: LogLevel): Logger {
  * `child()` returns a new logger that prepends the parent prefix plus
  * any extra fields to every message, and inherits the parent's level.
  *
- * Defaults to level `debug` (metadata only). Pass `{ level: 'trace' }` to
- * enable verbose logging, or `{ level: 'error' }` to silence debug output.
+ * Defaults to level `debug` (silent — only `error` prints). Pass
+ * `{ level: 'trace' }` to enable tool-start metadata + redacted input
+ * previews.
  */
 export function createLogger(
   component?: string,

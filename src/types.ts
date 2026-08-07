@@ -699,9 +699,9 @@ export interface AgentOptions {
   logger?: import('./utils/logger.js').Logger
   /**
    * Minimum log level for the default console logger.
-   * Default: 'debug' (metadata only — tool input is never logged).
-   * Use 'trace' to include redacted tool-input previews, 'error' to
-   * silence debug output.
+   * Default: 'debug' (silent — only `error` prints; tool metadata and
+   * redacted input previews are visible only at 'trace').
+   * Use 'trace' to include tool-start metadata + redacted input previews.
    */
   logLevel?: import('./utils/logger.js').LogLevel
   /** Tool-specific configuration. */
@@ -778,8 +778,8 @@ export interface QueryEngineConfig {
   logger?: import('./utils/logger.js').Logger
   /**
    * Minimum log level for the default console logger.
-   * Default: 'debug' (metadata only). Use 'trace' to include redacted
-   * tool-input previews, or 'error' to silence debug output.
+   * Default: 'debug' (silent — only `error` prints). Use 'trace' to
+   * include tool-start metadata + redacted input previews.
    */
   logLevel?: import('./utils/logger.js').LogLevel
 }
