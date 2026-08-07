@@ -288,7 +288,7 @@ describe('JinaProvider', () => {
     expect(result.message).toContain('429')
   })
 
-  it('returns non-retryable on 404', async () => {
+  it('returns retryable on 404 (cloud errors opaque — could be Jina anti-abuse, not target)', async () => {
     ;(globalThis.fetch as any).mockResolvedValue({
       ok: false,
       status: 404,
@@ -305,7 +305,41 @@ describe('JinaProvider', () => {
 
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.retryable).toBe(false)
+    // Cloud provider 4xx is ambiguous: could be target's real 404 OR Jina's
+    // own anti-abuse. We treat all as retryable so the chain falls back to
+    // local; a wasted local attempt on a real 404 is harmless.
+    expect(result.retryable).toBe(true)
+  })
+
+  it('returns retryable on Jina AbuseAlleviationError 403 (regression: huggingface.co blocked anonymously)', async () => {
+    // Real-world case from 2026-08-03: Jina blocked anonymous access to
+    // huggingface.co with HTTP 403 + AbuseAlleviationError body, but direct
+    // fetch of the same URL returned 200. Without retryable=true, the chain
+    // stopped and the tool lost content that local could have served.
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: 'Forbidden',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () =>
+        JSON.stringify({
+          code: 403,
+          name: 'AbuseAlleviationError',
+          message:
+            'Anonymous access to domain huggingface.co blocked until ... due to previous abuse',
+        }),
+    })
+
+    const provider = new JinaProvider({ provider: 'jina' })
+    const result = await provider.fetch({
+      url: 'https://huggingface.co/antirez/deepseek-v4-gguf',
+      deadlineMs: Date.now() + 30000,
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.retryable).toBe(true)
+    expect(result.message).toContain('403')
   })
 
   it('parses Jina response title and content', async () => {
@@ -432,7 +466,7 @@ describe('FirecrawlProvider', () => {
     expect(result.content).toContain('Firecrawl Result')
   })
 
-  it('returns non-retryable on success: false from API', async () => {
+  it('returns retryable on success:false from API (cloud errors opaque — chain falls back)', async () => {
     ;(globalThis.fetch as any).mockResolvedValue({
       ok: true,
       status: 200,
@@ -452,7 +486,9 @@ describe('FirecrawlProvider', () => {
 
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.retryable).toBe(false)
+    // Firecrawl's success:false is ambiguous (could be target failure OR
+    // Firecrawl internal); treat as retryable to allow chain fallback.
+    expect(result.retryable).toBe(true)
   })
 
   it('returns retryable on 5xx', async () => {
