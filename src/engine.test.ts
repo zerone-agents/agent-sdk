@@ -5,6 +5,8 @@ import type { LLMProvider, StreamChunk } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
 import { vi } from 'vitest'
+import { writeFile, mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
 
 // Mirrors the real @anthropic-ai/sdk APIConnectionError: a plain Error with
 // name='Error', fixed message, and the underlying failure on `cause`.
@@ -701,5 +703,99 @@ describe('QueryEngine logging (issue #28)', () => {
     } finally {
       debugSpy.mockRestore()
     }
+  })
+})
+
+describe('QueryEngine per-turn todos reminder injection', () => {
+  // Helper: seed todos.json for a given sessionId under the same dir the
+  // todowrite.ts loader uses (~/.agents/sessions/<sid>/todos.json).
+  async function seedTodos(sessionId: string, todos: any[]): Promise<void> {
+    const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
+    const dir = join(home, '.agents', 'sessions', sessionId)
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, 'todos.json'),
+      JSON.stringify({ updatedAt: new Date().toISOString(), todos }),
+      'utf-8',
+    )
+  }
+
+  it('injects <system-reminder> at end of apiMessages when todos exist', async () => {
+    const sid = 'engine-test-with-todos'
+    await seedTodos(sid, [
+      { content: 'First task', status: 'in_progress', priority: 'high' },
+      { content: 'Second task', status: 'pending', priority: 'medium' },
+    ])
+
+    let captured: any
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(params: any): AsyncGenerator<StreamChunk> {
+        captured = params.messages
+        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+
+    const config = { ...makeConfig(provider), sessionId: sid }
+    await run(new QueryEngine(config))
+
+    expect(captured).toBeDefined()
+    const last = captured[captured.length - 1]
+    expect(last.role).toBe('user')
+    expect(last.content).toContain('<system-reminder>')
+    expect(last.content).toContain('Current task list:')
+    expect(last.content).toContain('1. First task [in_progress|high]')
+    expect(last.content).toContain('2. Second task [pending|medium]')
+  })
+
+  it('does NOT inject reminder when todos.json does not exist', async () => {
+    const sid = 'engine-test-no-todos-' + Date.now()
+
+    let captured: any
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(params: any): AsyncGenerator<StreamChunk> {
+        captured = params.messages
+        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+
+    const config = { ...makeConfig(provider), sessionId: sid }
+    await run(new QueryEngine(config))
+
+    expect(captured).toBeDefined()
+    const last = captured[captured.length - 1]
+    // Without todos.json, the last message is the user's "hi" prompt, not a reminder.
+    expect(typeof last.content).toBe('string')
+    expect(last.content).not.toContain('<system-reminder>')
+  })
+
+  it('does NOT persist the reminder into engine.messages (ephemeral injection)', async () => {
+    const sid = 'engine-test-persistence'
+    await seedTodos(sid, [
+      { content: 'sticky task', status: 'in_progress', priority: 'high' },
+    ])
+
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+
+    const engine = new QueryEngine({ ...makeConfig(provider), sessionId: sid })
+    await run(engine)
+
+    // engine.getMessages() returns the persistent history — must NOT contain the reminder.
+    const persisted = engine.getMessages()
+    const allPersisted = JSON.stringify(persisted)
+    expect(allPersisted).not.toContain('<system-reminder>')
+    expect(allPersisted).not.toContain('Current task list:')
   })
 })

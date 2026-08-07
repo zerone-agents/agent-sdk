@@ -60,6 +60,7 @@ import { buildSystemPrompt } from './engine/prompt-builder.js'
 import { buildResponseFromChunks } from './engine/stream-parser.js'
 import type { ToolUseBlock } from './engine/tool-executor.js'
 import { executeTools as executeToolsFn } from './engine/tool-executor.js'
+import { getTodos, formatTodosReminder } from './tools/todowrite.js'
 import { createLogger, type Logger } from './utils/logger.js'
 import { formatDurationMs, formatInputPreview, createTimer } from './utils/helpers.js'
 
@@ -255,6 +256,24 @@ export class QueryEngine {
           subtype: 'warning',
           message: `Request body exceeded ${maxBodyBytes} byte limit. ${bodySizeResult.strippedCount} image(s) removed from older messages.`,
         } as any
+      }
+
+      // Inject current todos snapshot as a system-reminder at turn boundary.
+      // Best-effort: file errors are silently ignored (same policy as the <env> block).
+      // Does NOT modify this.messages — the reminder is ephemeral, scoped to this turn's API call.
+      if (this.config.sessionId) {
+        try {
+          const todos = await getTodos(this.config.sessionId)
+          if (todos.length > 0) {
+            const reminder = formatTodosReminder(todos)
+            apiMessages = [
+              ...apiMessages,
+              { role: 'user', content: reminder } as NormalizedMessageParam,
+            ]
+          }
+        } catch {
+          // todos file unreadable — skip injection this turn
+        }
       }
 
       this.turnCount++
