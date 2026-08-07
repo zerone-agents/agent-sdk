@@ -649,16 +649,21 @@ describe('executeSingleTool logging security', () => {
     })
   }
 
-  it('does not log tool input at debug level (metadata only)', async () => {
+  it('default debug level is silent — tool metadata moved to trace', async () => {
     const { logger, calls } = spyLogger()
     await runWithLogger(logger, { command: `echo ${SECRET}` })
 
-    expect(calls.debug.length).toBeGreaterThan(0)
-    const allDebug = calls.debug.join('\n')
-    expect(allDebug).toContain('Bash')
-    expect(allDebug).not.toContain(SECRET)
-    expect(allDebug).not.toContain('command')
-    expect(allDebug).not.toContain('input=')
+    // debug must be completely empty (metadata demoted to trace)
+    expect(calls.debug.length).toBe(0)
+
+    // metadata now lives at trace, alongside the redacted input preview
+    expect(calls.trace.length).toBeGreaterThan(0)
+    const allTrace = calls.trace.join('\n')
+    expect(allTrace).toContain('executeSingleTool(Bash)')
+    expect(allTrace).toContain('started tool_use_id=')
+    // sensitive input must never appear at any level
+    const allLogged = [...calls.debug, ...calls.trace, ...calls.error].join('\n')
+    expect(allLogged).not.toContain(SECRET)
   })
 
   it('does not log tool input via error path either', async () => {

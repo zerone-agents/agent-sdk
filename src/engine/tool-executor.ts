@@ -536,8 +536,10 @@ export async function executeSingleTool(
 
   // Execute the tool
   try {
-    // Debug: metadata only — never log raw tool input by default (#28).
-    log.debug(`executeSingleTool(${block.name}) started tool_use_id=${block.id}`)
+    // Trace-only: tool execution metadata (name + tool_use_id). Demoted from
+    // debug so the default `debug` level stays silent — useful only when
+    // reconstructing turn boundaries during debugging.
+    log.trace(`executeSingleTool(${block.name}) started tool_use_id=${block.id}`)
     // Trace (explicit opt-in): input preview with sensitive fields redacted.
     log.trace(
       `executeSingleTool(${block.name}) input=${formatInputPreview(redactSensitiveFields(block.input))}`,
