@@ -107,10 +107,6 @@ export {
   // Discovery
   ToolSearchTool,
 
-  // MCP Resources
-  ListMcpResourcesTool,
-  ReadMcpResourceTool,
-
   // Scheduling
   CronCreateTool,
   CronDeleteTool,
@@ -349,10 +345,6 @@ export {
 export {
   setDeferredTools,
 } from './tools/tool-search.js'
-
-export {
-  setMcpConnections,
-} from './tools/mcp-resource.js'
 
 export {
   getAllCronJobs,
