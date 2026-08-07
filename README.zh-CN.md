@@ -1,12 +1,21 @@
-# Agent SDK
+<div align="center">
+
+# Zerone Agent SDK
+
+**开源 TypeScript AI Agent SDK。**<br/>
+在进程内运行完整的 agent loop——无需子进程或 CLI。
 
 [![npm version](https://img.shields.io/npm/v/@zerone-agent/agent-sdk)](https://www.npmjs.com/package/@zerone-agent/agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
+[快速开始](#快速开始) · [文档](#文档) · [示例](#示例) · [License](#license)
+
 [English](./README.md) | **简体中文**
 
-开源 Agent SDK，在**进程内**运行完整的 agent loop——无需子进程或 CLI。同时支持 **Anthropic** 与 **OpenAI 兼容** API。可部署到任意环境：云、serverless、Docker、CI/CD。
+</div>
+
+---
 
 ## 特性
 

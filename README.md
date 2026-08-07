@@ -1,12 +1,21 @@
-# Agent SDK
+<div align="center">
+
+# Zerone Agent SDK
+
+**Open-source TypeScript SDK for building AI agents.**<br/>
+Runs the full agent loop in-process — no subprocess or CLI required.
 
 [![npm version](https://img.shields.io/npm/v/@zerone-agent/agent-sdk)](https://www.npmjs.com/package/@zerone-agent/agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
+[Quick Start](#quick-start) · [Documentation](#documentation) · [Examples](#examples) · [License](#license)
+
 **English** | [简体中文](./README.zh-CN.md)
 
-Open-source Agent SDK that runs the full agent loop **in-process** — no subprocess or CLI required. Supports both **Anthropic** and **OpenAI-compatible** APIs. Deploy anywhere: cloud, serverless, Docker, CI/CD.
+</div>
+
+---
 
 ## Features
 
