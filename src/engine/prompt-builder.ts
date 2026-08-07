@@ -27,7 +27,10 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
   }
 
   // Add skills — verbose XML format builds a complete cognitive map for the model
-  const skillsXml = formatSkillsForSystemPrompt(config.resolved.skills)
+  const skillsXml = formatSkillsForSystemPrompt(
+    config.resolved.skills,
+    { cwd: config.env.cwd, settingSources: config.env.settingSources },
+  )
   if (skillsXml) {
     parts.push(SYSTEM_PROMPTS.skill_guidance)
     parts.push(skillsXml)

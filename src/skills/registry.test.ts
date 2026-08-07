@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { SkillRegistry, filterSkillsByAllowlist } from './registry.js'
+import { SkillRegistry, filterSkillsByAllowlist, formatSkillsForSystemPrompt } from './registry.js'
 import type { SkillDefinition } from './types.js'
 
 function makeSkill(name: string, extra: Partial<SkillDefinition> = {}): SkillDefinition {
@@ -96,5 +96,66 @@ describe('filterSkillsByAllowlist', () => {
   it('filters non-project skills by allowlist', () => {
     const skills = [makeSkill('a'), makeSkill('b')]
     expect(filterSkillsByAllowlist(skills, ['a']).map(s => s.name)).toEqual(['a'])
+  })
+})
+
+describe('formatSkillsForSystemPrompt', () => {
+  it('emits <sources> block with user+project rows when both settingSources enabled', () => {
+    const skills = [makeSkill('alpha')]
+    const out = formatSkillsForSystemPrompt(skills, {
+      cwd: '/abs/project',
+      settingSources: ['user', 'project'],
+    })
+    expect(out).toContain('<sources>')
+    expect(out).toContain('user: ~/.agents/skills')
+    expect(out).toContain('project: /abs/project/.agents/skills')
+    expect(out).toContain('</sources>')
+    // Existing <skill> entries are still present
+    expect(out).toContain('<name>alpha</name>')
+    // <sources> block appears before first <skill>
+    expect(out.indexOf('<sources>')).toBeLessThan(out.indexOf('<skill>'))
+  })
+
+  it('emits only user row when settingSources=[user]', () => {
+    const out = formatSkillsForSystemPrompt([makeSkill('a')], {
+      cwd: '/abs/project',
+      settingSources: ['user'],
+    })
+    expect(out).toContain('user: ~/.agents/skills')
+    expect(out).not.toContain('project:')
+  })
+
+  it('emits only project row when settingSources=[project]', () => {
+    const out = formatSkillsForSystemPrompt([makeSkill('a')], {
+      cwd: '/abs/project',
+      settingSources: ['project'],
+    })
+    expect(out).not.toContain('user:')
+    expect(out).toContain('project: /abs/project/.agents/skills')
+  })
+
+  it('omits <sources> block entirely when settingSources is undefined', () => {
+    // Regression: single-arg call must produce byte-identical output to today.
+    const out = formatSkillsForSystemPrompt([makeSkill('a')])
+    expect(out).not.toContain('<sources>')
+    expect(out).toContain('<available_skills>')
+    expect(out).toContain('<name>a</name>')
+  })
+
+  it('omits <sources> block entirely when settingSources is empty array', () => {
+    const out = formatSkillsForSystemPrompt([makeSkill('a')], {
+      cwd: '/abs',
+      settingSources: [],
+    })
+    expect(out).not.toContain('<sources>')
+  })
+
+  it('returns empty string when skills list is empty', () => {
+    // Existing early-return preserved — <sources> block never reached.
+    const out = formatSkillsForSystemPrompt([], {
+      cwd: '/abs',
+      settingSources: ['user', 'project'],
+    })
+    expect(out).toBe('')
   })
 })

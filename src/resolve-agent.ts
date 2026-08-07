@@ -16,9 +16,18 @@ export function resolveAgent(env: AgentEnvironment, definition: AgentDefinition)
     env.mcpTools,
   )
   const tools = filterTools(pool, definition.allowedTools, definition.disallowedTools)
-  const skills = filterSkillsByAllowlist(
+  let skills = filterSkillsByAllowlist(
     env.skillRegistry.getUserInvocable(),
     definition.availableSkills,
   )
+
+  // Cross-validation: if the Skill tool was filtered out, skills can't be
+  // invoked through the SDK. Drop them so every downstream consumer (system
+  // prompt, init event, tool-executor context, subagent resolution) stays
+  // consistent instead of advertising a tool the model cannot call.
+  if (!tools.some((t) => t.name === 'Skill')) {
+    skills = []
+  }
+
   return { definition, tools, skills }
 }

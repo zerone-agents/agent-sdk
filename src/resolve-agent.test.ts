@@ -6,6 +6,7 @@ const MOCK_TOOLS = [
   { name: 'Bash', isReadOnly: () => false, call: vi.fn() },
   { name: 'Task', isReadOnly: () => false, call: vi.fn() },
   { name: 'MultiTask', isReadOnly: () => false, call: vi.fn() },
+  { name: 'Skill', isReadOnly: () => true, call: vi.fn() },
 ] as any[]
 
 vi.mock('./tools/index.js', async (importOriginal) => {
@@ -41,7 +42,7 @@ function makeEnv(overrides: Partial<AgentEnvironment> = {}): AgentEnvironment {
 describe('resolveAgent', () => {
   it('returns full builtin pool when no allow/deny lists', () => {
     const r = resolveAgent(makeEnv(), { description: 'd', prompt: 'p' })
-    expect(r.tools.map(t => t.name)).toEqual(['Read', 'Write', 'Bash', 'Task', 'MultiTask'])
+    expect(r.tools.map(t => t.name)).toEqual(['Read', 'Write', 'Bash', 'Task', 'MultiTask', 'Skill'])
   })
 
   it('applies allowedTools then disallowedTools (deny wins)', () => {
@@ -69,6 +70,36 @@ describe('resolveAgent', () => {
       { name: 'review', description: 'd', getPrompt: async () => [] },
     )
     const r = resolveAgent(env, { description: 'd', prompt: 'p', availableSkills: ['commit'] })
+    expect(r.skills.map(s => s.name)).toEqual(['commit'])
+  })
+
+  it('drops skills when Skill tool is filtered out via allowedTools', () => {
+    const env = makeEnv()  // 'commit' skill is registered by makeEnv
+    const r = resolveAgent(env, {
+      description: 'd', prompt: 'p',
+      allowedTools: ['Read'],  // Skill not listed
+    })
+    expect(r.tools.map(t => t.name)).toEqual(['Read'])
+    expect(r.skills).toEqual([])
+  })
+
+  it('drops skills when Skill tool is excluded via disallowedTools', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, {
+      description: 'd', prompt: 'p',
+      disallowedTools: ['Skill'],
+    })
+    expect(r.tools.map(t => t.name)).not.toContain('Skill')
+    expect(r.skills).toEqual([])
+  })
+
+  it('preserves skills when Skill tool is in allowedTools (regression)', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, {
+      description: 'd', prompt: 'p',
+      allowedTools: ['Read', 'Skill'],
+    })
+    expect(r.tools.map(t => t.name)).toEqual(['Read', 'Skill'])
     expect(r.skills.map(s => s.name)).toEqual(['commit'])
   })
 })
