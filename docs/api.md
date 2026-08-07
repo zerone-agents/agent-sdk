@@ -34,7 +34,7 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | `tool(name, desc, schema, handler)`   | Create a tool with Zod schema validation                       |
 | `createSdkMcpServer({ name, tools })` | Bundle tools into an in-process MCP server                     |
 | `defineTool(config)`                  | Low-level tool definition helper                               |
-| `getAllBaseTools()`                   | Get all 20 built-in tools                                      |
+| `getAllBaseTools()`                   | Get all 18 built-in tools                                      |
 | `registerSkill(definition)`           | Register a custom skill                                        |
 | `getAllSkills()`                       | Get all registered skills                                      |
 | `createProvider(apiType, opts)`        | Create an LLM provider directly                                |
