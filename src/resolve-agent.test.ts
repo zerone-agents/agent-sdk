@@ -6,6 +6,7 @@ const MOCK_TOOLS = [
   { name: 'Bash', isReadOnly: () => false, call: vi.fn() },
   { name: 'Task', isReadOnly: () => false, call: vi.fn() },
   { name: 'MultiTask', isReadOnly: () => false, call: vi.fn() },
+  { name: 'Skill', isReadOnly: () => true, call: vi.fn() },
 ] as any[]
 
 vi.mock('./tools/index.js', async (importOriginal) => {
@@ -41,7 +42,7 @@ function makeEnv(overrides: Partial<AgentEnvironment> = {}): AgentEnvironment {
 describe('resolveAgent', () => {
   it('returns full builtin pool when no allow/deny lists', () => {
     const r = resolveAgent(makeEnv(), { description: 'd', prompt: 'p' })
-    expect(r.tools.map(t => t.name)).toEqual(['Read', 'Write', 'Bash', 'Task', 'MultiTask'])
+    expect(r.tools.map(t => t.name)).toEqual(['Read', 'Write', 'Bash', 'Task', 'MultiTask', 'Skill'])
   })
 
   it('applies allowedTools then disallowedTools (deny wins)', () => {
