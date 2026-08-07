@@ -95,23 +95,23 @@ function validateTodos(todos: any[]): string | null {
   return null
 }
 
-const STATUS_MARKS: Record<TodoStatus, string> = {
-  pending: ' ',
-  in_progress: '•',
-  completed: '✓',
-  cancelled: '✗',
-}
-
 function formatTodos(todos: TodoInfo[]): string {
   if (todos.length === 0) return 'No todos.'
+  return todos
+    .map((t, i) => `${i + 1}. ${t.content} [${t.status}|${t.priority}]`)
+    .join('\n')
+}
 
-  const lines: string[] = []
-
-  for (const t of todos) {
-    lines.push(`[${STATUS_MARKS[t.status]}] ${t.content} (${t.priority})`)
-  }
-
-  return lines.join('\n')
+export function formatTodosReminder(todos: TodoInfo[]): string {
+  const lines = todos.map(
+    (t, i) => `  ${i + 1}. ${t.content} [${t.status}|${t.priority}]`,
+  )
+  return [
+    '<system-reminder>',
+    '  Current task list:',
+    ...lines,
+    '</system-reminder>',
+  ].join('\n')
 }
 
 export async function getTodos(sessionId: string): Promise<TodoInfo[]> {
