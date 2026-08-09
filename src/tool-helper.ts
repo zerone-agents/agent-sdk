@@ -52,6 +52,12 @@ export interface SdkMcpToolDefinition<T extends ZodRawShape = ZodRawShape> {
   inputSchema: ZodObject<T>
   handler: (args: z.infer<ZodObject<T>>, extra: unknown) => Promise<CallToolResult>
   annotations?: ToolAnnotations
+  /**
+   * Per-tool override for the deferred/lazy-loading behavior. When set, this
+   * wins over the server-level default (OR-relation). See AgentOptions.eagerMcp
+   * and McpSdkServerConfig.deferred for the resolution rules.
+   */
+  deferred?: boolean
 }
 
 /**
@@ -64,7 +70,7 @@ export function tool<T extends ZodRawShape>(
   description: string,
   inputSchema: T,
   handler: (args: z.infer<ZodObject<T>>, extra: unknown) => Promise<CallToolResult>,
-  extras?: { annotations?: ToolAnnotations },
+  extras?: { annotations?: ToolAnnotations; deferred?: boolean },
 ): SdkMcpToolDefinition<T> {
   return {
     name,
@@ -72,6 +78,7 @@ export function tool<T extends ZodRawShape>(
     inputSchema: z.object(inputSchema),
     handler,
     annotations: extras?.annotations,
+    deferred: extras?.deferred,
   }
 }
 
@@ -90,6 +97,9 @@ export function sdkToolToToolDefinition(sdkTool: SdkMcpToolDefinition<any>): Too
       properties: (jsonSchema.properties as Record<string, unknown>) || {},
       required: (jsonSchema.required as string[]) || [],
     },
+    // Forward per-tool deferred so the agent's MCP loading loop can apply the
+    // OR-relation: tool.deferred ?? serverDefault.
+    deferred: sdkTool.deferred,
     isReadOnly: () => sdkTool.annotations?.readOnlyHint ?? false,
     isConcurrencySafe: () => sdkTool.annotations?.readOnlyHint ?? false,
     isEnabled: () => true,
