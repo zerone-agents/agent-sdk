@@ -125,7 +125,8 @@ describe('buildEnvironmentPrompt', () => {
         deferredTools: [
           {
             name: 'Mystery',
-            description: 'Fallback description under 200 chars',
+            // 250 chars — longer than the 200 default, exercises truncation path
+            description: 'A'.repeat(250),
             call: () => Promise.resolve({}),
             // shortDescription intentionally absent
           } as any,
@@ -134,6 +135,7 @@ describe('buildEnvironmentPrompt', () => {
       },
     } as any)
     const envPrompt = await buildEnvironmentPrompt(config)
-    expect(envPrompt).toContain('Mystery: Fallback description under 200 chars')
+    // Helper truncates to 200 + ...(more)
+    expect(envPrompt).toContain('Mystery: ' + 'A'.repeat(200) + '...(more)')
   })
 })

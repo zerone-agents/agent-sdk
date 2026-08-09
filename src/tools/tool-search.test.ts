@@ -95,9 +95,9 @@ describe('ToolSearch activation', () => {
 
   it('response falls back to description when shortDescription absent', async () => {
     const deferred = [
-      { name: 'CronList', description: 'Fallback description here', call: vi.fn() },
+      { name: 'CronList', description: 'B'.repeat(250), call: vi.fn() },
     ]
     const { result } = await callToolSearch('select:CronList', deferred)
-    expect(result.content).toContain('- CronList: Fallback description here')
+    expect(result.content).toContain('- CronList: ' + 'B'.repeat(200) + '...(more)')
   })
 })
