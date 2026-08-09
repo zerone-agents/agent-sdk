@@ -7,6 +7,8 @@ const MOCK_TOOLS = [
   { name: 'Task', isReadOnly: () => false, call: vi.fn() },
   { name: 'MultiTask', isReadOnly: () => false, call: vi.fn() },
   { name: 'Skill', isReadOnly: () => true, call: vi.fn() },
+  { name: 'ToolSearch', isReadOnly: () => true, call: vi.fn() },
+  { name: 'CronList', isReadOnly: () => true, call: vi.fn(), deferred: true, shortDescription: 'List scheduled tasks' },
 ] as any[]
 
 vi.mock('./tools/index.js', async (importOriginal) => {
@@ -42,7 +44,7 @@ function makeEnv(overrides: Partial<AgentEnvironment> = {}): AgentEnvironment {
 describe('resolveAgent', () => {
   it('returns full builtin pool when no allow/deny lists', () => {
     const r = resolveAgent(makeEnv(), { description: 'd', prompt: 'p' })
-    expect(r.tools.map(t => t.name)).toEqual(['Read', 'Write', 'Bash', 'Task', 'MultiTask', 'Skill'])
+    expect(r.tools.map(t => t.name)).toEqual(['Read', 'Write', 'Bash', 'Task', 'MultiTask', 'Skill', 'ToolSearch'])
   })
 
   it('applies allowedTools then disallowedTools (deny wins)', () => {
@@ -101,6 +103,55 @@ describe('resolveAgent', () => {
     })
     expect(r.tools.map(t => t.name)).toEqual(['Read', 'Skill'])
     expect(r.skills.map(s => s.name)).toEqual(['commit'])
+  })
+
+  it('splits deferred tools from eager when ToolSearch is available', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, { description: 'd', prompt: 'p' })
+    // MOCK_TOOLS has 8 entries: 7 eager + 1 deferred (CronList)
+    expect(r.tools.map(t => t.name)).toEqual(
+      ['Read', 'Write', 'Bash', 'Task', 'MultiTask', 'Skill', 'ToolSearch'],
+    )
+    expect(r.deferredTools.map(t => t.name)).toEqual(['CronList'])
+  })
+
+  it('preserves shortDescription on deferred tools', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, { description: 'd', prompt: 'p' })
+    expect(r.deferredTools[0].shortDescription).toBe('List scheduled tasks')
+  })
+
+  it('disables lazy-loading when disallowedTools excludes ToolSearch', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, {
+      description: 'd', prompt: 'p',
+      disallowedTools: ['ToolSearch'],
+    })
+    // Fallback: ALL filtered tools (including CronList) go to eager
+    expect(r.tools.map(t => t.name)).toContain('CronList')
+    expect(r.tools.map(t => t.name)).not.toContain('ToolSearch')
+    expect(r.deferredTools).toEqual([])
+  })
+
+  it('disables lazy-loading when allowedTools omits ToolSearch', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, {
+      description: 'd', prompt: 'p',
+      allowedTools: ['Read', 'Write', 'CronList'],
+    })
+    // ToolSearch not in allow-list → lazy-loading disabled → CronList forced eager
+    expect(r.tools.map(t => t.name)).toEqual(['Read', 'Write', 'CronList'])
+    expect(r.deferredTools).toEqual([])
+  })
+
+  it('enables lazy-loading when allowedTools includes ToolSearch', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, {
+      description: 'd', prompt: 'p',
+      allowedTools: ['Read', 'ToolSearch', 'CronList'],
+    })
+    expect(r.tools.map(t => t.name)).toEqual(['Read', 'ToolSearch'])
+    expect(r.deferredTools.map(t => t.name)).toEqual(['CronList'])
   })
 })
 
