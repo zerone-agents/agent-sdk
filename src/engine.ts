@@ -185,11 +185,14 @@ export class QueryEngine {
     // Build system prompt
     const systemPrompt = await buildSystemPrompt(this.config)
 
-    // Seed the ToolSearch registry with this agent's deferred tools.
-    // Activation state is reset per query — no accumulation across queries.
+    // Seed the ToolSearch registry's deferredTools (resolved may change between
+    // queries via overrides) but PRESERVE activatedTools across queries —
+    // activations are session-scoped (per Agent instance's ToolServices),
+    // not query-scoped. This avoids re-ToolSearch-ing the same tools when the
+    // user asks follow-up questions in the same session.
     if (this.config.env.toolServices?.toolSearch) {
       this.config.env.toolServices.toolSearch.deferredTools = this.config.resolved.deferredTools
-      this.config.env.toolServices.toolSearch.activatedTools = new Set()
+      // Note: deliberately NOT resetting activatedTools here.
     }
 
     // Emit init system message

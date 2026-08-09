@@ -885,17 +885,31 @@ describe('QueryEngine per-turn tool activation', () => {
     expect(turn2Tools.find((t: any) => t.name === 'CronList')).toBeDefined()
   })
 
-  it('does NOT persist activation across queries', async () => {
-    let turn = 0
+  it('persists activation across queries within a session', async () => {
+    // Session-scoped activation: tool activated in query 1 stays available
+    // at the start of query 2 (no re-ToolSearch needed).
+    let query = 0
+    let query2Turn1Tools: any
     const provider: LLMProvider = {
       apiType: 'anthropic-messages',
       async createMessage() { throw new Error('not used') },
       async *createMessageStream(params: any): AsyncGenerator<StreamChunk> {
-        turn++
-        // Every turn: assert CronList absent (no ToolSearch call in either query)
-        expect(params.tools?.find((t: any) => t.name === 'CronList')).toBeUndefined()
-        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
-        yield { type: 'done', index: -1 } as StreamChunk
+        query++
+        if (query === 1) {
+          // turn 1 of query 1: ToolSearch activates CronList
+          expect(params.tools?.find((t: any) => t.name === 'CronList')).toBeUndefined()
+          yield { type: 'tool_use', index: 1, id: 'tu_1', name: 'ToolSearch', input: '{"query":"select:CronList"}' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        } else if (query === 2) {
+          // turn 1 of query 2: CronList schema should already be present
+          // (no ToolSearch call this query)
+          query2Turn1Tools = params.tools
+          yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        } else {
+          yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        }
       },
     }
 
@@ -908,15 +922,17 @@ describe('QueryEngine per-turn tool activation', () => {
       },
       resolved: {
         definition: { description: 'test', prompt: 'test' },
-        tools: [],
+        tools: [makeToolSearchStandIn()],
         deferredTools: [makeDeferredCronListTool()],
         skills: [],
       } as any,
     } as any
 
     const engine = new QueryEngine(config)
-    await run(engine)
-    // Even if activatedTools had entries from query 1, query 2 starts fresh
-    await run(engine)
+    await run(engine)  // query 1: ToolSearch
+    await run(engine)  // query 2: should see CronList without ToolSearch
+
+    expect(query2Turn1Tools).toBeDefined()
+    expect(query2Turn1Tools.find((t: any) => t.name === 'CronList')).toBeDefined()
   })
 })
