@@ -58,6 +58,7 @@ export function searchDeferredTools(
  */
 const legacyRegistry: ToolSearchRegistry = {
   deferredTools: [],
+  activatedTools: new Set<string>(),
 }
 
 /**
@@ -98,8 +99,6 @@ export const ToolSearchTool: ToolDefinition = {
     const { query, max_results = 5 } = input
     const registry = ctx.services.toolSearch
 
-    const matches = searchDeferredTools(registry, query, max_results)
-
     if (registry.deferredTools.length === 0) {
       return {
         type: 'tool_result',
@@ -108,6 +107,7 @@ export const ToolSearchTool: ToolDefinition = {
       }
     }
 
+    const matches = searchDeferredTools(registry, query, max_results)
     if (matches.length === 0) {
       return {
         type: 'tool_result',
@@ -116,14 +116,17 @@ export const ToolSearchTool: ToolDefinition = {
       }
     }
 
-    const lines = matches.map(t =>
-      `- ${t.name}: ${t.description.slice(0, 200)}`
-    )
+    // Activate matched tools — their schemas will appear in the next turn's
+    // tools array (engine.ts reads activatedTools when rebuilding per turn).
+    for (const m of matches) {
+      registry.activatedTools.add(m.name)
+    }
 
+    const names = matches.map(t => t.name).join(', ')
     return {
       type: 'tool_result',
       tool_use_id: '',
-      content: `Found ${matches.length} tool(s):\n${lines.join('\n')}`,
+      content: `Loaded ${matches.length} tool(s): ${names}. Their schemas are now available; you can invoke them directly in subsequent turns.`,
     }
   },
 }
