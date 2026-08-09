@@ -10,6 +10,7 @@ import { getSystemContext } from '../utils/context.js'
 import { loadAgentsMd } from '../utils/agents-md.js'
 import { formatSkillsForSystemPrompt } from '../skills/registry.js'
 import { SYSTEM_PROMPTS, resolvePrompt } from '../prompts/system-prompts.js'
+import { truncateForCatalog } from '../tools/helpers.js'
 
 /**
  * Build the environment portion of the system prompt.
@@ -56,7 +57,7 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
   if (config.resolved.deferredTools.length > 0) {
     const sorted = [...config.resolved.deferredTools].sort((a, b) => a.name.localeCompare(b.name))
     const lines = sorted.map(t => {
-      const summary = t.shortDescription ?? t.description.slice(0, 200)
+      const summary = t.shortDescription ?? truncateForCatalog(t.description)
       return `  - ${t.name}: ${summary}`
     })
     parts.push([

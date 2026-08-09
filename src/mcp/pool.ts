@@ -26,9 +26,10 @@ interface Entry {
 const pool = new Map<string, Entry>()
 
 function configKey(config: McpServerConfig): string {
-  // Hash only transport-relevant fields; retryPolicy never affects the child
-  // process and must not break sharing when callers tweak it.
-  const { retryPolicy: _omit, ...transport } = config as any
+  // Hash only transport-relevant fields; retryPolicy (connect-time) and
+  // deferred (per-tool wrapping, applied after acquiring raw tools) never
+  // affect the child process and must not break sharing when callers tweak them.
+  const { retryPolicy: _omit, deferred: _omit2, ...transport } = config as any
   return createHash('sha256').update(JSON.stringify(transport)).digest('hex').slice(0, 16)
 }
 
@@ -74,7 +75,7 @@ export async function acquireMCPConnection(
 
   entry.refCount++
   const tools = entry.built.rawTools.map((t) =>
-    createMCPToolDefinition(name, t, entry!.built.client),
+    createMCPToolDefinition(name, t, entry!.built.client, { deferred: config.deferred }),
   )
 
   return {

@@ -36,6 +36,11 @@ export interface McpSdkServerConfig {
   version: string
   tools: ToolDefinition[]
   _sdkTools: SdkMcpToolDefinition<any>[]
+  /**
+   * Same semantics as McpStdioConfig.deferred — overrides the global
+   * AgentOptions.eagerMcp default for this in-process server's tools.
+   */
+  deferred?: boolean
 }
 
 /**
@@ -43,11 +48,16 @@ export interface McpSdkServerConfig {
  *
  * The server runs in the same process as the agent, avoiding
  * subprocess overhead. Tools are directly callable.
+ *
+ * `deferred` overrides the global `AgentOptions.eagerMcp` default for this
+ * server's tools. When left undefined, the agent's loading loop resolves it
+ * against `eagerMcp` (deferred by default; eager when `eagerMcp: true`).
  */
 export function createSdkMcpServer(options: {
   name: string
   version?: string
   tools?: SdkMcpToolDefinition<any>[]
+  deferred?: boolean
 }): McpSdkServerConfig {
   const sdkTools = options.tools || []
 
@@ -67,6 +77,7 @@ export function createSdkMcpServer(options: {
     version: options.version || '1.0.0',
     tools: toolDefinitions,
     _sdkTools: sdkTools,
+    deferred: options.deferred,
   }
 }
 

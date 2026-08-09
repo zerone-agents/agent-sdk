@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { connectMCPServer, TimeoutError } from './client.js'
+import { connectMCPServer, TimeoutError, createMCPToolDefinition } from './client.js'
 
 let mockClient: any
 let attempt = 0
@@ -146,5 +146,42 @@ describe('connectMCPServer', () => {
       expect.anything(),
       expect.objectContaining({ timeout: 5000 }),
     )
+  })
+})
+
+describe('createMCPToolDefinition', () => {
+  it('defaults to deferred: true when no options provided', () => {
+    const tool = createMCPToolDefinition('srv', { name: 't1', description: 'd' }, {} as any)
+    expect(tool.deferred).toBe(true)
+  })
+
+  it('respects options.deferred: false', () => {
+    const tool = createMCPToolDefinition('srv', { name: 't1', description: 'd' }, {} as any, { deferred: false })
+    expect(tool.deferred).toBe(false)
+  })
+
+  it('auto-generates shortDescription from description', () => {
+    const tool = createMCPToolDefinition('srv', { name: 't1', description: 'List all cron jobs' }, {} as any)
+    expect(tool.shortDescription).toBe('List all cron jobs')
+  })
+
+  it('truncates long descriptions with ...(more) marker', () => {
+    const long = 'X'.repeat(250)
+    const tool = createMCPToolDefinition('srv', { name: 't1', description: long }, {} as any)
+    expect(tool.shortDescription).toBe('X'.repeat(200) + '...(more)')
+  })
+
+  it('uses fallback description when mcpTool.description is absent', () => {
+    const tool = createMCPToolDefinition('srv', { name: 't1' }, {} as any)
+    // createMCPToolDefinition's existing fallback is 'MCP tool: <name> from <server>'
+    expect(tool.shortDescription).toContain('t1')
+    expect(tool.shortDescription).toContain('srv')
+  })
+
+  it('preserves the full description in tool.description (no truncation)', () => {
+    const long = 'Y'.repeat(500)
+    const tool = createMCPToolDefinition('srv', { name: 't1', description: long }, {} as any)
+    expect(tool.description).toBe(long)  // full description preserved
+    expect(tool.shortDescription).toBe('Y'.repeat(200) + '...(more)')  // catalog摘要 truncated
   })
 })

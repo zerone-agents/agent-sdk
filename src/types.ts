@@ -306,7 +306,8 @@ export interface ToolDefinition {
    * catalog injected into the system prompt. Should be a plain description
    * of what the tool does — no usage instructions, no parameter docs.
    *
-   * If absent, the catalog falls back to `description.slice(0, 200)`.
+   * If absent, the catalog falls back to `truncateForCatalog(description)`
+   * (200 chars + '...(more)' suffix on overflow). See src/tools/helpers.ts.
    *
    * Only required for tools marked `deferred: true`. Eager tools don't
    * appear in the catalog, so this field is unused for them.
@@ -418,6 +419,15 @@ export interface McpStdioConfig {
   args?: string[]
   env?: Record<string, string>
   retryPolicy?: McpRetryPolicy
+  /**
+   * Override the global MCP deferred default for this server's tools.
+   * - undefined: use global default (deferred when eagerMcp is false/absent; eager when eagerMcp is true)
+   * - true: force this server's tools to be deferred
+   * - false: force this server's tools to be eager
+   *
+   * See AgentOptions.eagerMcp for the global default.
+   */
+  deferred?: boolean
 }
 
 export interface McpSseConfig {
@@ -425,6 +435,15 @@ export interface McpSseConfig {
   url: string
   headers?: Record<string, string>
   retryPolicy?: McpRetryPolicy
+  /**
+   * Override the global MCP deferred default for this server's tools.
+   * - undefined: use global default (deferred when eagerMcp is false/absent; eager when eagerMcp is true)
+   * - true: force this server's tools to be deferred
+   * - false: force this server's tools to be eager
+   *
+   * See AgentOptions.eagerMcp for the global default.
+   */
+  deferred?: boolean
 }
 
 export interface McpHttpConfig {
@@ -432,6 +451,15 @@ export interface McpHttpConfig {
   url: string
   headers?: Record<string, string>
   retryPolicy?: McpRetryPolicy
+  /**
+   * Override the global MCP deferred default for this server's tools.
+   * - undefined: use global default (deferred when eagerMcp is false/absent; eager when eagerMcp is true)
+   * - true: force this server's tools to be deferred
+   * - false: force this server's tools to be eager
+   *
+   * See AgentOptions.eagerMcp for the global default.
+   */
+  deferred?: boolean
 }
 
 // --------------------------------------------------------------------------
@@ -610,6 +638,14 @@ export interface AgentOptions {
   mcpServers?: Record<string, McpServerConfig | any> // supports McpSdkServerConfig
   /** Default retry policy for MCP server initialization. Defaults to { maxRetries: 1, timeoutMs: 5000 }. */
   mcpRetryPolicy?: McpRetryPolicy
+  /**
+   * If true, MCP tools default to eager loading (pre-sub-project-2 behavior).
+   * Useful as a global escape hatch when the user doesn't want lazy-loading.
+   * Default: false (MCP tools are deferred by default).
+   *
+   * Per-server `deferred` field on McpServerConfig variants overrides this.
+   */
+  eagerMcp?: boolean
   /** Strict MCP config validation. */
   strictMcpConfig?: boolean
   /** Maximum request body size in bytes. Defaults to 6MB (6291456). Images are stripped from oldest messages when exceeded. */

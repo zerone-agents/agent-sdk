@@ -418,15 +418,28 @@ export class Agent {
   private async setup(): Promise<void> {
     // Connect MCP servers (supports stdio, SSE, HTTP, and in-process SDK servers)
     if (this.cfg.mcpServers) {
+      // Global deferred default: true (deferred) when eagerMcp is unset/false;
+      // false (eager) when eagerMcp is true. Per-server `deferred` overrides.
+      const globalDefault = !this.cfg.eagerMcp
+
       for (const [name, config] of Object.entries(this.cfg.mcpServers)) {
         try {
           if (isSdkServerConfig(config)) {
-            // In-process SDK MCP server - directly add tools
-            this.toolPool = [...this.toolPool, ...config.tools]
+            // In-process SDK MCP server. Compute per-server default and apply
+            // OR-relation per tool: tool.deferred ?? serverDefault.
+            const serverDefault = config.deferred ?? globalDefault
+            const toolsWithDeferred = config.tools.map((t) => ({
+              ...t,
+              deferred: t.deferred ?? serverDefault,
+            }))
+            this.toolPool = [...this.toolPool, ...toolsWithDeferred]
           } else {
-            // External MCP server
+            // External MCP server. Resolve undefined to global default before
+            // passing to acquireMCPConnection — that resolved boolean flows
+            // through to createMCPToolDefinition via pool.ts.
             const resolvedConfig: McpServerConfig = {
               ...config,
+              deferred: config.deferred ?? globalDefault,
               retryPolicy: {
                 maxRetries: config.retryPolicy?.maxRetries ?? this.cfg.mcpRetryPolicy?.maxRetries ?? 1,
                 timeoutMs: config.retryPolicy?.timeoutMs ?? this.cfg.mcpRetryPolicy?.timeoutMs ?? 5000,

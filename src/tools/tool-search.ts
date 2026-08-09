@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
 import type { ToolSearchRegistry } from './services.js'
+import { truncateForCatalog } from './helpers.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -139,7 +140,7 @@ export const ToolSearchTool: ToolDefinition = {
     // to description slice) so the model knows what each one does without
     // having to cross-reference <available_deferred_tools> in the system prompt.
     const lines = matches.map(t => {
-      const summary = t.shortDescription ?? t.description.slice(0, 200)
+      const summary = t.shortDescription ?? truncateForCatalog(t.description)
       return `- ${t.name}: ${summary}`
     })
     return {
