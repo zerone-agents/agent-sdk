@@ -135,11 +135,17 @@ export const ToolSearchTool: ToolDefinition = {
       registry.activatedTools.add(m.name)
     }
 
-    const names = matches.map(t => t.name).join(', ')
+    // Self-contained summary: each tool's Name + shortDescription (or fallback
+    // to description slice) so the model knows what each one does without
+    // having to cross-reference <available_deferred_tools> in the system prompt.
+    const lines = matches.map(t => {
+      const summary = t.shortDescription ?? t.description.slice(0, 200)
+      return `- ${t.name}: ${summary}`
+    })
     return {
       type: 'tool_result',
       tool_use_id: '',
-      content: `Loaded ${matches.length} tool(s): ${names}. Their schemas are now available; you can invoke them directly in subsequent turns.`,
+      content: `Loaded ${matches.length} tool(s):\n${lines.join('\n')}\n\nTheir schemas are now available; you can invoke them directly in subsequent turns.`,
     }
   },
 }

@@ -82,4 +82,22 @@ describe('ToolSearch activation', () => {
     expect(activated.has('Config')).toBe(false)
     expect(result.content).toContain('CronList')
   })
+
+  it('response includes each tool\'s shortDescription when present', async () => {
+    const deferred = [
+      { name: 'CronList', description: 'long description', shortDescription: 'List scheduled tasks', call: vi.fn() },
+    ]
+    const { result } = await callToolSearch('select:CronList', deferred)
+    // shortDescription is used, not the long description
+    expect(result.content).toContain('- CronList: List scheduled tasks')
+    expect(result.content).not.toContain('long description')
+  })
+
+  it('response falls back to description when shortDescription absent', async () => {
+    const deferred = [
+      { name: 'CronList', description: 'Fallback description here', call: vi.fn() },
+    ]
+    const { result } = await callToolSearch('select:CronList', deferred)
+    expect(result.content).toContain('- CronList: Fallback description here')
+  })
 })
