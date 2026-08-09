@@ -5,8 +5,21 @@
  * Supports keyword search and exact name selection.
  */
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
 import type { ToolSearchRegistry } from './services.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+let _description: string
+try {
+  _description = readFileSync(join(__dirname, 'tool-search.txt'), 'utf-8')
+} catch {
+  _description = 'Search for additional tools that may be available but not yet loaded.'
+}
 
 // ============================================================================
 // ToolSearchRegistry Helper Functions (new API)
@@ -76,7 +89,7 @@ export function setDeferredTools(tools: ToolDefinition[]): void {
 
 export const ToolSearchTool: ToolDefinition = {
   name: 'ToolSearch',
-  description: 'Search for additional tools that may be available but not yet loaded. Use keyword search or exact name selection.',
+  description: _description,
   inputSchema: {
     type: 'object',
     properties: {
@@ -94,7 +107,7 @@ export const ToolSearchTool: ToolDefinition = {
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   isEnabled: () => true,
-  async prompt() { return 'Search for available tools.' },
+  async prompt() { return _description },
   async call(input: any, ctx: ToolContext): Promise<ToolResult> {
     const { query, max_results = 5 } = input
     const registry = ctx.services.toolSearch
