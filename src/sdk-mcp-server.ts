@@ -36,6 +36,11 @@ export interface McpSdkServerConfig {
   version: string
   tools: ToolDefinition[]
   _sdkTools: SdkMcpToolDefinition<any>[]
+  /**
+   * Same semantics as McpStdioConfig.deferred — overrides the global
+   * AgentOptions.eagerMcp default for this in-process server's tools.
+   */
+  deferred?: boolean
 }
 
 /**

@@ -3,6 +3,7 @@
  */
 
 import type { ToolDefinition, McpServerConfig, ToolContext, ToolResult } from '../types.js'
+import { truncateForCatalog } from '../tools/helpers.js'
 
 export interface MCPConnection {
   name: string
@@ -125,7 +126,7 @@ async function connectOnce(
 ): Promise<MCPConnection> {
   const built = await buildMCPClient(name, config, timeoutMs, externalSignal)
   const tools: ToolDefinition[] = built.rawTools.map((mcpTool: any) =>
-    createMCPToolDefinition(name, mcpTool, built.client),
+    createMCPToolDefinition(name, mcpTool, built.client, { deferred: config.deferred }),
   )
 
   return {
@@ -173,17 +174,35 @@ export async function connectMCPServer(
 
 /**
  * Create a ToolDefinition wrapping an MCP server tool.
+ *
+ * By default the returned tool is marked `deferred: true` so it opts into
+ * the ToolSearch lazy-loading system (sub-project 2). Pass `{ deferred: false }`
+ * in options to force eager loading. Per-server `deferred` overrides are
+ * forwarded from connectOnce; the agent loop resolves the global default
+ * for `undefined` values.
+ *
+ * `shortDescription` is auto-generated from `mcpTool.description` (truncated
+ * via truncateForCatalog) so the deferred-tools catalog stays compact.
+ * The full description is preserved in `description` for the eager schema path.
  */
 export function createMCPToolDefinition(
   serverName: string,
   mcpTool: { name: string; description?: string; inputSchema?: any },
   client: any,
+  options?: { deferred?: boolean },
 ): ToolDefinition {
   const toolName = `mcp__${serverName}__${mcpTool.name}`
+  const fallbackDescription = `MCP tool: ${mcpTool.name} from ${serverName}`
+  const description = mcpTool.description || fallbackDescription
 
   return {
     name: toolName,
-    description: mcpTool.description || `MCP tool: ${mcpTool.name} from ${serverName}`,
+    description,
+    // Auto-generate shortDescription from the (possibly long) description,
+    // truncating with a marker so the model knows content was cut off.
+    shortDescription: truncateForCatalog(description),
+    // Default deferred=true unless caller overrides (sub-project 2 default).
+    deferred: options?.deferred ?? true,
     inputSchema: mcpTool.inputSchema || { type: 'object', properties: {} },
     isReadOnly: () => false,
     isConcurrencySafe: () => false,
