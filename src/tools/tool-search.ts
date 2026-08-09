@@ -5,8 +5,21 @@
  * Supports keyword search and exact name selection.
  */
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
 import type { ToolSearchRegistry } from './services.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+let _description: string
+try {
+  _description = readFileSync(join(__dirname, 'tool-search.txt'), 'utf-8')
+} catch {
+  _description = 'Search for additional tools that may be available but not yet loaded.'
+}
 
 // ============================================================================
 // ToolSearchRegistry Helper Functions (new API)
@@ -58,6 +71,7 @@ export function searchDeferredTools(
  */
 const legacyRegistry: ToolSearchRegistry = {
   deferredTools: [],
+  activatedTools: new Set<string>(),
 }
 
 /**
@@ -75,7 +89,7 @@ export function setDeferredTools(tools: ToolDefinition[]): void {
 
 export const ToolSearchTool: ToolDefinition = {
   name: 'ToolSearch',
-  description: 'Search for additional tools that may be available but not yet loaded. Use keyword search or exact name selection.',
+  description: _description,
   inputSchema: {
     type: 'object',
     properties: {
@@ -93,12 +107,10 @@ export const ToolSearchTool: ToolDefinition = {
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   isEnabled: () => true,
-  async prompt() { return 'Search for available tools.' },
+  async prompt() { return _description },
   async call(input: any, ctx: ToolContext): Promise<ToolResult> {
     const { query, max_results = 5 } = input
     const registry = ctx.services.toolSearch
-
-    const matches = searchDeferredTools(registry, query, max_results)
 
     if (registry.deferredTools.length === 0) {
       return {
@@ -108,6 +120,7 @@ export const ToolSearchTool: ToolDefinition = {
       }
     }
 
+    const matches = searchDeferredTools(registry, query, max_results)
     if (matches.length === 0) {
       return {
         type: 'tool_result',
@@ -116,14 +129,23 @@ export const ToolSearchTool: ToolDefinition = {
       }
     }
 
-    const lines = matches.map(t =>
-      `- ${t.name}: ${t.description.slice(0, 200)}`
-    )
+    // Activate matched tools — their schemas will appear in the next turn's
+    // tools array (engine.ts reads activatedTools when rebuilding per turn).
+    for (const m of matches) {
+      registry.activatedTools.add(m.name)
+    }
 
+    // Self-contained summary: each tool's Name + shortDescription (or fallback
+    // to description slice) so the model knows what each one does without
+    // having to cross-reference <available_deferred_tools> in the system prompt.
+    const lines = matches.map(t => {
+      const summary = t.shortDescription ?? t.description.slice(0, 200)
+      return `- ${t.name}: ${summary}`
+    })
     return {
       type: 'tool_result',
       tool_use_id: '',
-      content: `Found ${matches.length} tool(s):\n${lines.join('\n')}`,
+      content: `Loaded ${matches.length} tool(s):\n${lines.join('\n')}\n\nTheir schemas are now available; you can invoke them directly in subsequent turns.`,
     }
   },
 }

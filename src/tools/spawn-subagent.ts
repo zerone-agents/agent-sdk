@@ -117,6 +117,7 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     definition: { ...agentDef, prompt: buildSubagentSystemPrompt(agentDef, opts.mode) },
     tools: buildSubagentTools(opts.env, agentDef, opts.mode),
     skills: resolveAgent(opts.env, agentDef).skills,
+    deferredTools: [],  // sub-agent tools are resolved above without split; this stays empty
   }
 
   const sessionId = crypto.randomUUID()

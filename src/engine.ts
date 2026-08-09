@@ -182,11 +182,18 @@ export class QueryEngine {
       }
     }
 
-    // Build tool definitions for provider
-    const tools = this.config.resolved.tools.map(toProviderTool)
-
     // Build system prompt
     const systemPrompt = await buildSystemPrompt(this.config)
+
+    // Seed the ToolSearch registry's deferredTools (resolved may change between
+    // queries via overrides) but PRESERVE activatedTools across queries —
+    // activations are session-scoped (per Agent instance's ToolServices),
+    // not query-scoped. This avoids re-ToolSearch-ing the same tools when the
+    // user asks follow-up questions in the same session.
+    if (this.config.env.toolServices?.toolSearch) {
+      this.config.env.toolServices.toolSearch.deferredTools = this.config.resolved.deferredTools
+      // Note: deliberately NOT resetting activatedTools here.
+    }
 
     // Emit init system message
     yield {
@@ -275,6 +282,16 @@ export class QueryEngine {
           // todos file unreadable — skip injection this turn
         }
       }
+
+      // Build per-turn tools: eager + activated deferred schemas.
+      // Recomputed every turn because activatedTools may grow during the query
+      // (e.g. the model called ToolSearch in turn N — those schemas appear in turn N+1).
+      const eagerTools = this.config.resolved.tools.map(toProviderTool)
+      const activatedNames = this.config.env.toolServices?.toolSearch?.activatedTools ?? new Set<string>()
+      const activatedDeferred = this.config.resolved.deferredTools
+        .filter(t => activatedNames.has(t.name))
+        .map(toProviderTool)
+      const tools = [...eagerTools, ...activatedDeferred]
 
       this.turnCount++
       turnsRemaining--

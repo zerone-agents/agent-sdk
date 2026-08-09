@@ -92,6 +92,7 @@ function buildConfig(
     resolved: {
       definition: { description: 'test', prompt: 'test prompt' },
       tools: [],
+      deferredTools: [],
       skills: [],
     },
     maxTurns: 1,

@@ -282,8 +282,19 @@ export async function runToolsBackground(
   const readOnly: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
   const mutations: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
 
+  // Build the lookup pool: eager tools + activated deferred tools.
+  // Deferred tools only become callable after the model calls ToolSearch to
+  // load their schema (engine.ts rebuilds the provider tools array per turn
+  // based on activatedTools). We mirror that here so tool-executor can
+  // dispatch tool_use blocks for tools activated earlier in the same query.
+  const activatedNames = ctx.config.env.toolServices?.toolSearch?.activatedTools
+  const deferredPool = activatedNames && activatedNames.size > 0
+    ? ctx.config.resolved.deferredTools.filter(t => activatedNames.has(t.name))
+    : []
+  const lookupPool = [...ctx.config.resolved.tools, ...deferredPool]
+
   for (const block of toolUseBlocks) {
-    const tool = ctx.config.resolved.tools.find((t) => t.name === block.name)
+    const tool = lookupPool.find((t) => t.name === block.name)
     if (isReadOnlyTool(tool)) {
       readOnly.push({ block, tool })
     } else {

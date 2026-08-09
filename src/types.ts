@@ -300,6 +300,27 @@ export interface ToolDefinition {
   isConcurrencySafe?: () => boolean
   isEnabled?: () => boolean
   prompt?: (context: ToolContext) => Promise<string>
+
+  /**
+   * One-line summary (≤120 chars recommended), used in the deferred-tools
+   * catalog injected into the system prompt. Should be a plain description
+   * of what the tool does — no usage instructions, no parameter docs.
+   *
+   * If absent, the catalog falls back to `description.slice(0, 200)`.
+   *
+   * Only required for tools marked `deferred: true`. Eager tools don't
+   * appear in the catalog, so this field is unused for them.
+   */
+  shortDescription?: string
+
+  /**
+   * If true, this tool is NOT eagerly loaded into the provider's `tools`
+   * array. The model must use ToolSearch to load its full schema before
+   * invoking it. Default: false (eager).
+   *
+   * NOTE: "deferred" is about schema visibility, NOT access control.
+   */
+  deferred?: boolean
 }
 
 export interface ToolInputSchema {
@@ -452,6 +473,7 @@ export interface AgentEnvironment {
 export interface ResolvedAgent {
   definition: AgentDefinition
   tools: ToolDefinition[]
+  deferredTools: ToolDefinition[]
   skills: import('./skills/types.js').SkillDefinition[]
 }
 

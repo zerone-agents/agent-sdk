@@ -1,0 +1,18 @@
+Search for and activate tools that exist but are not yet loaded into your tool set. After successful search, the matched tools' full schemas become available in subsequent turns.
+
+## When to use
+- You've checked `<available_deferred_tools>` in the system prompt and found a tool that fits your task
+- You need a capability (e.g. scheduling, config, structured prompting) that isn't in your current tool set
+
+## Query syntax
+- Exact name: `select:ToolName` (or comma-separated `select:A,B,C` to activate multiple in one call). Use this when you know the name from the `<available_deferred_tools>` catalog.
+- Keyword search: free-text keywords matched against tool name and description (substring match, case-insensitive). Use this for exploratory search.
+
+## Parameters
+- `query` (required): the search string, using one of the syntaxes above
+- `max_results` (optional, default 5): cap on keyword-search results. Ignored for `select:` queries (returns all named tools that exist).
+
+## Behavior
+- Matched tools' schemas are appended to your tool set starting the NEXT turn (this turn's LLM call already happened).
+- Activation is session-scoped: tools stay loaded for the rest of this session (across user queries); new sessions start fresh.
+- Calling ToolSearch with a name that's already active is a no-op (safe to retry).

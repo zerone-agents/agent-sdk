@@ -40,6 +40,7 @@ export class DefaultToolServices implements ToolServices {
     // Initialize tool search registry with empty array
     this.toolSearch = {
       deferredTools: [],
+      activatedTools: new Set(),
     }
 
     // Initialize config storage
