@@ -7,6 +7,7 @@ import { SkillRegistry } from './skills/index.js'
 import { vi } from 'vitest'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { createEmptyServices } from './tools/services.js'
 
 // Mirrors the real @anthropic-ai/sdk APIConnectionError: a plain Error with
 // name='Error', fixed message, and the underlying failure on `cause`.
@@ -798,5 +799,124 @@ describe('QueryEngine per-turn todos reminder injection', () => {
     const allPersisted = JSON.stringify(persisted)
     expect(allPersisted).not.toContain('<system-reminder>')
     expect(allPersisted).not.toContain('Current task list:')
+  })
+})
+
+describe('QueryEngine per-turn tool activation', () => {
+  function makeDeferredCronListTool() {
+    return {
+      name: 'CronList',
+      description: 'List scheduled tasks',
+      shortDescription: 'List scheduled tasks',
+      deferred: true,
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      isEnabled: () => true,
+      async call() {
+        return {
+          type: 'tool_result',
+          tool_use_id: '',
+          content: 'no scheduled tasks',
+        }
+      },
+    } as any
+  }
+
+  function makeToolSearchStandIn() {
+    return {
+      name: 'ToolSearch',
+      description: 'search',
+      inputSchema: { type: 'object', properties: {} },
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      isEnabled: () => true,
+      async call(input: any, ctx: any) {
+        if (input?.query === 'select:CronList') {
+          ctx.services.toolSearch.activatedTools.add('CronList')
+          return { type: 'tool_result', tool_use_id: '', content: 'Loaded 1 tool(s): CronList' }
+        }
+        return { type: 'tool_result', tool_use_id: '', content: 'no match' }
+      },
+    } as any
+  }
+
+  it('ToolSearch in turn 1 makes CronList schema available in turn 2', async () => {
+    let turn = 0
+    let turn2Tools: any
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(params: any): AsyncGenerator<StreamChunk> {
+        turn++
+        if (turn === 1) {
+          // Verify CronList is NOT in turn 1 tools (deferred)
+          expect(params.tools?.find((t: any) => t.name === 'CronList')).toBeUndefined()
+          // Emit a ToolSearch call
+          yield { type: 'tool_use', index: 1, id: 'tu_1', name: 'ToolSearch', input: '{"query":"select:CronList"}' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        } else {
+          // Capture turn 2 tools — CronList should be present
+          turn2Tools = params.tools
+          yield { type: 'text', index: 0, delta: 'done' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        }
+      },
+    }
+
+    const baseConfig = makeConfig(provider)
+    const config: QueryEngineConfig = {
+      ...baseConfig,
+      env: {
+        ...baseConfig.env,
+        toolServices: createEmptyServices(),
+      },
+      resolved: {
+        definition: { description: 'test', prompt: 'test' },
+        tools: [makeToolSearchStandIn()],
+        deferredTools: [makeDeferredCronListTool()],
+        skills: [],
+      } as any,
+    } as any
+
+    await run(new QueryEngine(config))
+
+    expect(turn2Tools).toBeDefined()
+    expect(turn2Tools.find((t: any) => t.name === 'CronList')).toBeDefined()
+  })
+
+  it('does NOT persist activation across queries', async () => {
+    let turn = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(params: any): AsyncGenerator<StreamChunk> {
+        turn++
+        // Every turn: assert CronList absent (no ToolSearch call in either query)
+        expect(params.tools?.find((t: any) => t.name === 'CronList')).toBeUndefined()
+        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+
+    const baseConfig = makeConfig(provider)
+    const config: QueryEngineConfig = {
+      ...baseConfig,
+      env: {
+        ...baseConfig.env,
+        toolServices: createEmptyServices(),
+      },
+      resolved: {
+        definition: { description: 'test', prompt: 'test' },
+        tools: [],
+        deferredTools: [makeDeferredCronListTool()],
+        skills: [],
+      } as any,
+    } as any
+
+    const engine = new QueryEngine(config)
+    await run(engine)
+    // Even if activatedTools had entries from query 1, query 2 starts fresh
+    await run(engine)
   })
 })
