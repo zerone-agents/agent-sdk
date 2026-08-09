@@ -31,6 +31,7 @@ function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryE
     resolved: {
       definition: { description: 'test', prompt: 'test prompt' },
       tools,
+      deferredTools: [],
       skills: [],
     },
     maxTurns: 5,

@@ -52,6 +52,21 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
     ].join('\n'))
   }
 
+  // Deferred tools catalog — lets the model know what's ToolSearch-able
+  if (config.resolved.deferredTools.length > 0) {
+    const sorted = [...config.resolved.deferredTools].sort((a, b) => a.name.localeCompare(b.name))
+    const lines = sorted.map(t => {
+      const summary = t.shortDescription ?? t.description.slice(0, 200)
+      return `  - ${t.name}: ${summary}`
+    })
+    parts.push([
+      '<available_deferred_tools>',
+      'These tools are available but their full schemas are NOT loaded. Use the ToolSearch tool to load a tool\'s schema before invoking it.',
+      ...lines,
+      '</available_deferred_tools>',
+    ].join('\n'))
+  }
+
   // Load AGENTS.md instructions
   const agentsMdContent = await loadAgentsMd(config.env.cwd, config.env.settingSources)
   if (agentsMdContent) {
