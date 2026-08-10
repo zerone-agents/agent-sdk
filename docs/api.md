@@ -91,6 +91,25 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | `toolEnvInherit`     | `boolean`                               | `true`                 | When false, completely replaces process.env (use with toolEnv for fully isolated subprocess environment) |
 | `abortController`    | `AbortController`                       | —                      | Cancellation controller                                              |
 
+### MCP server transports
+
+`mcpServers` entries are discriminated by the `type` field. The SDK accepts the
+following transport spellings and infers the transport when `type` is omitted:
+
+| `type` value                  | Underlying transport                                | Required fields      |
+| ----------------------------- | --------------------------------------------------- | -------------------- |
+| `stdio`                       | `StdioClientTransport`                              | `command`            |
+| `sse`                         | `SSEClientTransport` (legacy HTTP+SSE)              | `url`                |
+| `streamable_http`             | `StreamableHTTPClientTransport` (canonical, spec)   | `url`                |
+| `streamable-http`             | `StreamableHTTPClientTransport` (kebab-case alias)  | `url`                |
+| `http`                        | `StreamableHTTPClientTransport` (backwards-compat)  | `url`                |
+| _(omitted)_ + `command`       | `StdioClientTransport` (inferred)                   | `command`            |
+| _(omitted)_ + `url`           | `StreamableHTTPClientTransport` (inferred)          | `url`                |
+
+`streamable_http` / `streamable-http` / `http` are treated as equivalent — all
+three instantiate `StreamableHTTPClientTransport`. Unknown explicit values fail
+fast with a clear error.
+
 ### Environment variables
 
 | Variable                 | Description                                              |

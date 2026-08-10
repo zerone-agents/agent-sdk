@@ -36,8 +36,51 @@ function createTimeoutSignal(timeoutMs: number, externalSignal?: AbortSignal): {
   }
 }
 
+/**
+ * The set of `type` spellings the SDK accepts for the MCP Streamable HTTP
+ * transport. `http` is retained as a backwards-compatible alias; all spellings
+ * map to `StreamableHTTPClientTransport`. See issue #14.
+ */
+const STREAMABLE_HTTP_TYPES = new Set(['http', 'streamable_http', 'streamable-http'])
+
+/**
+ * Resolve a user-supplied MCP config to a normalized transport kind, applying
+ * alias normalization and omitted-type inference:
+ *   - `stdio`            → 'stdio'
+ *   - `sse`              → 'sse' (legacy HTTP+SSE transport)
+ *   - `http`/`streamable_http`/`streamable-http` → 'streamable-http'
+ *   - omitted + `command` present → 'stdio'
+ *   - omitted + `url` present     → 'streamable-http'
+ *
+ * Unknown explicit values throw a clear error so misconfiguration fails fast.
+ */
+export function resolveTransportKind(config: McpServerConfig): 'stdio' | 'sse' | 'streamable-http' {
+  const rawType = (config as any).type as string | undefined
+
+  if (rawType === undefined) {
+    // Infer from shape: command → stdio, url → Streamable HTTP.
+    if ((config as any).command !== undefined) return 'stdio'
+    if ((config as any).url !== undefined) return 'streamable-http'
+    throw new Error(
+      `Cannot infer MCP transport: config has no 'type', 'command', or 'url' field`,
+    )
+  }
+
+  if (rawType === 'stdio') return 'stdio'
+  if (rawType === 'sse') return 'sse'
+  if (STREAMABLE_HTTP_TYPES.has(rawType)) return 'streamable-http'
+
+  throw new Error(
+    `Unsupported MCP transport type: ${rawType}. ` +
+      `Supported values: 'stdio', 'sse', 'streamable_http', 'streamable-http', 'http'. ` +
+      `Omit 'type' to infer from config shape (command→stdio, url→Streamable HTTP).`,
+  )
+}
+
 async function createTransport(name: string, config: McpServerConfig) {
-  if (!config.type || config.type === 'stdio') {
+  const kind = resolveTransportKind(config)
+
+  if (kind === 'stdio') {
     const stdioConfig = config as { command: string; args?: string[]; env?: Record<string, string> }
     const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js')
     return new StdioClientTransport({
@@ -45,21 +88,22 @@ async function createTransport(name: string, config: McpServerConfig) {
       args: stdioConfig.args || [],
       env: { ...process.env, ...stdioConfig.env } as Record<string, string>,
     })
-  } else if (config.type === 'sse') {
+  }
+
+  if (kind === 'sse') {
     const sseConfig = config as { url: string; headers?: Record<string, string> }
     const { SSEClientTransport } = await import('@modelcontextprotocol/sdk/client/sse.js')
     return new SSEClientTransport(new URL(sseConfig.url), {
       requestInit: sseConfig.headers ? { headers: sseConfig.headers } : undefined,
     } as any)
-  } else if (config.type === 'http') {
-    const httpConfig = config as { url: string; headers?: Record<string, string> }
-    const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
-    return new StreamableHTTPClientTransport(new URL(httpConfig.url), {
-      requestInit: httpConfig.headers ? { headers: httpConfig.headers } : undefined,
-    } as any)
-  } else {
-    throw new Error(`Unsupported MCP transport type: ${(config as any).type}`)
   }
+
+  // kind === 'streamable-http'
+  const httpConfig = config as { url: string; headers?: Record<string, string> }
+  const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
+  return new StreamableHTTPClientTransport(new URL(httpConfig.url), {
+    requestInit: httpConfig.headers ? { headers: httpConfig.headers } : undefined,
+  } as any)
 }
 
 export interface BuiltClient {

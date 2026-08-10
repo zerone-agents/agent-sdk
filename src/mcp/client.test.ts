@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { connectMCPServer, TimeoutError, createMCPToolDefinition } from './client.js'
+import { connectMCPServer, TimeoutError, createMCPToolDefinition, resolveTransportKind } from './client.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 let mockClient: any
 let attempt = 0
@@ -183,5 +186,119 @@ describe('createMCPToolDefinition', () => {
     const tool = createMCPToolDefinition('srv', { name: 't1', description: long }, {} as any)
     expect(tool.description).toBe(long)  // full description preserved
     expect(tool.shortDescription).toBe('Y'.repeat(200) + '...(more)')  // catalog摘要 truncated
+  })
+})
+
+describe('resolveTransportKind (issue #14: MCP transport aliases)', () => {
+  it("maps 'streamable_http' to the Streamable HTTP transport", () => {
+    expect(resolveTransportKind({ type: 'streamable_http', url: 'https://x' })).toBe('streamable-http')
+  })
+
+  it("maps 'streamable-http' (kebab-case) to the Streamable HTTP transport", () => {
+    expect(resolveTransportKind({ type: 'streamable-http', url: 'https://x' })).toBe('streamable-http')
+  })
+
+  it("maps the legacy 'http' alias to the Streamable HTTP transport", () => {
+    expect(resolveTransportKind({ type: 'http', url: 'https://x' })).toBe('streamable-http')
+  })
+
+  it("maps 'stdio' to the stdio transport", () => {
+    expect(resolveTransportKind({ type: 'stdio', command: 'echo' })).toBe('stdio')
+  })
+
+  it("maps 'sse' to the legacy SSE transport", () => {
+    expect(resolveTransportKind({ type: 'sse', url: 'https://x' })).toBe('sse')
+  })
+
+  it('infers stdio when type is omitted but command is present', () => {
+    expect(resolveTransportKind({ command: 'echo', args: [] } as any)).toBe('stdio')
+  })
+
+  it('infers Streamable HTTP when type is omitted but url is present', () => {
+    expect(resolveTransportKind({ url: 'https://x' } as any)).toBe('streamable-http')
+  })
+
+  it('prefers an explicit stdio type even when url is also present (explicit wins over inference)', () => {
+    // explicit type always wins; this guards against ambiguous configs
+    expect(resolveTransportKind({ type: 'stdio', command: 'echo', url: 'https://x' } as any)).toBe('stdio')
+  })
+
+  it('throws a clear error for an unknown explicit transport type', () => {
+    expect(() => resolveTransportKind({ type: 'websocket', url: 'wss://x' } as any)).toThrow(
+      /Unsupported MCP transport type: websocket/,
+    )
+  })
+
+  it('throws a helpful error mentioning supported aliases', () => {
+    try {
+      resolveTransportKind({ type: 'ws', url: 'wss://x' } as any)
+      throw new Error('should have thrown')
+    } catch (err: any) {
+      expect(err.message).toContain('streamable_http')
+      expect(err.message).toContain('streamable-http')
+      expect(err.message).toContain('http')
+      expect(err.message).toContain('stdio')
+      expect(err.message).toContain('sse')
+    }
+  })
+
+  it('throws when type is omitted and neither command nor url is present', () => {
+    expect(() => resolveTransportKind({} as any)).toThrow(/Cannot infer MCP transport/)
+  })
+})
+
+describe('createTransport alias wiring (issue #14)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    attempt = 0
+  })
+
+  it('instantiates StreamableHTTPClientTransport for type: streamable_http', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'streamable_http', url: 'https://x', retryPolicy: { timeoutMs: 1000, maxRetries: 0 } })
+    expect(StreamableHTTPClientTransport).toHaveBeenCalledTimes(1)
+  })
+
+  it('instantiates StreamableHTTPClientTransport for type: streamable-http', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'streamable-http', url: 'https://x', retryPolicy: { timeoutMs: 1000, maxRetries: 0 } })
+    expect(StreamableHTTPClientTransport).toHaveBeenCalledTimes(1)
+  })
+
+  it('instantiates StreamableHTTPClientTransport for the legacy http alias', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'http', url: 'https://x', retryPolicy: { timeoutMs: 1000, maxRetries: 0 } })
+    expect(StreamableHTTPClientTransport).toHaveBeenCalledTimes(1)
+  })
+
+  it('infers Streamable HTTP from url when type is omitted', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    await connectMCPServer('srv', { url: 'https://x', retryPolicy: { timeoutMs: 1000, maxRetries: 0 } } as any)
+    expect(StreamableHTTPClientTransport).toHaveBeenCalledTimes(1)
+  })
+
+  it('infers stdio from command when type is omitted', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StdioClientTransport).mockClear()
+    await connectMCPServer('srv', { command: 'echo', retryPolicy: { timeoutMs: 1000, maxRetries: 0 } } as any)
+    expect(StdioClientTransport).toHaveBeenCalledTimes(1)
+  })
+
+  it('instantiates SSEClientTransport for type: sse (unchanged)', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(SSEClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'sse', url: 'https://x', retryPolicy: { timeoutMs: 1000, maxRetries: 0 } })
+    expect(SSEClientTransport).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns error status (does not throw) for an unsupported explicit type', async () => {
+    mockClient = createMockClient({ tools: [] })
+    const result = await connectMCPServer('srv', { type: 'ws', url: 'wss://x', retryPolicy: { timeoutMs: 1000, maxRetries: 0 } } as any)
+    expect(result.status).toBe('error')
+    expect((result.error as Error).message).toMatch(/Unsupported MCP transport type: ws/)
   })
 })

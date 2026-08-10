@@ -406,6 +406,21 @@ export type McpServerConfig =
   | McpSseConfig
   | McpHttpConfig
 
+/**
+ * Accepted `type` spellings for the MCP Streamable HTTP transport.
+ *
+ * The SDK treats all of these as equivalent and instantiates
+ * `StreamableHTTPClientTransport` for each:
+ *   - `streamable_http` — canonical spelling (matches the MCP spec)
+ *   - `streamable-http` — kebab-case alias common in ecosystem config files
+ *   - `http`            — backwards-compatible alias (pre-existing SDK spelling)
+ *
+ * When `type` is omitted entirely, the SDK infers the transport from the
+ * other fields: `command` present → stdio, `url` present → Streamable HTTP.
+ * See `McpHttpConfig` and `McpStdioConfig`.
+ */
+export type McpStreamableHttpType = 'http' | 'streamable_http' | 'streamable-http'
+
 export interface McpRetryPolicy {
   /** Maximum number of initialization retries. */
   maxRetries?: number
@@ -447,7 +462,15 @@ export interface McpSseConfig {
 }
 
 export interface McpHttpConfig {
-  type: 'http'
+  /**
+   * Transport selector. Accepts the standard Streamable HTTP spellings
+   * (`streamable_http`, `streamable-http`) plus the backwards-compatible
+   * `http` alias. See `McpStreamableHttpType`.
+   *
+   * When omitted, the SDK infers Streamable HTTP from the presence of `url`
+   * (and absence of `command`).
+   */
+  type?: McpStreamableHttpType
   url: string
   headers?: Record<string, string>
   retryPolicy?: McpRetryPolicy
