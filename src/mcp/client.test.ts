@@ -4,6 +4,10 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
+// Note: compile-time type-level contracts for the dual-selector (`type` /
+// `transport`) PR live in `src/mcp/type-contracts.ts` so tsc actually checks
+// them — test files are excluded from tsc via tsconfig.json's exclude list.
+
 let mockClient: any
 let attempt = 0
 
@@ -211,11 +215,13 @@ describe('resolveTransportKind (issue #14: MCP transport aliases)', () => {
   })
 
   it('infers stdio when type is omitted but command is present', () => {
-    expect(resolveTransportKind({ command: 'echo', args: [] } as any)).toBe('stdio')
+    const config: McpServerConfig = { command: 'echo', args: [] }
+    expect(resolveTransportKind(config)).toBe('stdio')
   })
 
   it('infers Streamable HTTP when type is omitted but url is present', () => {
-    expect(resolveTransportKind({ url: 'https://x' } as any)).toBe('streamable-http')
+    const config: McpServerConfig = { url: 'https://x' }
+    expect(resolveTransportKind(config)).toBe('streamable-http')
   })
 
   it('prefers an explicit stdio type even when url is also present (explicit wins over inference)', () => {
@@ -249,29 +255,36 @@ describe('resolveTransportKind (issue #14: MCP transport aliases)', () => {
   // --- issue #14 follow-up: `transport` alternate selector field ---
 
   it("accepts 'transport' field as an alias for 'type' (streamable_http)", () => {
-    expect(resolveTransportKind({ transport: 'streamable_http', url: 'https://x' } as any)).toBe('streamable-http')
+    const config: McpServerConfig = { transport: 'streamable_http', url: 'https://x' }
+    expect(resolveTransportKind(config)).toBe('streamable-http')
   })
 
   it("accepts 'transport' field with the kebab-case alias", () => {
-    expect(resolveTransportKind({ transport: 'streamable-http', url: 'https://x' } as any)).toBe('streamable-http')
+    const config: McpServerConfig = { transport: 'streamable-http', url: 'https://x' }
+    expect(resolveTransportKind(config)).toBe('streamable-http')
   })
 
   it("accepts 'transport' field with the legacy http alias", () => {
-    expect(resolveTransportKind({ transport: 'http', url: 'https://x' } as any)).toBe('streamable-http')
+    const config: McpServerConfig = { transport: 'http', url: 'https://x' }
+    expect(resolveTransportKind(config)).toBe('streamable-http')
   })
 
   it("accepts 'transport: stdio'", () => {
-    expect(resolveTransportKind({ transport: 'stdio', command: 'echo' } as any)).toBe('stdio')
+    const config: McpServerConfig = { transport: 'stdio', command: 'echo' }
+    expect(resolveTransportKind(config)).toBe('stdio')
   })
 
   it("accepts 'transport: sse'", () => {
-    expect(resolveTransportKind({ transport: 'sse', url: 'https://x' } as any)).toBe('sse')
+    const config: McpServerConfig = { transport: 'sse', url: 'https://x' }
+    expect(resolveTransportKind(config)).toBe('sse')
   })
 
   it('accepts both type and transport when they normalize to the same kind', () => {
     // different spellings, same underlying transport → ok
-    expect(resolveTransportKind({ type: 'http', transport: 'streamable-http', url: 'https://x' } as any)).toBe('streamable-http')
-    expect(resolveTransportKind({ type: 'streamable_http', transport: 'http', url: 'https://x' } as any)).toBe('streamable-http')
+    const a: McpServerConfig = { type: 'http', transport: 'streamable-http', url: 'https://x' }
+    const b: McpServerConfig = { type: 'streamable_http', transport: 'http', url: 'https://x' }
+    expect(resolveTransportKind(a)).toBe('streamable-http')
+    expect(resolveTransportKind(b)).toBe('streamable-http')
   })
 
   it('throws a conflict error when type and transport resolve to different kinds', () => {

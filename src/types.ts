@@ -466,7 +466,7 @@ export interface McpStdioConfig {
 }
 
 export interface McpSseConfig {
-  type: 'sse'
+  type?: 'sse'
   /** Alternate selector field name for `type`. See `McpStreamableHttpType` doc. */
   transport?: 'sse'
   url: string
