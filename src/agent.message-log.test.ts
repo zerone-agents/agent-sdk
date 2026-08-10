@@ -39,6 +39,10 @@ function makeAgent(): Agent {
     apiKey: 'fake-key',
     persistSession: false,
     permissionMode: 'bypassPermissions',
+    // Disable SnapshotEngine: these tests run concurrently and would all
+    // `git init --bare` into the same shared ~/.agents/snapshot/<hash> dir,
+    // racing on git's config lock. Not under test here.
+    enableFileRevert: false,
   })
   ;(agent as any).provider = new FakeProvider()
   return agent

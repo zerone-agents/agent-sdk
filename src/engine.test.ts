@@ -400,10 +400,16 @@ describe('executeTools streaming + tools_complete', () => {
     const engine = new QueryEngine(config)
     const msgs: SDKMessage[] = []
     const p = (async () => {
-      for await (const m of engine.submitMessage('hi')) msgs.push(m)
+      for await (const m of engine.submitMessage('hi')) {
+        msgs.push(m)
+        // Abort after fast finishes but before slow finishes. Use a *condition*,
+        // not a fixed timer: buildSystemPrompt incurs real I/O (git detection)
+        // before tools even start, so a hardcoded delay races environment speed.
+        if (m.type === 'tool_result' && (m as SDKToolResultMessage).result.tool_name === 'fast') {
+          ac.abort()
+        }
+      }
     })()
-    // Abort after fast finishes but before slow finishes
-    setTimeout(() => ac.abort(), 100)
     await p
 
     const completeEvents = msgs.filter(m => m.type === 'tools_complete') as any[]
@@ -442,9 +448,15 @@ describe('executeTools streaming + tools_complete', () => {
     const config: QueryEngineConfig = { ...makeConfig(provider, [fast, slow]), abortSignal: ac.signal }
     const engine = new QueryEngine(config)
     const p = (async () => {
-      for await (const _ of engine.submitMessage('hi')) { /* drain */ }
+      for await (const m of engine.submitMessage('hi')) {
+        // Abort after fast finishes but before slow finishes. Condition-based
+        // (not a fixed timer) so the test is robust to buildSystemPrompt I/O
+        // cost before tools start.
+        if (m.type === 'tool_result' && (m as SDKToolResultMessage).result.tool_name === 'fast') {
+          ac.abort()
+        }
+      }
     })()
-    setTimeout(() => ac.abort(), 100)
     await p
 
     // Verify transcript integrity: every tool_use in the last assistant message
