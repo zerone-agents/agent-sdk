@@ -90,6 +90,10 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | `toolEnvInherit`     | `boolean`                               | `true`                 | When false, completely replaces process.env (use with toolEnv for fully isolated subprocess environment) |
 | `abortController`    | `AbortController`                       | —                      | Cancellation controller                                              |
 
+> **AGENTS.md size limit**: each file is capped at 32 KiB. Files exceeding this
+> size are skipped; an `[ERROR]` message is injected into the system prompt in
+> their place.
+
 ### MCP server transports
 
 `mcpServers` entries are discriminated by either a `type` or `transport`

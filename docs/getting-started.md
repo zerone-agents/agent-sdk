@@ -229,6 +229,22 @@ const agent = createAgent({
 
 > **Migration (v1.1.5)**: The `extraProjectSkillDirs` option has been removed. Project-level skills are discovered only from `<cwd>/.agents/skills/`. Move any skill directories previously passed via `extraProjectSkillDirs` into `.agents/skills/` (e.g. as symlinks).
 
+#### AGENTS.md instruction loading
+
+In addition to skills, the `settingSources` option controls loading of `AGENTS.md` instruction files into the system prompt:
+
+- **User-level** (`['user']`): reads `~/.agents/AGENTS.md` (single file, unchanged).
+- **Project-level** (`['project']`): walks from the `.git` project root down to `cwd`, loading **every** `AGENTS.md` along the way. Files are concatenated **least-specific-first**, so a top-level `AGENTS.md` appears before a nested one. Each file is rendered under a `## Project-level Instructions (<abs-path>)` header (one header per file). User-level files use the `## User-level Instructions (<abs-path>)` header.
+- **Size limit**: each file is capped at 32 KiB. Files exceeding the limit are skipped and replaced by an `[ERROR] <message>` block in the system prompt (siblings are still loaded).
+- **Removed**: `<cwd>/.agents/AGENTS.md` is **no longer read** at the project level.
+
+> **Migration (v1.3.0)**: Project-level AGENTS.md discovery has changed.
+> - `<cwd>/.agents/AGENTS.md` is no longer read. Move the file to `<cwd>/AGENTS.md`.
+> - The loader now walks from the `.git` project root down to `cwd`, so nested
+>   `AGENTS.md` files in monorepos are picked up automatically.
+> - Each file has a 32 KiB size limit; oversize files are skipped with an
+>   `[ERROR]` block visible to the agent.
+
 ### Hooks (lifecycle events)
 
 ```typescript
