@@ -15,6 +15,10 @@ function makeBaseOptions(overrides: Partial<AgentOptions> = {}): AgentOptions {
     model: 'test-model',
     apiKey: 'fake',
     persistSession: false,
+    // Disable SnapshotEngine: tests run in parallel and would otherwise all
+    // `git init --bare` into the same shared ~/.agents/snapshot/<hash> dir,
+    // racing on git's config lock (File exists). Not under test here.
+    enableFileRevert: false,
     mcpServers: {},
     ...overrides,
   }
