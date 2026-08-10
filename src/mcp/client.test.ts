@@ -245,6 +245,56 @@ describe('resolveTransportKind (issue #14: MCP transport aliases)', () => {
   it('throws when type is omitted and neither command nor url is present', () => {
     expect(() => resolveTransportKind({} as any)).toThrow(/Cannot infer MCP transport/)
   })
+
+  // --- issue #14 follow-up: `transport` alternate selector field ---
+
+  it("accepts 'transport' field as an alias for 'type' (streamable_http)", () => {
+    expect(resolveTransportKind({ transport: 'streamable_http', url: 'https://x' } as any)).toBe('streamable-http')
+  })
+
+  it("accepts 'transport' field with the kebab-case alias", () => {
+    expect(resolveTransportKind({ transport: 'streamable-http', url: 'https://x' } as any)).toBe('streamable-http')
+  })
+
+  it("accepts 'transport' field with the legacy http alias", () => {
+    expect(resolveTransportKind({ transport: 'http', url: 'https://x' } as any)).toBe('streamable-http')
+  })
+
+  it("accepts 'transport: stdio'", () => {
+    expect(resolveTransportKind({ transport: 'stdio', command: 'echo' } as any)).toBe('stdio')
+  })
+
+  it("accepts 'transport: sse'", () => {
+    expect(resolveTransportKind({ transport: 'sse', url: 'https://x' } as any)).toBe('sse')
+  })
+
+  it('accepts both type and transport when they normalize to the same kind', () => {
+    // different spellings, same underlying transport → ok
+    expect(resolveTransportKind({ type: 'http', transport: 'streamable-http', url: 'https://x' } as any)).toBe('streamable-http')
+    expect(resolveTransportKind({ type: 'streamable_http', transport: 'http', url: 'https://x' } as any)).toBe('streamable-http')
+  })
+
+  it('throws a conflict error when type and transport resolve to different kinds', () => {
+    expect(() =>
+      resolveTransportKind({ type: 'stdio', transport: 'http', command: 'echo', url: 'https://x' } as any),
+    ).toThrow(/MCP transport conflict/)
+  })
+
+  it('includes both field values in the conflict error message', () => {
+    try {
+      resolveTransportKind({ type: 'sse', transport: 'stdio', url: 'https://x', command: 'echo' } as any)
+      throw new Error('should have thrown')
+    } catch (err: any) {
+      expect(err.message).toContain('type=sse')
+      expect(err.message).toContain('transport=stdio')
+    }
+  })
+
+  it('throws on unknown value in the transport field', () => {
+    expect(() => resolveTransportKind({ transport: 'ws', url: 'wss://x' } as any)).toThrow(
+      /Unsupported MCP transport: ws/,
+    )
+  })
 })
 
 describe('createTransport alias wiring (issue #14)', () => {
@@ -300,5 +350,56 @@ describe('createTransport alias wiring (issue #14)', () => {
     const result = await connectMCPServer('srv', { type: 'ws', url: 'wss://x', retryPolicy: { timeoutMs: 1000, maxRetries: 0 } } as any)
     expect(result.status).toBe('error')
     expect((result.error as Error).message).toMatch(/Unsupported MCP transport type: ws/)
+  })
+})
+
+describe('stdio cwd wiring (issue #14 follow-up: working-directory base)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    attempt = 0
+  })
+
+  it('forwards config.cwd to StdioClientTransport', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StdioClientTransport).mockClear()
+    await connectMCPServer('srv', {
+      type: 'stdio',
+      command: 'echo',
+      cwd: '/explicit/cwd',
+      retryPolicy: { timeoutMs: 1000, maxRetries: 0 },
+    })
+    expect(StdioClientTransport).toHaveBeenCalledTimes(1)
+    const passed = (StdioClientTransport as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(passed.cwd).toBe('/explicit/cwd')
+    expect(passed.command).toBe('echo')
+  })
+
+  it('omits cwd from StdioServerParameters when not set (lets MCP SDK use its default)', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StdioClientTransport).mockClear()
+    await connectMCPServer('srv', {
+      type: 'stdio',
+      command: 'echo',
+      retryPolicy: { timeoutMs: 1000, maxRetries: 0 },
+    })
+    const passed = (StdioClientTransport as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(passed).not.toHaveProperty('cwd')
+  })
+
+  it('does not pass cwd for non-stdio transports', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    // cwd is meaningless for HTTP; even if user supplies it, we don't pass it
+    // (the StreamableHTTPClientTransport constructor would reject unknown fields).
+    await connectMCPServer('srv', {
+      type: 'streamable_http',
+      url: 'https://x',
+      cwd: '/should/be/ignored',
+      retryPolicy: { timeoutMs: 1000, maxRetries: 0 },
+    } as any)
+    expect(StreamableHTTPClientTransport).toHaveBeenCalledTimes(1)
+    // constructor should be called with URL + requestInit only; no cwd leaks
+    const args = (StreamableHTTPClientTransport as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(args[0]).toBeInstanceOf(URL)
   })
 })
