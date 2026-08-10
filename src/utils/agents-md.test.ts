@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, writeFile } from 'fs/promises'
+import { mkdtemp, rm, writeFile, mkdir } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   MAX_AGENTS_MD_BYTES,
   readWithLimit,
+  findProjectRoot,
   type LoadedFile,
   type Level,
 } from './agents-md.js'
@@ -66,5 +67,40 @@ describe('readWithLimit', () => {
     const result = await readWithLimit(path, MAX_AGENTS_MD_BYTES)
     expect(result?.error).toBeNull()
     expect(result?.content).toHaveLength(MAX_AGENTS_MD_BYTES)
+  })
+})
+
+describe('findProjectRoot', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'agents-md-root-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('returns cwd when .git exists at cwd (as a directory)', async () => {
+    await mkdir(join(dir, '.git'))
+    expect(await findProjectRoot(dir)).toBe(dir)
+  })
+
+  it('returns cwd when .git exists at cwd (as a file, e.g. worktree)', async () => {
+    await writeFile(join(dir, '.git'), 'gitdir: /elsewhere\n')
+    expect(await findProjectRoot(dir)).toBe(dir)
+  })
+
+  it('returns parent when .git is in a parent directory', async () => {
+    // /tmp/xxx/.git  +  /tmp/xxx/sub/sub2/cwd
+    await mkdir(join(dir, '.git'))
+    const deep = join(dir, 'sub', 'sub2')
+    await mkdir(deep, { recursive: true })
+    expect(await findProjectRoot(deep)).toBe(dir)
+  })
+
+  it('returns cwd (fallback) when no .git exists up to filesystem root', async () => {
+    // dir is a temp dir; macOS /var/folders has no .git ancestor.
+    expect(await findProjectRoot(dir)).toBe(dir)
   })
 })

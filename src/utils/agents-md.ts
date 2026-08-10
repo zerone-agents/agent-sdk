@@ -1,5 +1,5 @@
 import { readFile, stat } from 'fs/promises'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { homedir } from 'os'
 import type { SettingSource } from '../types.js'
 
@@ -38,6 +38,31 @@ export async function readWithLimit(
   }
   const content = await readFile(path, 'utf-8')
   return { path, content, error: null }
+}
+
+/**
+ * Walks up from `cwd` until a `.git` entry (file or directory) is found and
+ * returns that directory. If filesystem root is reached without finding one,
+ * returns `cwd` as a fallback.
+ *
+ * Uses `stat` (follows symlinks, accepts both files and dirs), so a worktree's
+ * `.git` file is detected the same way as a regular repo's `.git` directory.
+ *
+ * @internal
+ */
+export async function findProjectRoot(cwd: string): Promise<string> {
+  let dir = cwd
+  for (;;) {
+    try {
+      await stat(join(dir, '.git'))
+      return dir
+    } catch {
+      // no .git here — keep walking up
+    }
+    const parent = dirname(dir)
+    if (parent === dir) return cwd // reached filesystem root
+    dir = parent
+  }
 }
 
 export async function loadAgentsMd(
