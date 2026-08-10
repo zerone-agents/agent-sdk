@@ -20,7 +20,6 @@ interface LoadResult {
 
 export interface ExtraDirs {
   extraUserSkillDirs?: string[]
-  extraProjectSkillDirs?: string[]
 }
 
 /**
@@ -30,7 +29,6 @@ export interface ExtraDirs {
  *   1. ~/.agents/skills/                    (default user-level)
  *   2. extraUserSkillDirs[0], [1], ...         (additional user-level)
  *   3. <cwd>/.agents/skills/                (default project-level)
- *   4. extraProjectSkillDirs[0], [1], ...      (additional project-level)
  *
  * @param cwd - Current working directory (project root)
  * @param settingSources - Array of sources to load from
@@ -72,13 +70,6 @@ export async function loadSkillsFromFilesystem(
     const result = await loadSkillsFromDir(projectSkillsDir, registry, 'project')
     loaded += result.loaded
     errors.push(...result.errors)
-
-    // Extra project-level skill directories
-    for (const dir of extraDirs?.extraProjectSkillDirs ?? []) {
-      const r = await loadSkillsFromDir(dir, registry, 'project')
-      loaded += r.loaded
-      errors.push(...r.errors)
-    }
   }
 
   return { loaded, errors }

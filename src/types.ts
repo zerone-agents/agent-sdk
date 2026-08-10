@@ -720,8 +720,6 @@ export interface AgentOptions {
   settingSources?: SettingSource[]
   /** Additional user-level skill directories to scan (after default ~/.agents/skills/). */
   extraUserSkillDirs?: string[]
-  /** Additional project-level skill directories to scan (after default .agents/skills/). */
-  extraProjectSkillDirs?: string[]
   /** Subagent definitions available to Task/MultiTask. */
   subAgents?: Record<string, AgentDefinition>
   /** Callback emitted when the available skills list changes (e.g. after reloadSkills). */

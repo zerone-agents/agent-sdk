@@ -45,86 +45,31 @@ describe('loadSkillsFromFilesystem', () => {
     expect(getSkill('isolated-skill')).toBeUndefined()
   })
 
-  // Regression for issue #97: a skill loaded via extraProjectSkillDirs must be
-  // tagged source='project' regardless of its absolute path, so it passes the
-  // allowlist filter even when cwd (and therefore the project skill dir) sits
-  // under $HOME. The cwd here is under os.tmpdir() which on macOS is under
-  // /var/folders — emulate the $HOME-under-path condition by pointing
-  // extraProjectSkillDirs at a sibling dir that itself contains the skill.
-  it('tags extraProjectSkillDirs skills as project even when located under $HOME', async () => {
-    // Place the skill directory OUTSIDE cwd but under $HOME-like temp root,
-    // then reference it via extraProjectSkillDirs.
-    const projectSkillsRoot = await mkdtemp(join(tmpdir(), 'project-skills-'))
-    const skillDir = join(projectSkillsRoot, 'extra-skill')
+  // Issue #17: extraProjectSkillDirs has been removed from the public API.
+  // Project-level skills are only discovered from <cwd>/.agents/skills/.
+  // Passing extraProjectSkillDirs (e.g. from pre-migration host code) must
+  // be a no-op — the directory should NOT be scanned.
+  it('ignores extraProjectSkillDirs (removed in v1.1.5, issue #17)', async () => {
+    const externalRoot = await mkdtemp(join(tmpdir(), 'external-skills-'))
+    const skillDir = join(externalRoot, 'leftover-skill')
     await mkdir(skillDir, { recursive: true })
     await writeFile(
       join(skillDir, 'SKILL.md'),
-      '---\nname: extra-skill\ndescription: x\n---\nBody.\n',
+      '---\nname: leftover-skill\ndescription: x\n---\nBody.\n',
     )
 
     const registry = new SkillRegistry()
+    // Cast to any to simulate a host that hasn't migrated yet.
     await loadSkillsFromFilesystem(
       cwd,
       ['project'],
-      { extraProjectSkillDirs: [projectSkillsRoot] },
+      { extraProjectSkillDirs: [externalRoot] } as any,
       registry,
     )
 
-    const skill = registry.get('extra-skill')
-    expect(skill).toBeDefined()
-    expect(skill?.source).toBe('project')
+    expect(registry.get('leftover-skill')).toBeUndefined()
 
-    // Project-sourced skills must clear the allowlist without being named.
-    const { filterSkillsByAllowlist } = await import('./registry.js')
-    expect(filterSkillsByAllowlist([skill!], ['unrelated-skill'])).toHaveLength(1)
-
-    await rm(projectSkillsRoot, { recursive: true, force: true })
-  })
-
-  // Regression for issue #97 (symlink case): a skill directory that is itself
-  // a symlink must be loaded and tagged the same as a regular directory.
-  //
-  // IMPORTANT: the real skill dir lives OUTSIDE the scanned root, so the test
-  // only passes if the loader actually follows the symlink. (A prior version
-  // placed both the real dir and the symlink inside the scanned root; glob
-  // found the real dir directly, so the test passed even though symlinks
-  // were silently skipped — a false positive.)
-  it('loads symlinked skill directories under extraProjectSkillDirs with source=project', async () => {
-    if (process.platform === 'win32') {
-      // Symlinks on Windows require elevated privileges; skip.
-      return
-    }
-
-    // Real skill dir OUTSIDE the scanned root.
-    const realSkillRoot = await mkdtemp(join(tmpdir(), 'real-skill-src-'))
-    const realSkillDir = join(realSkillRoot, 'linked-skill.real')
-    await mkdir(realSkillDir, { recursive: true })
-    await writeFile(
-      join(realSkillDir, 'SKILL.md'),
-      '---\nname: linked-skill\ndescription: x\n---\nBody.\n',
-    )
-
-    // Scanned root contains ONLY the symlink.
-    const projectSkillsRoot = await mkdtemp(join(tmpdir(), 'project-symlink-'))
-    const symlinkedSkillDir = join(projectSkillsRoot, 'linked-skill')
-    await symlink(realSkillDir, symlinkedSkillDir, 'dir')
-
-    const registry = new SkillRegistry()
-    await loadSkillsFromFilesystem(
-      cwd,
-      ['project'],
-      { extraProjectSkillDirs: [projectSkillsRoot] },
-      registry,
-    )
-
-    const skill = registry.get('linked-skill')
-    expect(skill).toBeDefined()
-    expect(skill?.source).toBe('project')
-    // skillDir should be the symlink path (stable), not the resolved target.
-    expect(skill?.skillDir).toBe(symlinkedSkillDir)
-
-    await rm(realSkillRoot, { recursive: true, force: true })
-    await rm(projectSkillsRoot, { recursive: true, force: true })
+    await rm(externalRoot, { recursive: true, force: true })
   })
 
   // Regression: fs.glob on macOS does NOT descend into symlinked top-level
