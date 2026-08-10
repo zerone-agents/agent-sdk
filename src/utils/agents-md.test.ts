@@ -8,6 +8,7 @@ import {
   findProjectRoot,
   collectProjectPaths,
   render,
+  loadAgentsMd,
   type LoadedFile,
   type Level,
 } from './agents-md.js'
@@ -159,3 +160,113 @@ describe('render', () => {
     )
   })
 })
+
+describe('loadAgentsMd (integration)', () => {
+  let dir: string
+  let originalHome: string | undefined
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'agents-md-int-'))
+    originalHome = process.env.HOME
+  })
+
+  afterEach(async () => {
+    process.env.HOME = originalHome
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('returns null when settingSources is empty', async () => {
+    expect(await loadAgentsMd(dir, [])).toBeNull()
+  })
+
+  it('returns null when settingSources is undefined', async () => {
+    expect(await loadAgentsMd(dir, undefined)).toBeNull()
+  })
+
+  it('reads ~/.agents/AGENTS.md when settingSources includes user', async () => {
+    // Set HOME to dir so user-level file is at dir/.agents/AGENTS.md
+    process.env.HOME = dir
+    await mkdir(join(dir, '.agents'))
+    await writeFile(join(dir, '.agents', 'AGENTS.md'), 'user rules', 'utf-8')
+
+    const result = await loadAgentsMd(dir, ['user'])
+    expect(result).toBe(
+      `## User-level Instructions (${join(dir, '.agents', 'AGENTS.md')})\n\nuser rules`,
+    )
+  })
+
+  it('reads <cwd>/AGENTS.md when no .git exists (fallback to cwd-only)', async () => {
+    await writeFile(join(dir, 'AGENTS.md'), 'cwd rules', 'utf-8')
+    const result = await loadAgentsMd(dir, ['project'])
+    expect(result).toBe(
+      `## Project-level Instructions (${join(dir, 'AGENTS.md')})\n\n` +
+      (await readFileForAssert(join(dir, 'AGENTS.md'))),
+    )
+  })
+
+  it('walks from .git root to cwd, concatenating files in root-first order', async () => {
+    // Layout: dir/.git, dir/AGENTS.md, dir/sub/AGENTS.md, dir/sub/inner/AGENTS.md
+    // cwd = dir/sub/inner
+    await mkdir(join(dir, '.git'))
+    await writeFile(join(dir, 'AGENTS.md'), 'root rules')
+    await mkdir(join(dir, 'sub', 'inner'), { recursive: true })
+    await writeFile(join(dir, 'sub', 'AGENTS.md'), 'mid rules')
+    await writeFile(join(dir, 'sub', 'inner', 'AGENTS.md'), 'cwd rules')
+
+    const cwd = join(dir, 'sub', 'inner')
+    const result = await loadAgentsMd(cwd, ['project'])
+
+    const rootPath = join(dir, 'AGENTS.md')
+    const midPath = join(dir, 'sub', 'AGENTS.md')
+    const cwdPath = join(dir, 'sub', 'inner', 'AGENTS.md')
+    expect(result).toBe(
+      `## Project-level Instructions (${rootPath})\n\nroot rules\n\n` +
+      `## Project-level Instructions (${midPath})\n\nmid rules\n\n` +
+      `## Project-level Instructions (${cwdPath})\n\ncwd rules`,
+    )
+  })
+
+  it('does NOT read <cwd>/.agents/AGENTS.md (removed path, regression)', async () => {
+    await mkdir(join(dir, '.agents'))
+    await writeFile(join(dir, '.agents', 'AGENTS.md'), 'hidden rules')
+    // No git repo here, so fallback to cwd. <cwd>/AGENTS.md should be read,
+    // <cwd>/.agents/AGENTS.md should NOT.
+    const result = await loadAgentsMd(dir, ['project'])
+    expect(result).toBeNull()
+  })
+
+  it('replaces an oversize file with an [ERROR] block but still loads siblings', async () => {
+    await mkdir(join(dir, '.git'))
+    await writeFile(join(dir, 'AGENTS.md'), 'a'.repeat(MAX_AGENTS_MD_BYTES + 1))
+    await mkdir(join(dir, 'sub'), { recursive: true })
+    await writeFile(join(dir, 'sub', 'AGENTS.md'), 'small sibling')
+    const cwd = join(dir, 'sub')
+
+    const result = await loadAgentsMd(cwd, ['project'])
+    expect(result).toContain('[ERROR]')
+    expect(result).toContain('exceeds 32 KiB')
+    expect(result).toContain(join(dir, 'sub', 'AGENTS.md'))
+    expect(result).toContain('small sibling')
+  })
+
+  it('loads user and project sections together in order user-then-project', async () => {
+    process.env.HOME = dir
+    await mkdir(join(dir, '.agents'))
+    await writeFile(join(dir, '.agents', 'AGENTS.md'), 'user rules')
+    await mkdir(join(dir, '.git'))
+    await writeFile(join(dir, 'AGENTS.md'), 'project rules')
+
+    const result = await loadAgentsMd(dir, ['user', 'project'])
+    const userHeader = `## User-level Instructions (${join(dir, '.agents', 'AGENTS.md')})`
+    const projectHeader = `## Project-level Instructions (${join(dir, 'AGENTS.md')})`
+    expect(result).toContain(userHeader)
+    expect(result).toContain(projectHeader)
+    expect(result!.indexOf(userHeader)).toBeLessThan(result!.indexOf(projectHeader))
+  })
+})
+
+// Helper used by one assertion above; keep at the bottom.
+async function readFileForAssert(p: string): Promise<string> {
+  const { readFile } = await import('fs/promises')
+  return readFile(p, 'utf-8')
+}

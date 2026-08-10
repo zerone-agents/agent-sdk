@@ -101,41 +101,34 @@ export function render(file: LoadedFile, level: Level): string {
   return `${header}\n\n${file.content}`
 }
 
+/**
+ * Load AGENTS.md instructions:
+ * - User-level: reads ~/.agents/AGENTS.md (single file).
+ * - Project-level: walks from the .git project root down to cwd, reading every
+ *   AGENTS.md along the way (least-specific first).
+ * Returns the concatenated string or null when nothing was loaded.
+ */
 export async function loadAgentsMd(
   cwd: string,
-  settingSources?: SettingSource[]
+  settingSources?: SettingSource[],
 ): Promise<string | null> {
-  if (!settingSources || settingSources.length === 0) {
-    return null
-  }
+  if (!settingSources || settingSources.length === 0) return null
 
   const parts: string[] = []
 
   if (settingSources.includes('user')) {
     const userPath = join(homedir(), '.agents', 'AGENTS.md')
-    const content = await safeReadFile(userPath)
-    if (content) {
-      parts.push(`## User-level Instructions\n${content}`)
-    }
+    const file = await readWithLimit(userPath, MAX_AGENTS_MD_BYTES)
+    if (file) parts.push(render(file, 'user'))
   }
 
   if (settingSources.includes('project')) {
-    const projectHiddenPath = join(cwd, '.agents', 'AGENTS.md')
-    const projectPath = join(cwd, 'AGENTS.md')
-
-    const content = await safeReadFile(projectHiddenPath) || await safeReadFile(projectPath)
-    if (content) {
-      parts.push(`## Project-level Instructions\n${content}`)
+    const root = await findProjectRoot(cwd)
+    for (const path of collectProjectPaths(root, cwd)) {
+      const file = await readWithLimit(path, MAX_AGENTS_MD_BYTES)
+      if (file) parts.push(render(file, 'project'))
     }
   }
 
   return parts.length > 0 ? parts.join('\n\n') : null
-}
-
-async function safeReadFile(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, 'utf-8')
-  } catch {
-    return null
-  }
 }
