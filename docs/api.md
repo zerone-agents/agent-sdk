@@ -90,6 +90,46 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | `toolEnvInherit`     | `boolean`                               | `true`                 | When false, completely replaces process.env (use with toolEnv for fully isolated subprocess environment) |
 | `abortController`    | `AbortController`                       | —                      | Cancellation controller                                              |
 
+### MCP server transports
+
+`mcpServers` entries are discriminated by either a `type` or `transport`
+selector field (both names are accepted — `.agents/mcp.json` and provider docs
+use both spellings). The SDK accepts the following values and infers the
+transport when both selectors are omitted:
+
+| Selector value               | Underlying transport                                | Required fields      |
+| ---------------------------- | --------------------------------------------------- | -------------------- |
+| `stdio`                      | `StdioClientTransport`                              | `command`            |
+| `sse`                        | `SSEClientTransport` (legacy HTTP+SSE)              | `url`                |
+| `streamable_http`            | `StreamableHTTPClientTransport` (canonical, spec)   | `url`                |
+| `streamable-http`            | `StreamableHTTPClientTransport` (kebab-case alias)  | `url`                |
+| `http`                       | `StreamableHTTPClientTransport` (backwards-compat)  | `url`                |
+| _(omitted)_ + `command`      | `StdioClientTransport` (inferred)                   | `command`            |
+| _(omitted)_ + `url`          | `StreamableHTTPClientTransport` (inferred)          | `url`                |
+
+`streamable_http` / `streamable-http` / `http` are treated as equivalent — all
+three instantiate `StreamableHTTPClientTransport`. If both `type` and
+`transport` are present and normalize to different transport kinds, the SDK
+fails fast with a conflict error. Unknown explicit values fail fast with a
+clear error listing all supported aliases.
+
+#### stdio working directory
+
+`McpStdioConfig` accepts an optional `cwd` field that becomes the spawned
+server's working directory. Relative `command` paths and relative entries in
+`args` resolve against this directory.
+
+| Source                                          | Resolution order |
+| ----------------------------------------------- | ---------------- |
+| `McpStdioConfig.cwd`                            | Wins             |
+| `AgentOptions.cwd`                              | Fallback when server-level `cwd` is unset |
+| _(neither set)_                                 | MCP SDK default (`process.cwd()` at spawn)   |
+
+The Agent SDK injects `AgentOptions.cwd` into stdio server configs that do not
+specify `cwd` explicitly — so a server like `{ command: 'npx', args: ['my-server'] }`
+runs in the agent's workspace rather than the host process's directory. This
+does not affect `sse` / Streamable HTTP transports.
+
 ### Environment variables
 
 | Variable                 | Description                                              |

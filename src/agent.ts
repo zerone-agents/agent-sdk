@@ -36,6 +36,7 @@ import { resolveAgent } from './resolve-agent.js'
 import { type MCPConnection } from './mcp/client.js'
 import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
+import { resolveTransportKind } from './mcp/client.js'
 import {
   saveSession,
   loadSession,
@@ -442,6 +443,14 @@ export class Agent {
                 maxRetries: config.retryPolicy?.maxRetries ?? this.cfg.mcpRetryPolicy?.maxRetries ?? 1,
                 timeoutMs: config.retryPolicy?.timeoutMs ?? this.cfg.mcpRetryPolicy?.timeoutMs ?? 5000,
               },
+              // For stdio servers, default `cwd` to the Agent workspace so
+              // relative executables and relative args resolve against the
+              // agent's cwd rather than the host process's. Explicit server
+              // `cwd` always wins; non-stdio transports are not affected.
+              // See issue #14 (stdio working-directory base).
+              ...(resolveTransportKind(config) === 'stdio' && config.cwd === undefined && this.cfg.cwd
+                ? { cwd: this.cfg.cwd }
+                : {}),
             }
             const connection = await acquireMCPConnection(name, resolvedConfig, {
               timeoutMs: resolvedConfig.retryPolicy?.timeoutMs,

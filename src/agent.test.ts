@@ -1,9 +1,21 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { z } from 'zod'
 import { Agent } from './agent.js'
 import { createSdkMcpServer } from './sdk-mcp-server.js'
 import { tool } from './tool-helper.js'
-import type { AgentOptions } from './types.js'
+import type { AgentOptions, McpServerConfig } from './types.js'
+
+// Mocked pool — only the acquireMCPConnection symbol is replaced; the rest
+// of the module surface (types, internal helpers) stays intact.
+vi.mock('./mcp/pool.js', async (importOriginal) => {
+  const actual = await importOriginal() as any
+  return {
+    ...actual,
+    acquireMCPConnection: vi.fn(actual.acquireMCPConnection),
+  }
+})
+
+import { acquireMCPConnection } from './mcp/pool.js'
 
 /**
  * Minimal AgentOptions to construct an agent without connecting real MCP
@@ -139,5 +151,77 @@ describe('Agent MCP deferred resolution', () => {
     const mcpTool = pool.find((t) => t.name === 'mcp__mylocal__greet')
     expect(mcpTool).toBeDefined()
     expect(mcpTool.deferred).toBe(false)
+  })
+})
+
+describe('Agent MCP stdio cwd resolution (issue #14 follow-up)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('injects AgentOptions.cwd into stdio config when cwd is unset', async () => {
+    const stdioConfig: McpServerConfig = { type: 'stdio', command: 'echo' }
+    const agent = new Agent(makeBaseOptions({
+      cwd: '/agent/workspace',
+      mcpServers: { srv: stdioConfig },
+    }))
+
+    // Drive async setup; the agent calls acquireMCPConnection internally.
+    // The connection will fail because the mocked pool falls through to the
+    // real acquireMCPConnection (which would try to spawn 'echo'); that's
+    // fine — we only care about the config passed in.
+    await getPoolTools(agent).catch(() => {})
+
+    const passedConfig = vi.mocked(acquireMCPConnection).mock.calls[0]?.[1] as McpServerConfig | undefined
+    expect(passedConfig).toBeDefined()
+    expect(passedConfig!.type).toBe('stdio')
+    expect((passedConfig as any).cwd).toBe('/agent/workspace')
+  })
+
+  it('preserves explicit server-level cwd over AgentOptions.cwd', async () => {
+    const stdioConfig: McpServerConfig = {
+      type: 'stdio',
+      command: 'echo',
+      cwd: '/explicit/server/cwd',
+    } as any
+    const agent = new Agent(makeBaseOptions({
+      cwd: '/agent/workspace',
+      mcpServers: { srv: stdioConfig },
+    }))
+
+    await getPoolTools(agent).catch(() => {})
+
+    const passedConfig = vi.mocked(acquireMCPConnection).mock.calls[0]?.[1] as McpServerConfig | undefined
+    expect((passedConfig as any).cwd).toBe('/explicit/server/cwd')
+  })
+
+  it('does not inject cwd when AgentOptions.cwd is unset', async () => {
+    const stdioConfig: McpServerConfig = { type: 'stdio', command: 'echo' }
+    const agent = new Agent(makeBaseOptions({
+      // no cwd
+      mcpServers: { srv: stdioConfig },
+    }))
+
+    await getPoolTools(agent).catch(() => {})
+
+    const passedConfig = vi.mocked(acquireMCPConnection).mock.calls[0]?.[1] as McpServerConfig | undefined
+    expect(passedConfig).toBeDefined()
+    // cwd should NOT be set — MCP SDK uses its process.cwd() default
+    expect((passedConfig as any).cwd).toBeUndefined()
+  })
+
+  it('does not inject cwd for http transports', async () => {
+    const httpConfig: McpServerConfig = { type: 'streamable_http', url: 'https://x' }
+    const agent = new Agent(makeBaseOptions({
+      cwd: '/agent/workspace',
+      mcpServers: { srv: httpConfig },
+    }))
+
+    await getPoolTools(agent).catch(() => {})
+
+    const passedConfig = vi.mocked(acquireMCPConnection).mock.calls[0]?.[1] as McpServerConfig | undefined
+    expect(passedConfig).toBeDefined()
+    expect(passedConfig!.type).toBe('streamable_http')
+    expect((passedConfig as any).cwd).toBeUndefined()
   })
 })

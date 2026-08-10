@@ -5,6 +5,7 @@
     "dist",
     "examples",
     "**/*.test.ts",
-    "**/*.test.tsx"
+    "**/*.test.tsx",
+    "src/mcp/type-contracts.ts"
   ]
 }

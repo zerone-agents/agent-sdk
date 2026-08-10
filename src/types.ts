@@ -406,6 +406,27 @@ export type McpServerConfig =
   | McpSseConfig
   | McpHttpConfig
 
+/**
+ * Accepted `type` / `transport` spellings for the MCP Streamable HTTP transport.
+ *
+ * The SDK treats all of these as equivalent and instantiates
+ * `StreamableHTTPClientTransport` for each:
+ *   - `streamable_http` — canonical spelling (matches the MCP spec)
+ *   - `streamable-http` — kebab-case alias common in ecosystem config files
+ *   - `http`            — backwards-compatible alias (pre-existing SDK spelling)
+ *
+ * When the selector is omitted entirely (neither `type` nor `transport`), the
+ * SDK infers the transport from the other fields: `command` present → stdio,
+ * `url` present → Streamable HTTP. See `McpHttpConfig` and `McpStdioConfig`.
+ *
+ * The selector may be supplied via either `type` or `transport`. The two field
+ * names exist because portable MCP config files (e.g. `.agents/mcp.json`) and
+ * provider documentation use both spellings; the SDK accepts either. If both
+ * are present and normalize to different transport kinds, the SDK fails fast
+ * with a conflict error rather than silently choosing one.
+ */
+export type McpStreamableHttpType = 'http' | 'streamable_http' | 'streamable-http'
+
 export interface McpRetryPolicy {
   /** Maximum number of initialization retries. */
   maxRetries?: number
@@ -415,9 +436,23 @@ export interface McpRetryPolicy {
 
 export interface McpStdioConfig {
   type?: 'stdio'
+  /** Alternate selector field name for `type`. See `McpStreamableHttpType` doc. */
+  transport?: 'stdio'
   command: string
   args?: string[]
   env?: Record<string, string>
+  /**
+   * Working directory for the spawned MCP server process.
+   *
+   * - Explicit value wins.
+   * - When omitted, the Agent SDK falls back to `AgentOptions.cwd` before
+   *   passing the config to the underlying transport. If neither is set, the
+   *   MCP SDK default (`process.cwd()`) applies.
+   *
+   * Relative `command` paths and relative entries in `args` resolve against
+   * this directory.
+   */
+  cwd?: string
   retryPolicy?: McpRetryPolicy
   /**
    * Override the global MCP deferred default for this server's tools.
@@ -431,7 +466,9 @@ export interface McpStdioConfig {
 }
 
 export interface McpSseConfig {
-  type: 'sse'
+  type?: 'sse'
+  /** Alternate selector field name for `type`. See `McpStreamableHttpType` doc. */
+  transport?: 'sse'
   url: string
   headers?: Record<string, string>
   retryPolicy?: McpRetryPolicy
@@ -447,7 +484,17 @@ export interface McpSseConfig {
 }
 
 export interface McpHttpConfig {
-  type: 'http'
+  /**
+   * Transport selector. Accepts the standard Streamable HTTP spellings
+   * (`streamable_http`, `streamable-http`) plus the backwards-compatible
+   * `http` alias. See `McpStreamableHttpType`.
+   *
+   * When omitted, the SDK infers Streamable HTTP from the presence of `url`
+   * (and absence of `command`).
+   */
+  type?: McpStreamableHttpType
+  /** Alternate selector field name for `type`. See `McpStreamableHttpType` doc. */
+  transport?: McpStreamableHttpType
   url: string
   headers?: Record<string, string>
   retryPolicy?: McpRetryPolicy
