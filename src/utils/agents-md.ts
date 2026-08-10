@@ -65,6 +65,28 @@ export async function findProjectRoot(cwd: string): Promise<string> {
   }
 }
 
+/**
+ * Enumerates the candidate `AGENTS.md` paths from `root` down to `cwd`
+ * (inclusive of both), ordered least-specific first.
+ *
+ * Pure and synchronous: does not stat the filesystem. The caller is expected
+ * to filter via `readWithLimit` (which returns `null` for missing files).
+ *
+ * Assumes `root` is `cwd` or an ancestor of `cwd` — no validation is performed.
+ *
+ * @internal
+ */
+export function collectProjectPaths(root: string, cwd: string): string[] {
+  const paths: string[] = []
+  let dir = cwd
+  for (;;) {
+    paths.unshift(join(dir, 'AGENTS.md'))
+    if (dir === root) break
+    dir = dirname(dir)
+  }
+  return paths
+}
+
 export async function loadAgentsMd(
   cwd: string,
   settingSources?: SettingSource[]

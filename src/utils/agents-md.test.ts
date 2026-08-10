@@ -6,6 +6,7 @@ import {
   MAX_AGENTS_MD_BYTES,
   readWithLimit,
   findProjectRoot,
+  collectProjectPaths,
   type LoadedFile,
   type Level,
 } from './agents-md.js'
@@ -102,5 +103,35 @@ describe('findProjectRoot', () => {
   it('returns cwd (fallback) when no .git exists up to filesystem root', async () => {
     // dir is a temp dir; macOS /var/folders has no .git ancestor.
     expect(await findProjectRoot(dir)).toBe(dir)
+  })
+})
+
+describe('collectProjectPaths', () => {
+  it('returns a single path when root === cwd', () => {
+    const root = '/repo'
+    expect(collectProjectPaths(root, root)).toEqual(['/repo/AGENTS.md'])
+  })
+
+  it('returns two paths when root is the direct parent of cwd', () => {
+    expect(collectProjectPaths('/repo', '/repo/src')).toEqual([
+      '/repo/AGENTS.md',
+      '/repo/src/AGENTS.md',
+    ])
+  })
+
+  it('returns paths in root-first order across multiple levels', () => {
+    expect(collectProjectPaths('/repo', '/repo/src/components')).toEqual([
+      '/repo/AGENTS.md',
+      '/repo/src/AGENTS.md',
+      '/repo/src/components/AGENTS.md',
+    ])
+  })
+
+  it('preserves order regardless of which intermediate dirs actually contain AGENTS.md', () => {
+    // collectProjectPaths does not stat; it just enumerates candidates.
+    // The caller filters by readWithLimit returning non-null.
+    expect(collectProjectPaths('/a', '/a/b/c/d')).toHaveLength(4)
+    expect(collectProjectPaths('/a', '/a/b/c/d')[0]).toBe('/a/AGENTS.md')
+    expect(collectProjectPaths('/a', '/a/b/c/d')[3]).toBe('/a/b/c/d/AGENTS.md')
   })
 })
