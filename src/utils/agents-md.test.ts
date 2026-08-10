@@ -7,6 +7,7 @@ import {
   readWithLimit,
   findProjectRoot,
   collectProjectPaths,
+  render,
   type LoadedFile,
   type Level,
 } from './agents-md.js'
@@ -133,5 +134,28 @@ describe('collectProjectPaths', () => {
     expect(collectProjectPaths('/a', '/a/b/c/d')).toHaveLength(4)
     expect(collectProjectPaths('/a', '/a/b/c/d')[0]).toBe('/a/AGENTS.md')
     expect(collectProjectPaths('/a', '/a/b/c/d')[3]).toBe('/a/b/c/d/AGENTS.md')
+  })
+})
+
+describe('render', () => {
+  it('renders a successful user file with header and content', () => {
+    const file: LoadedFile = { path: '/Users/x/.agents/AGENTS.md', content: 'be nice', error: null }
+    expect(render(file, 'user')).toBe(
+      '## User-level Instructions (/Users/x/.agents/AGENTS.md)\n\nbe nice',
+    )
+  })
+
+  it('renders a successful project file with header and content', () => {
+    const file: LoadedFile = { path: '/repo/AGENTS.md', content: 'do good', error: null }
+    expect(render(file, 'project')).toBe(
+      '## Project-level Instructions (/repo/AGENTS.md)\n\ndo good',
+    )
+  })
+
+  it('renders an error file with [ERROR] prefix instead of content', () => {
+    const file: LoadedFile = { path: '/repo/AGENTS.md', content: null, error: 'too big' }
+    expect(render(file, 'project')).toBe(
+      '## Project-level Instructions (/repo/AGENTS.md)\n\n[ERROR] too big',
+    )
   })
 })

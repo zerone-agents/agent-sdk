@@ -87,6 +87,20 @@ export function collectProjectPaths(root: string, cwd: string): string[] {
   return paths
 }
 
+/**
+ * Renders a `LoadedFile` into a `## <level>-level Instructions (<path>)` header
+ * followed by `\n\n` and the body. On error, the body is `[ERROR] <message>`
+ * (the file content is dropped). Pure synchronous.
+ *
+ * @internal
+ */
+export function render(file: LoadedFile, level: Level): string {
+  const label = level === 'user' ? 'User-level' : 'Project-level'
+  const header = `## ${label} Instructions (${file.path})`
+  if (file.error) return `${header}\n\n[ERROR] ${file.error}`
+  return `${header}\n\n${file.content}`
+}
+
 export async function loadAgentsMd(
   cwd: string,
   settingSources?: SettingSource[]
