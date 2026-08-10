@@ -88,17 +88,18 @@ export function collectProjectPaths(root: string, cwd: string): string[] {
 }
 
 /**
- * Renders a `LoadedFile` into a `## <level>-level Instructions (<path>)` header
- * followed by `\n\n` and the body. On error, the body is `[ERROR] <message>`
- * (the file content is dropped). Pure synchronous.
+ * Renders a `LoadedFile` as a single XML node:
+ *   <user-level path="...">content</user-level>
+ *   <project-level path="...">content</project-level>
+ * On error, the body is `[ERROR] <message>` (the file content is dropped).
+ * Pure synchronous. The outer <instructions> wrapper is added by the caller.
  *
  * @internal
  */
 export function render(file: LoadedFile, level: Level): string {
-  const label = level === 'user' ? 'User-level' : 'Project-level'
-  const header = `## ${label} Instructions (${file.path})`
-  if (file.error) return `${header}\n\n[ERROR] ${file.error}`
-  return `${header}\n\n${file.content}`
+  const tag = level === 'user' ? 'user-level' : 'project-level'
+  const body = file.error ? `[ERROR] ${file.error}` : file.content
+  return `<${tag} path="${file.path}">\n${body}\n</${tag}>`
 }
 
 /**
@@ -130,5 +131,7 @@ export async function loadAgentsMd(
     }
   }
 
-  return parts.length > 0 ? parts.join('\n\n') : null
+  return parts.length > 0
+    ? `<instructions>\n${parts.join('\n')}\n</instructions>`
+    : null
 }

@@ -234,7 +234,7 @@ const agent = createAgent({
 In addition to skills, the `settingSources` option controls loading of `AGENTS.md` instruction files into the system prompt:
 
 - **User-level** (`['user']`): reads `~/.agents/AGENTS.md` (single file, unchanged).
-- **Project-level** (`['project']`): walks from the `.git` project root down to `cwd`, loading **every** `AGENTS.md` along the way. Files are concatenated **least-specific-first**, so a top-level `AGENTS.md` appears before a nested one. Each file is rendered under a `## Project-level Instructions (<abs-path>)` header (one header per file). User-level files use the `## User-level Instructions (<abs-path>)` header.
+- **Project-level** (`['project']`): walks from the `.git` project root down to `cwd`, loading **every** `AGENTS.md` along the way. Files are concatenated **least-specific-first**, so a top-level `AGENTS.md` appears before a nested one. Each file is rendered as a `<project-level path="<abs-path>">` XML node inside a single `<instructions>` block (one node per file). User-level files use the `<user-level path="...">` node.
 - **Size limit**: each file is capped at 32 KiB. Files exceeding the limit are skipped and replaced by an `[ERROR] <message>` block in the system prompt (siblings are still loaded).
 - **Removed**: `<cwd>/.agents/AGENTS.md` is **no longer read** at the project level.
 
