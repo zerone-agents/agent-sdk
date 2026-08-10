@@ -68,10 +68,9 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
     ].join('\n'))
   }
 
-  // Load AGENTS.md instructions
+  // Load AGENTS.md instructions (rendered as <instructions> XML block)
   const agentsMdContent = await loadAgentsMd(config.env.cwd, config.env.settingSources)
   if (agentsMdContent) {
-    parts.push('\n# Instructions\n')
     parts.push(agentsMdContent)
   }
 

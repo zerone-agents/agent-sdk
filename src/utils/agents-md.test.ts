@@ -139,24 +139,24 @@ describe('collectProjectPaths', () => {
 })
 
 describe('render', () => {
-  it('renders a successful user file with header and content', () => {
+  it('renders a successful user file as a <user-level> XML node', () => {
     const file: LoadedFile = { path: '/Users/x/.agents/AGENTS.md', content: 'be nice', error: null }
     expect(render(file, 'user')).toBe(
-      '## User-level Instructions (/Users/x/.agents/AGENTS.md)\n\nbe nice',
+      '<user-level path="/Users/x/.agents/AGENTS.md">\nbe nice\n</user-level>',
     )
   })
 
-  it('renders a successful project file with header and content', () => {
+  it('renders a successful project file as a <project-level> XML node', () => {
     const file: LoadedFile = { path: '/repo/AGENTS.md', content: 'do good', error: null }
     expect(render(file, 'project')).toBe(
-      '## Project-level Instructions (/repo/AGENTS.md)\n\ndo good',
+      '<project-level path="/repo/AGENTS.md">\ndo good\n</project-level>',
     )
   })
 
-  it('renders an error file with [ERROR] prefix instead of content', () => {
+  it('renders an error file with [ERROR] body inside the XML node', () => {
     const file: LoadedFile = { path: '/repo/AGENTS.md', content: null, error: 'too big' }
     expect(render(file, 'project')).toBe(
-      '## Project-level Instructions (/repo/AGENTS.md)\n\n[ERROR] too big',
+      '<project-level path="/repo/AGENTS.md">\n[ERROR] too big\n</project-level>',
     )
   })
 })
@@ -191,7 +191,9 @@ describe('loadAgentsMd (integration)', () => {
 
     const result = await loadAgentsMd(dir, ['user'])
     expect(result).toBe(
-      `## User-level Instructions (${join(dir, '.agents', 'AGENTS.md')})\n\nuser rules`,
+      `<instructions>\n` +
+      `<user-level path="${join(dir, '.agents', 'AGENTS.md')}">\nuser rules\n</user-level>\n` +
+      `</instructions>`,
     )
   })
 
@@ -199,8 +201,9 @@ describe('loadAgentsMd (integration)', () => {
     await writeFile(join(dir, 'AGENTS.md'), 'cwd rules', 'utf-8')
     const result = await loadAgentsMd(dir, ['project'])
     expect(result).toBe(
-      `## Project-level Instructions (${join(dir, 'AGENTS.md')})\n\n` +
-      (await readFileForAssert(join(dir, 'AGENTS.md'))),
+      `<instructions>\n` +
+      `<project-level path="${join(dir, 'AGENTS.md')}">\ncwd rules\n</project-level>\n` +
+      `</instructions>`,
     )
   })
 
@@ -220,9 +223,11 @@ describe('loadAgentsMd (integration)', () => {
     const midPath = join(dir, 'sub', 'AGENTS.md')
     const cwdPath = join(dir, 'sub', 'inner', 'AGENTS.md')
     expect(result).toBe(
-      `## Project-level Instructions (${rootPath})\n\nroot rules\n\n` +
-      `## Project-level Instructions (${midPath})\n\nmid rules\n\n` +
-      `## Project-level Instructions (${cwdPath})\n\ncwd rules`,
+      `<instructions>\n` +
+      `<project-level path="${rootPath}">\nroot rules\n</project-level>\n` +
+      `<project-level path="${midPath}">\nmid rules\n</project-level>\n` +
+      `<project-level path="${cwdPath}">\ncwd rules\n</project-level>\n` +
+      `</instructions>`,
     )
   })
 
@@ -247,6 +252,9 @@ describe('loadAgentsMd (integration)', () => {
     expect(result).toContain('exceeds 32 KiB')
     expect(result).toContain(join(dir, 'sub', 'AGENTS.md'))
     expect(result).toContain('small sibling')
+    // Top-level wrapper is present
+    expect(result?.startsWith('<instructions>\n')).toBe(true)
+    expect(result?.endsWith('</instructions>')).toBe(true)
   })
 
   it('loads user and project sections together in order user-then-project', async () => {
@@ -257,16 +265,15 @@ describe('loadAgentsMd (integration)', () => {
     await writeFile(join(dir, 'AGENTS.md'), 'project rules')
 
     const result = await loadAgentsMd(dir, ['user', 'project'])
-    const userHeader = `## User-level Instructions (${join(dir, '.agents', 'AGENTS.md')})`
-    const projectHeader = `## Project-level Instructions (${join(dir, 'AGENTS.md')})`
-    expect(result).toContain(userHeader)
-    expect(result).toContain(projectHeader)
-    expect(result!.indexOf(userHeader)).toBeLessThan(result!.indexOf(projectHeader))
+    const userNode = `<user-level path="${join(dir, '.agents', 'AGENTS.md')}">`
+    const projectNode = `<project-level path="${join(dir, 'AGENTS.md')}">`
+    expect(result).toContain(userNode)
+    expect(result).toContain(projectNode)
+    expect(result!.indexOf(userNode)).toBeLessThan(result!.indexOf(projectNode))
+  })
+
+  it('emits no <instructions> block when no instruction files are loaded', async () => {
+    // settingSources includes 'project' but no AGENTS.md exists anywhere.
+    expect(await loadAgentsMd(dir, ['project'])).toBeNull()
   })
 })
-
-// Helper used by one assertion above; keep at the bottom.
-async function readFileForAssert(p: string): Promise<string> {
-  const { readFile } = await import('fs/promises')
-  return readFile(p, 'utf-8')
-}
