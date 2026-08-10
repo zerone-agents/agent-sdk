@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vitest'
-import { MAX_AGENTS_MD_BYTES, type LoadedFile, type Level } from './agents-md.js'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import {
+  MAX_AGENTS_MD_BYTES,
+  readWithLimit,
+  type LoadedFile,
+  type Level,
+} from './agents-md.js'
 
 describe('agents-md constants and types', () => {
   it('exposes a 32 KiB size limit', () => {
@@ -16,5 +24,47 @@ describe('agents-md constants and types', () => {
   it('Level is the literal union "user" | "project"', () => {
     const levels: Level[] = ['user', 'project']
     expect(levels).toEqual(['user', 'project'])
+  })
+})
+
+describe('readWithLimit', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'agents-md-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('returns content for a normally-sized file', async () => {
+    const path = join(dir, 'AGENTS.md')
+    await writeFile(path, 'hello world', 'utf-8')
+    const result = await readWithLimit(path, MAX_AGENTS_MD_BYTES)
+    expect(result).toEqual({ path, content: 'hello world', error: null })
+  })
+
+  it('returns null when the file does not exist', async () => {
+    const result = await readWithLimit(join(dir, 'missing.md'), MAX_AGENTS_MD_BYTES)
+    expect(result).toBeNull()
+  })
+
+  it('returns an error marker when file exceeds the limit (boundary: limit+1)', async () => {
+    const path = join(dir, 'big.md')
+    await writeFile(path, 'a'.repeat(MAX_AGENTS_MD_BYTES + 1))
+    const result = await readWithLimit(path, MAX_AGENTS_MD_BYTES)
+    expect(result?.content).toBeNull()
+    expect(result?.error).toMatch(/exceeds 32.*KiB.*32769 bytes/i)
+    expect(result?.error).toContain(String(MAX_AGENTS_MD_BYTES + 1))
+    expect(result?.path).toBe(path)
+  })
+
+  it('accepts a file exactly at the limit (boundary: limit)', async () => {
+    const path = join(dir, 'exact.md')
+    await writeFile(path, 'a'.repeat(MAX_AGENTS_MD_BYTES))
+    const result = await readWithLimit(path, MAX_AGENTS_MD_BYTES)
+    expect(result?.error).toBeNull()
+    expect(result?.content).toHaveLength(MAX_AGENTS_MD_BYTES)
   })
 })

@@ -1,4 +1,4 @@
-import { readFile } from 'fs/promises'
+import { readFile, stat } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
 import type { SettingSource } from '../types.js'
@@ -14,6 +14,30 @@ export interface LoadedFile {
   path: string
   content: string | null
   error: string | null
+}
+
+/** @internal */
+export async function readWithLimit(
+  path: string,
+  limit: number,
+): Promise<LoadedFile | null> {
+  let size: number
+  try {
+    const s = await stat(path)
+    size = s.size
+  } catch {
+    return null // file missing — normal case, not an error
+  }
+  if (size > limit) {
+    const kib = (limit / 1024).toFixed(0)
+    return {
+      path,
+      content: null,
+      error: `File exceeds ${kib} KiB limit (actual: ${size} bytes) and was skipped.`,
+    }
+  }
+  const content = await readFile(path, 'utf-8')
+  return { path, content, error: null }
 }
 
 export async function loadAgentsMd(
