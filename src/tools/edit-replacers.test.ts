@@ -40,6 +40,31 @@ describe('replace()', () => {
     })
   })
 
+  describe('whitespace-fold match', () => {
+    it('matches when internal spaces differ in count', () => {
+      const content = 'const x  =  1\nconst y = 2'
+      const oldString = 'const x = 1\nconst y = 2'
+      const result = replace(content, oldString, 'REPLACED', false)
+      expect('content' in result).toBe(true)
+      expect((result as any).content).toContain('REPLACED')
+    })
+
+    it('matches when tabs and spaces are mixed', () => {
+      const content = 'if (a) {  \t foo()\t }'
+      const oldString = 'if (a) { foo() }'
+      const result = replace(content, oldString, 'REPLACED', false)
+      expect('content' in result).toBe(true)
+      expect((result as any).content).toContain('REPLACED')
+    })
+
+    it('replaces the exact matched span, preserving original content elsewhere', () => {
+      const content = 'a = 1\nb  =  2\nc = 3'
+      const result = replace(content, 'b = 2', 'B = 20', false)
+      expect('content' in result).toBe(true)
+      expect((result as any).content).toBe('a = 1\nB = 20\nc = 3')
+    })
+  })
+
   describe('escape-normalize match', () => {
     it('matches literal \\n as newline', () => {
       const content = 'line1\nline2'

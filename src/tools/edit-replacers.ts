@@ -101,7 +101,38 @@ const indentNormalizeReplacer: Replacer = {
   },
 }
 
-// Replacer 4: Escape sequence normalization
+// Replacer 4: Whitespace folding (collapse runs of spaces/tabs to a single space)
+function foldWhitespace(s: string): string {
+  return s.replace(/[ \t]+/g, ' ')
+}
+
+const whitespaceFoldReplacer: Replacer = {
+  name: 'whitespace-fold',
+  find(content, oldString) {
+    const oldLines = foldWhitespace(oldString).split('\n')
+    const contentLines = content.split('\n')
+
+    for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+      const candidateLines = contentLines.slice(i, i + oldLines.length)
+      const foldedCandidate = candidateLines.map(foldWhitespace)
+      let match = true
+      for (let j = 0; j < oldLines.length; j++) {
+        if (foldedCandidate[j] !== oldLines[j]) {
+          match = false
+          break
+        }
+      }
+      if (match) {
+        const actualMatch = candidateLines.join('\n')
+        const allMatches = findAllOccurrences(content, actualMatch)
+        return { match: actualMatch, index: allMatches[0].index, count: allMatches.length }
+      }
+    }
+    return null
+  },
+}
+
+// Replacer 5: Escape sequence normalization
 function unescapeString(s: string): string {
   return s
     .replace(/\\n/g, '\n')
@@ -121,7 +152,7 @@ const escapeNormalizeReplacer: Replacer = {
   },
 }
 
-// Replacer 5: Whole-string trim
+// Replacer 6: Whole-string trim
 const wholeTrimReplacer: Replacer = {
   name: 'whole-trim',
   find(content, oldString) {
@@ -151,6 +182,7 @@ const replacers: Replacer[] = [
   exactReplacer,
   lineTrimReplacer,
   indentNormalizeReplacer,
+  whitespaceFoldReplacer,
   escapeNormalizeReplacer,
   wholeTrimReplacer,
 ]

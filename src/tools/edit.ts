@@ -61,6 +61,9 @@ export const FileEditTool = defineTool({
     'The edit will FAIL if old_string is found multiple times. Provide more surrounding context to',
     'make it unique, or set replace_all to true to change every occurrence.',
     '',
+    'Keep each old_string / new_string under 1000 characters. For edits larger than that, prefer',
+    'splitting into multiple smaller Edits or rewriting the whole file with the Write tool.',
+    '',
     'Set old_string to empty string to create a new file.',
   ].join('\n'),
   inputSchema: {
