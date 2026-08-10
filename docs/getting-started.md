@@ -211,11 +211,10 @@ const agent = createAgent({
   settingSources: ["user"], // Load from ~/.agents/skills/
 });
 
-// Or add extra skill directories (scanned after the defaults):
+// Or add extra user-level skill directories (scanned after the defaults):
 const agent = createAgent({
   settingSources: ["user", "project"],
   extraUserSkillDirs: ["/opt/shared-skills"],         // tagged source='user'
-  extraProjectSkillDirs: ["../sister-repo/.agents/skills"], // tagged source='project'
 });
 ```
 
@@ -224,9 +223,11 @@ const agent = createAgent({
 - `['user']`: Load from `~/.agents/skills/`
 - `['project']`: Load from `${cwd}/.agents/skills/`
 - `['user', 'project']`: Load both (project skills override user skills)
-- `extraUserSkillDirs` / `extraProjectSkillDirs`: additional directories scanned after the defaults, tagged with the corresponding source
+- `extraUserSkillDirs`: additional user-level directories scanned after the default
 
-> **Note**: Project-sourced skills (from `<cwd>/.agents/skills/` and `extraProjectSkillDirs`) **bypass the `availableSkills` allowlist** — they represent project author intent and always appear in the system prompt. User-level skills are filtered by `availableSkills` if set.
+> **Note**: Project-sourced skills (from `<cwd>/.agents/skills/`) **bypass the `availableSkills` allowlist** — they represent project author intent and always appear in the system prompt. User-level skills are filtered by `availableSkills` if set.
+
+> **Migration (v1.1.5)**: The `extraProjectSkillDirs` option has been removed. Project-level skills are discovered only from `<cwd>/.agents/skills/`. Move any skill directories previously passed via `extraProjectSkillDirs` into `.agents/skills/` (e.g. as symlinks).
 
 ### Hooks (lifecycle events)
 

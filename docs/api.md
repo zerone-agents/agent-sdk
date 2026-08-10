@@ -85,7 +85,6 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | `sandbox`            | `SandboxSettings`                       | —                      | Filesystem/network sandbox                                           |
 | `settingSources`     | `SettingSource[]`                       | —                      | Load skills from `~/.agents/skills/` (`user`) and/or `${cwd}/.agents/skills/` (`project`) |
 | `extraUserSkillDirs`     | `string[]`                          | —                      | Additional user-level skill directories (tagged `source='user'`)    |
-| `extraProjectSkillDirs`  | `string[]`                          | —                      | Additional project-level skill directories (tagged `source='project'`, bypass `availableSkills`) |
 | `env`                | `Record<string, string>`                | —                      | Environment variables                                                |
 | `toolEnv`            | `Record<string, string \| undefined>`   | —                      | Environment variables passed to Bash/Grep subprocesses (default: merged with process.env) |
 | `toolEnvInherit`     | `boolean`                               | `true`                 | When false, completely replaces process.env (use with toolEnv for fully isolated subprocess environment) |

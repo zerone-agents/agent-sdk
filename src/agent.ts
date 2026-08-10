@@ -123,7 +123,6 @@ interface StreamingConfig {
 interface SkillConfig {
   settingSources?: import('./types.js').SettingSource[]
   extraUserSkillDirs?: string[]
-  extraProjectSkillDirs?: string[]
   subAgents?: Record<string, AgentDefinition>
   onSkillsUpdated?: (event: import('./types.js').SDKSkillsUpdatedMessage) => void
 }
@@ -353,7 +352,6 @@ export class Agent {
     return {
       settingSources: opts.settingSources,
       extraUserSkillDirs: opts.extraUserSkillDirs,
-      extraProjectSkillDirs: opts.extraProjectSkillDirs,
       subAgents: opts.subAgents,
       onSkillsUpdated: opts.onSkillsUpdated,
     }
@@ -498,7 +496,6 @@ export class Agent {
         const cwd = this.cfg.cwd ?? process.cwd()
         await loadSkillsFromFilesystem(cwd, this.cfg.settingSources, {
           extraUserSkillDirs: this.cfg.extraUserSkillDirs,
-          extraProjectSkillDirs: this.cfg.extraProjectSkillDirs,
         }, this.skillRegistry)
       } catch (error) {
         // Don't fail agent startup
@@ -901,7 +898,6 @@ export class Agent {
         const cwd = this.cfg.cwd ?? process.cwd()
         await loadSkillsFromFilesystem(cwd, this.cfg.settingSources, {
           extraUserSkillDirs: this.cfg.extraUserSkillDirs,
-          extraProjectSkillDirs: this.cfg.extraProjectSkillDirs,
         }, this.skillRegistry)
       } catch (error) {
         console.error('Failed to reload filesystem skills:', error)
