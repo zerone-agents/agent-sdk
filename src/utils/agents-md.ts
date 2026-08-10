@@ -3,6 +3,19 @@ import { join } from 'path'
 import { homedir } from 'os'
 import type { SettingSource } from '../types.js'
 
+/** Maximum size of a single AGENTS.md file. Files exceeding this are skipped with an [ERROR] marker. */
+export const MAX_AGENTS_MD_BYTES = 32 * 1024
+
+/** @internal */
+export type Level = 'user' | 'project'
+
+/** @internal */
+export interface LoadedFile {
+  path: string
+  content: string | null
+  error: string | null
+}
+
 export async function loadAgentsMd(
   cwd: string,
   settingSources?: SettingSource[]
