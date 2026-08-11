@@ -9,6 +9,7 @@
 
 import type { SkillDefinition } from './types.js'
 import type { SkillSource, SettingSource } from '../types.js'
+import { SYSTEM_PROMPTS } from '../prompts/system-prompts.js'
 
 export class SkillRegistry {
   private own = new Map<string, SkillDefinition>()
@@ -145,6 +146,10 @@ export function formatSkillsForSystemPrompt(
 
   const lines: string[] = ['<available_skills>']
 
+  lines.push('<using_skills>')
+  lines.push(SYSTEM_PROMPTS.skill_guidance)
+  lines.push('</using_skills>')
+
   const sourcesBlock = buildSourcesBlock(sourcesInfo)
   if (sourcesBlock) {
     lines.push(sourcesBlock)
@@ -152,10 +157,10 @@ export function formatSkillsForSystemPrompt(
 
   for (const skill of sorted) {
     lines.push([
-      '  <skill>',
-      `    <name>${skill.name}</name>`,
-      `    <description>${skill.description}</description>`,
-      '  </skill>',
+      '<skill>',
+      `<name>${skill.name}</name>`,
+      `<description>${skill.description}</description>`,
+      '</skill>',
     ].join('\n'))
   }
   lines.push('</available_skills>')
@@ -166,13 +171,13 @@ function buildSourcesBlock(info?: SkillSourcesInfo): string {
   if (!info?.settingSources || info.settingSources.length === 0) return ''
   const rows: string[] = []
   if (info.settingSources.includes('user')) {
-    rows.push('    user: ~/.agents/skills')
+    rows.push('user: ~/.agents/skills')
   }
   if (info.settingSources.includes('project') && info.cwd) {
-    rows.push(`    project: ${info.cwd}/.agents/skills`)
+    rows.push(`project: ${info.cwd}/.agents/skills`)
   }
   if (rows.length === 0) return ''
-  return ['  <sources>', ...rows, '  </sources>'].join('\n')
+  return ['<sources>', ...rows, '</sources>'].join('\n')
 }
 
 export function formatSkillsForToolDescription(

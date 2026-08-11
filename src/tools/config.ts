@@ -77,7 +77,7 @@ export function clearConfig(): void {
 export const ConfigTool: ToolDefinition = {
   name: 'Config',
   description: 'Get or set configuration values. Supports session-scoped settings.',
-  shortDescription: 'Read or write per-agent config values',
+  shortDescription: 'Read or write per-agent configuration values and session-scoped settings',
   deferred: true,
   inputSchema: {
     type: 'object',
