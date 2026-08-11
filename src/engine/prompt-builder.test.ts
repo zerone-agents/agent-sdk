@@ -19,6 +19,7 @@ function makeConfig(overrides: Partial<QueryEngineConfig> = {}): QueryEngineConf
       skills: [],
     },
     subAgents: {},
+    agentId: 'main',
     ...overrides,
   } as any
 }
@@ -137,5 +138,78 @@ describe('buildEnvironmentPrompt', () => {
     const envPrompt = await buildEnvironmentPrompt(config)
     // Helper truncates to 200 + ...(more)
     expect(envPrompt).toContain('Mystery: ' + 'A'.repeat(200) + '...(more)')
+  })
+
+  it('injects <available_subagents> when subAgents non-empty AND Task tool is available', async () => {
+    const config = makeConfig({
+      resolved: {
+        definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
+        tools: [{ name: 'Task', call: () => Promise.resolve({}) } as any],
+        deferredTools: [],
+        skills: [],
+      },
+      subAgents: { researcher: { description: 'research helper', prompt: 'p' } as any },
+    } as any)
+    const envPrompt = await buildEnvironmentPrompt(config)
+    expect(envPrompt).toContain('<available_subagents>')
+    expect(envPrompt).toContain('<name>researcher</name>')
+  })
+
+  it('injects <available_subagents> when MultiTask tool is available (Task absent)', async () => {
+    const config = makeConfig({
+      resolved: {
+        definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
+        tools: [{ name: 'MultiTask', call: () => Promise.resolve({}) } as any],
+        deferredTools: [],
+        skills: [],
+      },
+      subAgents: { researcher: { description: 'research helper', prompt: 'p' } as any },
+    } as any)
+    const envPrompt = await buildEnvironmentPrompt(config)
+    expect(envPrompt).toContain('<available_subagents>')
+  })
+
+  it('omits <available_subagents> when neither Task nor MultiTask tool is available (phantom guidance fix)', async () => {
+    // subAgents is non-empty but Task/MultiTask are filtered out — advertising
+    // agents the model cannot spawn would be misleading.
+    const config = makeConfig({
+      resolved: {
+        definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
+        tools: [{ name: 'Read', call: () => Promise.resolve({}) } as any],
+        deferredTools: [],
+        skills: [],
+      },
+      subAgents: { researcher: { description: 'research helper', prompt: 'p' } as any },
+    } as any)
+    const envPrompt = await buildEnvironmentPrompt(config)
+    expect(envPrompt).not.toContain('<available_subagents>')
+    expect(envPrompt).not.toContain('researcher')
+  })
+
+  it('marks the subagent matching agentId with self="true" (parent agent itself)', async () => {
+    // The parent agent always registers itself in subAgents under its own agentId
+    // so it can spawn fresh-context copies of itself. That entry gets a self="true"
+    // marker to distinguish it from other specialized subagents.
+    const config = makeConfig({
+      agentId: 'claude-code',
+      resolved: {
+        definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
+        tools: [{ name: 'Task', call: () => Promise.resolve({}) } as any],
+        deferredTools: [],
+        skills: [],
+      },
+      subAgents: {
+        'claude-code': { description: 'I am the main agent', prompt: 'p' } as any,
+        researcher: { description: 'research helper', prompt: 'p' } as any,
+      },
+    } as any)
+    const envPrompt = await buildEnvironmentPrompt(config)
+    // The self entry is marked
+    expect(envPrompt).toContain('<subagent self="true">\n<name>claude-code</name>')
+    // Other entries are not marked
+    expect(envPrompt).toContain('<subagent>\n<name>researcher</name>')
+    // Only one self marker
+    const selfCount = (envPrompt.match(/self="true"/g) || []).length
+    expect(selfCount).toBe(1)
   })
 })

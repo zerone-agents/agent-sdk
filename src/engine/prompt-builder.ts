@@ -33,21 +33,34 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
     { cwd: config.env.cwd, settingSources: config.env.settingSources },
   )
   if (skillsXml) {
-    parts.push(SYSTEM_PROMPTS.skill_guidance)
     parts.push(skillsXml)
   }
 
   // Add subagent definitions — XML format aligned with skills
-  if (config.subAgents && Object.keys(config.subAgents).length > 0) {
+  // Cross-validation: if neither Task nor MultiTask tool is available, subAgents
+  // can't be invoked. Skip the block entirely to avoid advertising agents the
+  // model has no way to spawn (mirrors the skills/Skill-tool check in
+  // resolve-agent.ts).
+  const hasSubagentTool = config.resolved.tools.some(t => t.name === 'Task' || t.name === 'MultiTask')
+  if (hasSubagentTool && config.subAgents && Object.keys(config.subAgents).length > 0) {
     const agentEntries = Object.entries(config.subAgents).sort((a, b) => a[0].localeCompare(b[0]))
-    const agentXml = agentEntries.map(([name, def]) => [
-      '  <subagent>',
-      `    <name>${name}</name>`,
-      `    <description>${def.description}</description>`,
-      '  </subagent>',
-    ].join('\n'))
+    const agentXml = agentEntries.map(([name, def]) => {
+      // Mark the entry that matches the parent agent's agentId — that entry
+      // IS the parent agent itself, registered so it can spawn fresh-context
+      // copies of itself via Task/MultiTask.
+      const selfAttr = name === config.agentId ? ' self="true"' : ''
+      return [
+        `<subagent${selfAttr}>`,
+        `<name>${name}</name>`,
+        `<description>${def.description}</description>`,
+        '</subagent>',
+      ].join('\n')
+    })
     parts.push([
       '<available_subagents>',
+      '<using_subagents>',
+      SYSTEM_PROMPTS.subagent_guidance,
+      '</using_subagents>',
       ...agentXml,
       '</available_subagents>',
     ].join('\n'))
@@ -74,7 +87,7 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
     parts.push(agentsMdContent)
   }
 
-  return parts.join('\n')
+  return parts.join('\n\n')
 }
 
 /**
