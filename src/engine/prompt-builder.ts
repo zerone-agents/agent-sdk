@@ -81,7 +81,7 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
     parts.push([
       '<available_deferred_tools>',
       '<using_toolsearch>',
-      'These tools are available but their full schemas are NOT loaded. Use the ToolSearch tool to load a tool\'s schema before invoking it.',
+      SYSTEM_PROMPTS.toolsearch_guidance,
       '</using_toolsearch>',
       ...toolXml,
       '</available_deferred_tools>',

@@ -17,6 +17,12 @@ Use the Task tool to launch a single subagent for self-contained work, or the Mu
 
 Do not use subagents for trivial 1-2 step tasks that you can handle directly. Each subagent invocation has overhead — only delegate when the task complexity justifies it.`,
 
+  toolsearch_guidance: `Tool schemas are loaded lazily to conserve context. The <deferred_tool> entries below expose names and one-line descriptions only — their input schemas are not yet in your context.
+
+Before invoking a deferred tool, use the ToolSearch tool to load its schema; calling an unloaded tool will fail.
+
+Load promptly when the task clearly requires it, but avoid speculative loads — each schema consumes context budget.`,
+
   claude_code: `I am Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.
 I am an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
