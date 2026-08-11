@@ -82,7 +82,7 @@ export const CronCreateTool: ToolDefinition = {
     '**Agent selection** — Analyze the task content and set the `agent` field to the best-matching agent ID. ' +
     'If omitted, the current conversation agent is used automatically.\n' +
     'Do NOT embed agent role instructions in the prompt — the selected agent will automatically apply its own system prompt and tools.',
-  shortDescription: 'Schedule a recurring task',
+  shortDescription: 'Schedule a recurring task with a cron expression (e.g. every N minutes, daily at 9am)',
   deferred: true,
   inputSchema: {
     type: 'object',
@@ -172,7 +172,7 @@ export const CronCreateTool: ToolDefinition = {
 export const CronDeleteTool: ToolDefinition = {
   name: 'CronDelete',
   description: 'Delete a scheduled cron task.',
-  shortDescription: 'Delete a scheduled task',
+  shortDescription: 'Delete a scheduled cron task by its task ID',
   deferred: true,
   inputSchema: {
     type: 'object',
@@ -211,7 +211,7 @@ export const CronDeleteTool: ToolDefinition = {
 export const CronListTool: ToolDefinition = {
   name: 'CronList',
   description: 'List all scheduled cron tasks.',
-  shortDescription: 'List scheduled tasks',
+  shortDescription: 'List all currently scheduled cron tasks with their next-fire times',
   deferred: true,
   inputSchema: { type: 'object', properties: {} },
   isReadOnly: () => true,

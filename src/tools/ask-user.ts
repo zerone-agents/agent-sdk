@@ -82,7 +82,7 @@ Requirements:
 - After the user answers, determine the next question based on their response
 - Progress step by step until all questions are completed
 IMPORTANT: This tool does NOT support asking multiple questions at once. Each call asks ONE question only. If you have multiple questions, call this tool multiple times, one question per call.`,
-  shortDescription: 'Ask the user a structured multiple-choice question',
+  shortDescription: 'Ask the user a structured multiple-choice question; call once per question with 2+ options',
   deferred: true,
   inputSchema: {
     type: 'object',
