@@ -112,7 +112,11 @@ describe('buildEnvironmentPrompt', () => {
     } as any)
     const envPrompt = await buildEnvironmentPrompt(config)
     expect(envPrompt).toContain('<available_deferred_tools>')
-    expect(envPrompt).toContain('CronList: List scheduled tasks')
+    expect(envPrompt).toContain('<using_toolsearch>')
+    expect(envPrompt).toContain('</using_toolsearch>')
+    expect(envPrompt).toContain('<deferred_tool>')
+    expect(envPrompt).toContain('<name>CronList</name>')
+    expect(envPrompt).toContain('<description>List scheduled tasks</description>')
     expect(envPrompt).toContain('</available_deferred_tools>')
     // The catalog uses shortDescription, not the long description
     expect(envPrompt).not.toContain('long description that would be expensive')
@@ -137,7 +141,8 @@ describe('buildEnvironmentPrompt', () => {
     } as any)
     const envPrompt = await buildEnvironmentPrompt(config)
     // Helper truncates to 200 + ...(more)
-    expect(envPrompt).toContain('Mystery: ' + 'A'.repeat(200) + '...(more)')
+    expect(envPrompt).toContain('<name>Mystery</name>')
+    expect(envPrompt).toContain('<description>' + 'A'.repeat(200) + '...(more)' + '</description>')
   })
 
   it('injects <available_subagents> when subAgents non-empty AND Task tool is available', async () => {

@@ -69,14 +69,21 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
   // Deferred tools catalog — lets the model know what's ToolSearch-able
   if (config.resolved.deferredTools.length > 0) {
     const sorted = [...config.resolved.deferredTools].sort((a, b) => a.name.localeCompare(b.name))
-    const lines = sorted.map(t => {
+    const toolXml = sorted.map(t => {
       const summary = t.shortDescription ?? truncateForCatalog(t.description)
-      return `  - ${t.name}: ${summary}`
+      return [
+        '<deferred_tool>',
+        `<name>${t.name}</name>`,
+        `<description>${summary}</description>`,
+        '</deferred_tool>',
+      ].join('\n')
     })
     parts.push([
       '<available_deferred_tools>',
+      '<using_toolsearch>',
       'These tools are available but their full schemas are NOT loaded. Use the ToolSearch tool to load a tool\'s schema before invoking it.',
-      ...lines,
+      '</using_toolsearch>',
+      ...toolXml,
       '</available_deferred_tools>',
     ].join('\n'))
   }
