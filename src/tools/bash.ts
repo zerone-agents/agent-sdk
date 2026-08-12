@@ -13,6 +13,27 @@ const MAX_OUTPUT_CHARS = 100_000
 const MAX_LINES = 2000
 const MAX_BYTES = 51_200
 
+/**
+ * Model-facing timeout contract (issue #27): seconds, not milliseconds.
+ * Seconds match common CLI conventions (`curl --max-time`, `timeout(1)`),
+ * which dramatically reduces unit-confusion when the model fills the field.
+ */
+const DEFAULT_TIMEOUT_SECONDS = 120
+const MIN_TIMEOUT_SECONDS = 1
+const MAX_TIMEOUT_SECONDS = 600
+
+/**
+ * Clamp a user-supplied timeout (seconds) into the supported range and
+ * convert to milliseconds for internal use. Exported for tests.
+ */
+export function resolveTimeoutMs(userTimeoutSeconds: number | undefined): number {
+  const seconds = Math.min(
+    Math.max(userTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS),
+    MAX_TIMEOUT_SECONDS,
+  )
+  return seconds * 1000
+}
+
 const PS_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command']
 
 const TEMPLATE = readFileSync(
@@ -194,7 +215,9 @@ export const BashTool = defineTool({
       },
       timeout: {
         type: 'number',
-        description: 'Optional timeout in milliseconds (max 600000, default 120000)',
+        description: 'Optional timeout in seconds (min 1, max 600, default 120)',
+        minimum: MIN_TIMEOUT_SECONDS,
+        maximum: MAX_TIMEOUT_SECONDS,
       },
       workdir: {
         type: 'string',
@@ -216,7 +239,11 @@ export const BashTool = defineTool({
   isConcurrencySafe: false,
   async call(input, context) {
     const { command, shell: userShell, timeout: userTimeout } = input
-    const timeoutMs = Math.min(userTimeout || 120000, 600000)
+    // Model-facing unit is seconds (issue #27). Convert + clamp here.
+    const timeoutMs = resolveTimeoutMs(
+      typeof userTimeout === 'number' && Number.isFinite(userTimeout) ? userTimeout : undefined,
+    )
+    const timeoutSeconds = timeoutMs / 1000
     const cwd = input.workdir || context.cwd
 
     // Resolve which shell to use
@@ -240,15 +267,22 @@ export const BashTool = defineTool({
       ? `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`
       : command
 
-    return new Promise<string>((resolve) => {
+    return new Promise<string | { data: string; is_error: boolean }>((resolve) => {
       const chunks: Buffer[] = []
       const errChunks: Buffer[] = []
+      // Set true when OUR timeout timer fires. This is the only reliable way
+      // to distinguish "process killed because it exceeded the timeout" from
+      // other signal terminations — cross-spawn/Node report both as
+      // (code: null, signal: 'SIGTERM').
+      let timedOut = false
 
       const isWindowsPowerShell = process.platform === 'win32' && isPowerShell
       const proc = crossSpawn(activeShell.shell, [...activeShell.args, finalCommand], {
         cwd,
         env: context.subprocessEnv,
-        timeout: timeoutMs,
+        // NB: we do NOT pass `timeout` to spawn — Node's built-in timeout kills
+        // only the direct child (the shell), orphaning grandchildren. Our own
+        // timer below kills the whole process group, matching the abort path.
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         // Windows PowerShell / pwsh cannot have their stdout/stderr captured via
@@ -261,7 +295,7 @@ export const BashTool = defineTool({
       proc.stderr?.on('data', (data: Buffer) => errChunks.push(data))
 
       let killTimer: ReturnType<typeof setTimeout> | undefined
-      const onAbort = () => {
+      const killProcess = () => {
           if (process.platform === 'win32') {
             try {
               crossSpawn.sync('taskkill', ['/T', '/F', '/PID', String(proc.pid)], { stdio: 'ignore' })
@@ -276,12 +310,23 @@ export const BashTool = defineTool({
           }
       }
 
+      // Our own timeout timer. Fires → mark timedOut, kill the process group.
+      // The subsequent 'exit' event (code: null, signal: 'SIGTERM') is then
+      // attributed to the timeout via the flag.
+      const timeoutTimer = setTimeout(() => {
+        timedOut = true
+        killProcess()
+      }, timeoutMs)
+
+      const onAbort = () => killProcess()
+
       if (context.abortSignal) {
         context.abortSignal.addEventListener('abort', onAbort, { once: true })
       }
 
-      proc.on('exit', (code: number | null) => {
+      proc.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
         context.abortSignal?.removeEventListener('abort', onAbort)
+        clearTimeout(timeoutTimer)
         if (killTimer) clearTimeout(killTimer)
 
         const stdout = Buffer.concat(chunks).toString('utf-8')
@@ -290,18 +335,42 @@ export const BashTool = defineTool({
         let output = ''
         if (stdout) output += stdout
         if (stderr) output += (output ? '\n' : '') + stderr
-        if (code !== 0 && code !== null) {
-          output += `\nExit code: ${code}`
-        }
 
         if (output.length > MAX_OUTPUT_CHARS) {
           output = output.slice(0, MAX_OUTPUT_CHARS / 2) + '\n...(truncated)...\n' + output.slice(-MAX_OUTPUT_CHARS / 2)
+        }
+
+        // Explicit timeout: never report as a successful "(no output)".
+        if (timedOut) {
+          const message = `Error: Command timed out after ${timeoutSeconds} seconds (limit ${timeoutSeconds}s)`
+          resolve({
+            data: output ? `${message}\n\nPartial output before timeout:\n${output}` : message,
+            is_error: true,
+          })
+          return
+        }
+
+        // Killed by an external signal (e.g. user abort). code is null when a
+        // signal terminated the process; treating it as a silent success would
+        // hide cancellations the same way the old code hid timeouts.
+        if (signal) {
+          const message = `Error: Command terminated by signal ${signal}`
+          resolve({
+            data: output ? `${message}\n\nPartial output before termination:\n${output}` : message,
+            is_error: true,
+          })
+          return
+        }
+
+        if (code !== 0 && code !== null) {
+          output += `\nExit code: ${code}`
         }
 
         resolve(output || '(no output)')
       })
 
       proc.on('error', (err: Error) => {
+        clearTimeout(timeoutTimer)
         resolve(`Error executing command: ${err.message}`)
       })
     })
