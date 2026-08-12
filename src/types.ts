@@ -826,7 +826,9 @@ export interface AgentOptions {
 }
 
 export interface QueryResult {
-  /** Final text output from the assistant */
+  /** Final text output from the assistant.
+   *  When `is_error` is true this may contain PARTIAL output collected before
+   *  the failure (or be empty if the error happened before any text). */
   text: string
   /** Token usage */
   usage: TokenUsage
@@ -836,6 +838,24 @@ export interface QueryResult {
   duration_ms: number
   /** All conversation messages */
   messages: Message[]
+  /**
+   * True when the engine reported an error result instead of a successful
+   * completion (provider failure such as a 429/auth/connection error, hook
+   * block, max turns, max budget, ...). Undefined/false on success.
+   *
+   * Callers MUST check this field — without it a failed prompt() previously
+   * looked identical to a successful empty answer. See issue #28.
+   */
+  is_error?: boolean
+  /**
+   * Error identity, preserved from the engine result event. The structured
+   * classification (e.g. 'rate_limit', 'auth', 'connection') when available;
+   * otherwise the error subtype (e.g. 'error_during_execution',
+   * 'error_max_turns').
+   */
+  error_type?: string
+  /** Human-readable error messages reported by the engine. */
+  errors?: string[]
 }
 
 // --------------------------------------------------------------------------
