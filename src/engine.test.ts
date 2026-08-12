@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
 import type { QueryEngineConfig, SDKMessage, SDKResultMessage, SDKToolResultMessage, ToolDefinition } from './types.js'
-import type { LLMProvider, StreamChunk } from './providers/types.js'
+import type { LLMProvider, StreamChunk, CreateMessageParams, NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
 import { vi } from 'vitest'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createEmptyServices } from './tools/services.js'
+import { getTodos, TodoWriteTool } from './tools/todowrite.js'
 
 // Mirrors the real @anthropic-ai/sdk APIConnectionError: a plain Error with
 // name='Error', fixed message, and the underlying failure on `cause`.
@@ -811,6 +812,175 @@ describe('QueryEngine per-turn todos reminder injection', () => {
     const allPersisted = JSON.stringify(persisted)
     expect(allPersisted).not.toContain('<system-reminder>')
     expect(allPersisted).not.toContain('Current task list:')
+  })
+
+  // ---- issue #32: all-terminal TodoList must not leak into the next query ----
+
+  /** Build a streaming provider that captures the messages it was called with. */
+  function makeCapturingProvider(): {
+    provider: LLMProvider
+    getCaptured: () => NormalizedMessageParam[]
+  } {
+    let captured: NormalizedMessageParam[] = []
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(params: CreateMessageParams): AsyncGenerator<StreamChunk> {
+        captured = params.messages as NormalizedMessageParam[]
+        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+    return { provider, getCaptured: () => captured }
+  }
+
+  function lastMessageContent(captured: NormalizedMessageParam[]): string {
+    const last = captured[captured.length - 1]
+    const content = last?.content
+    return typeof content === 'string' ? content : ''
+  }
+
+  it('does NOT inject an all-completed TodoList into the next turn (issue #32)', async () => {
+    const sid = 'engine-test-all-completed'
+    await seedTodos(sid, [
+      { content: 'Implement change', status: 'completed', priority: 'high' },
+      { content: 'Run tests', status: 'completed', priority: 'medium' },
+    ])
+    const { provider, getCaptured } = makeCapturingProvider()
+
+    await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+
+    const content = lastMessageContent(getCaptured())
+    expect(content).not.toContain('<system-reminder>')
+    expect(content).not.toContain('Current task list:')
+  })
+
+  it('does NOT inject a mixed completed + cancelled TodoList (all-terminal)', async () => {
+    const sid = 'engine-test-completed-cancelled'
+    await seedTodos(sid, [
+      { content: 'Done task', status: 'completed', priority: 'high' },
+      { content: 'Abandoned task', status: 'cancelled', priority: 'low' },
+    ])
+    const { provider, getCaptured } = makeCapturingProvider()
+
+    await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+
+    expect(lastMessageContent(getCaptured())).not.toContain('<system-reminder>')
+  })
+
+  it('still injects a list containing pending or in_progress todos', async () => {
+    // pending-only
+    {
+      const sid = 'engine-test-pending-active'
+      await seedTodos(sid, [
+        { content: 'Queued task', status: 'pending', priority: 'medium' },
+      ])
+      const { provider, getCaptured } = makeCapturingProvider()
+      await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+      const content = lastMessageContent(getCaptured())
+      expect(content).toContain('<system-reminder>')
+      expect(content).toContain('1. Queued task [pending|medium]')
+    }
+    // in_progress-only
+    {
+      const sid = 'engine-test-inprogress-active'
+      await seedTodos(sid, [
+        { content: 'Active task', status: 'in_progress', priority: 'high' },
+      ])
+      const { provider, getCaptured } = makeCapturingProvider()
+      await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+      expect(lastMessageContent(getCaptured())).toContain('<system-reminder>')
+    }
+  })
+
+  it('clears the terminal TodoList before the provider request is constructed', async () => {
+    const sid = 'engine-test-cleanup-before-request'
+    await seedTodos(sid, [
+      { content: 'Finished', status: 'completed', priority: 'high' },
+    ])
+    const { provider, getCaptured } = makeCapturingProvider()
+
+    await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+
+    // The provider received NO reminder — proving cleanup happened before request build,
+    // not merely that the reminder was stripped afterwards.
+    expect(lastMessageContent(getCaptured())).not.toContain('<system-reminder>')
+    // And the persisted store is empty right after the run completes.
+    expect(await getTodos(sid)).toEqual([])
+  })
+
+  it('leaves getTodos empty after clearing an all-terminal list (host consistency)', async () => {
+    const sid = 'engine-test-gettodos-empty'
+    await seedTodos(sid, [
+      { content: 'Task A', status: 'completed', priority: 'high' },
+      { content: 'Task B', status: 'cancelled', priority: 'low' },
+    ])
+
+    await run(new QueryEngine({ ...makeConfig(makeCapturingProvider().provider), sessionId: sid }))
+
+    const after = await getTodos(sid)
+    expect(after).toEqual([])
+  })
+
+  it('list completed during query A survives until query B starts (lifecycle boundary, issue #32)', async () => {
+    const sid = 'engine-test-multiturn-lifecycle'
+    // Seed an ACTIVE list — query A start will NOT clear it.
+    await seedTodos(sid, [
+      { content: 'Implement feature', status: 'in_progress', priority: 'high' },
+    ])
+
+    let pass = 0
+    let capturedB: NormalizedMessageParam[] = []
+    const completedInput = JSON.stringify({
+      todos: [{ content: 'Implement feature', status: 'completed', priority: 'high' }],
+    })
+
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(params: CreateMessageParams): AsyncGenerator<StreamChunk> {
+        if (pass === 0) {
+          // Query A, turn 1: model calls TodoWrite to mark everything completed
+          pass++
+          yield { type: 'tool_use', index: 1, id: 'tu_todo', name: 'TodoWrite', input: completedInput } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        } else if (pass === 1) {
+          // Query A, turn 2: final text — query A ends
+          pass++
+          yield { type: 'text', index: 0, delta: 'query A done' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        } else {
+          // Query B: capture messages and end immediately
+          pass++
+          capturedB = params.messages as NormalizedMessageParam[]
+          yield { type: 'text', index: 0, delta: 'query B done' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        }
+      },
+    }
+
+    // TodoWriteTool is the real tool so the engine actually persists the list.
+    const engine = new QueryEngine({ ...makeConfig(provider, [TodoWriteTool]), sessionId: sid })
+
+    // --- Query A ---
+    await run(engine)
+
+    // SURVIVAL: the all-terminal list written during query A is still persisted.
+    // Cleanup did NOT fire mid-query (only at the NEXT query's start).
+    const afterA = await getTodos(sid)
+    expect(afterA).toHaveLength(1)
+    expect(afterA[0].status).toBe('completed')
+
+    // --- Query B (same engine + session) ---
+    await run(engine)
+
+    // CLEARANCE: query B's provider call received NO stale reminder.
+    expect(lastMessageContent(capturedB)).not.toContain('<system-reminder>')
+    expect(lastMessageContent(capturedB)).not.toContain('Current task list:')
+
+    // And the persisted store is now empty.
+    const afterB = await getTodos(sid)
+    expect(afterB).toEqual([])
   })
 })
 

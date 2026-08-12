@@ -122,6 +122,16 @@ export async function clearTodos(sessionId: string): Promise<void> {
   await saveTodos(sessionId, [])
 }
 
+/**
+ * Whether a todo list contains any non-terminal item (pending / in_progress).
+ * Used by the engine's per-turn reminder injection (issue #32): an all-terminal
+ * list (completed/cancelled) belongs to the previous query and must neither be
+ * injected into the next model request nor left polluting the persisted store.
+ */
+export function hasActiveTodos(todos: TodoInfo[]): boolean {
+  return todos.some((t) => t.status === 'pending' || t.status === 'in_progress')
+}
+
 export const TodoWriteTool: ToolDefinition = {
   name: 'TodoWrite',
   description: _description,

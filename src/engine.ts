@@ -60,7 +60,7 @@ import { buildSystemPrompt } from './engine/prompt-builder.js'
 import { buildResponseFromChunks } from './engine/stream-parser.js'
 import type { ToolUseBlock } from './engine/tool-executor.js'
 import { executeTools as executeToolsFn } from './engine/tool-executor.js'
-import { getTodos, formatTodosReminder } from './tools/todowrite.js'
+import { getTodos, formatTodosReminder, clearTodos, hasActiveTodos } from './tools/todowrite.js'
 import { createLogger, type Logger } from './utils/logger.js'
 import { formatDurationMs, formatInputPreview, createTimer } from './utils/helpers.js'
 
@@ -216,6 +216,21 @@ export class QueryEngine {
     let streamTruncated = false
     const MAX_OUTPUT_RECOVERY = 3
 
+    // Expire an all-terminal TodoList left over from a PREVIOUS query. This runs
+    // once at the start of each new user query, NOT inside the per-turn loop, so
+    // a list the model marks completed mid-query survives for in-query visibility
+    // and is only cleared when the NEXT query begins. See issue #32.
+    if (this.config.sessionId) {
+      try {
+        const todos = await getTodos(this.config.sessionId)
+        if (todos.length > 0 && !hasActiveTodos(todos)) {
+          await clearTodos(this.config.sessionId)
+        }
+      } catch {
+        // todos file unreadable — nothing to expire
+      }
+    }
+
     while (turnsRemaining > 0) {
       if (this.config.abortSignal?.aborted) break
 
@@ -268,6 +283,10 @@ export class QueryEngine {
       // Inject current todos snapshot as a system-reminder at turn boundary.
       // Best-effort: file errors are silently ignored (same policy as the <env> block).
       // Does NOT modify this.messages — the reminder is ephemeral, scoped to this turn's API call.
+      // NB: all-terminal leftovers from a PREVIOUS query are expired once at the
+      // start of this query (see the cleanup block before the agentic loop), so
+      // any non-empty list here is either active work or a list the model itself
+      // produced mid-query — both are useful in-query visibility.
       if (this.config.sessionId) {
         try {
           const todos = await getTodos(this.config.sessionId)
