@@ -60,7 +60,7 @@ import { buildSystemPrompt } from './engine/prompt-builder.js'
 import { buildResponseFromChunks } from './engine/stream-parser.js'
 import type { ToolUseBlock } from './engine/tool-executor.js'
 import { executeTools as executeToolsFn } from './engine/tool-executor.js'
-import { getTodos, formatTodosReminder } from './tools/todowrite.js'
+import { getTodos, formatTodosReminder, clearTodos, hasActiveTodos } from './tools/todowrite.js'
 import { createLogger, type Logger } from './utils/logger.js'
 import { formatDurationMs, formatInputPreview, createTimer } from './utils/helpers.js'
 
@@ -272,11 +272,21 @@ export class QueryEngine {
         try {
           const todos = await getTodos(this.config.sessionId)
           if (todos.length > 0) {
-            const reminder = formatTodosReminder(todos)
-            apiMessages = [
-              ...apiMessages,
-              { role: 'user', content: reminder } as NormalizedMessageParam,
-            ]
+            if (hasActiveTodos(todos)) {
+              // Active work (pending/in_progress) — inject as a reminder so the
+              // model carries the in-flight task list into the new request.
+              const reminder = formatTodosReminder(todos)
+              apiMessages = [
+                ...apiMessages,
+                { role: 'user', content: reminder } as NormalizedMessageParam,
+              ]
+            } else {
+              // All-terminal list (completed/cancelled) belongs to the previous
+              // query. Don't inject it into an unrelated next request, and clear
+              // the persisted store so it can't leak into future turns or
+              // downstream host UIs. See issue #32.
+              await clearTodos(this.config.sessionId)
+            }
           }
         } catch {
           // todos file unreadable — skip injection this turn
