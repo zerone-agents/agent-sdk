@@ -215,11 +215,7 @@ export const BashTool = defineTool({
       },
       timeout: {
         type: 'number',
-        description: [
-          'Optional timeout in seconds (min 1, max 600, default 120).',
-          'NOTE: the unit is SECONDS, matching common CLI conventions like `curl --max-time`.',
-          'Do NOT pass millisecond values such as 15000 — 15000 exceeds the maximum and would be clamped to 600.',
-        ].join(' '),
+        description: 'Optional timeout in seconds (min 1, max 600, default 120)',
         minimum: MIN_TIMEOUT_SECONDS,
         maximum: MAX_TIMEOUT_SECONDS,
       },
