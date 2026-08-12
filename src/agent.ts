@@ -660,7 +660,14 @@ export class Agent {
     overrides?: QueryOverrides,
   ): Promise<QueryResult> {
     const t0 = performance.now()
-    const collected = { text: '', turns: 0, tokens: { in: 0, out: 0 } }
+    const collected = {
+      text: '',
+      turns: 0,
+      tokens: { in: 0, out: 0 },
+      is_error: false,
+      error_type: undefined as string | undefined,
+      errors: undefined as string[] | undefined,
+    }
 
     for await (const ev of this.query(text, overrides)) {
       switch (ev.type) {
@@ -672,11 +679,23 @@ export class Agent {
           if (fragments.length) collected.text = fragments.join('')
           break
         }
-        case 'result':
+        case 'result': {
           collected.turns = ev.num_turns ?? 0
           collected.tokens.in = ev.usage?.input_tokens ?? 0
           collected.tokens.out = ev.usage?.output_tokens ?? 0
+          // Issue #28: never present an engine error result as a successful
+          // QueryResult. The engine signals failure via is_error:true (hook
+          // block) and/or an 'error*' subtype (stream error, max turns/budget).
+          const subtype = typeof ev.subtype === 'string' ? ev.subtype : ''
+          if (ev.is_error === true || subtype.startsWith('error')) {
+            collected.is_error = true
+            // Prefer the structured classification (e.g. 'rate_limit'); fall
+            // back to the subtype (e.g. 'error_during_execution').
+            collected.error_type = ev.error_type ?? subtype
+            collected.errors = ev.errors
+          }
           break
+        }
       }
     }
 
@@ -686,6 +705,15 @@ export class Agent {
       num_turns: collected.turns,
       duration_ms: Math.round(performance.now() - t0),
       messages: [...this.messageLog],
+      // Only attach error fields when an error occurred — keeps the success
+      // shape identical to before this fix.
+      ...(collected.is_error
+        ? {
+            is_error: true,
+            error_type: collected.error_type,
+            errors: collected.errors ?? [],
+          }
+        : {}),
     }
   }
 

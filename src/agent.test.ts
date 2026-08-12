@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { z } from 'zod'
 import { Agent } from './agent.js'
 import { createSdkMcpServer } from './sdk-mcp-server.js'
@@ -223,5 +223,125 @@ describe('Agent MCP stdio cwd resolution (issue #14 follow-up)', () => {
     expect(passedConfig).toBeDefined()
     expect(passedConfig!.type).toBe('streamable_http')
     expect((passedConfig as any).cwd).toBeUndefined()
+  })
+})
+
+describe('Agent.prompt() error propagation (issue #28)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  /**
+   * Drive a prompt() promise to completion under fake timers: advance the
+   * clock in small steps so chained backoff sleeps + microtask flushes
+   * interleave correctly (one big advance does not reliably settle the
+   * async-generator chain).
+   */
+  async function settleWithFakeTimers<T>(p: Promise<T>): Promise<T> {
+    let settled = false
+    void p.then(() => (settled = true), () => (settled = true))
+    for (let i = 0; i < 600 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(1_000)
+    }
+    return p
+  }
+
+  it('surfaces a provider 429 as is_error with error_type preserved (never success-looking)', async () => {
+    vi.useFakeTimers()
+    const agent = new Agent(makeBaseOptions())
+    const err = Object.assign(new Error('429 Too Many Requests: rate limited'), { status: 429 })
+    // Non-streaming default path: engine calls createMessage via withRetry.
+    // 429 is retryable (rate_limit) → real backoff sleeps; fake timers skip them.
+    ;(agent as any).provider = {
+      apiType: 'anthropic-messages',
+      createMessage: vi.fn(async () => { throw err }),
+      createMessageStream: async function* () { throw err },
+    }
+
+    const result = await settleWithFakeTimers(agent.prompt('hello'))
+
+    expect(result.is_error).toBe(true)
+    expect(result.error_type).toBe('rate_limit')
+    expect(result.errors?.join(' ')).toContain('429')
+    expect(result.text).toBe('') // no assistant text was ever produced
+  })
+
+  it('surfaces a non-retryable provider failure (auth) without retries', async () => {
+    // Real timers: auth errors are not retried, so no backoff to skip.
+    const agent = new Agent(makeBaseOptions())
+    const err = Object.assign(new Error('401 Unauthorized: invalid api key'), { status: 401 })
+    const createMessage = vi.fn(async () => { throw err })
+    ;(agent as any).provider = {
+      apiType: 'anthropic-messages',
+      createMessage,
+      createMessageStream: async function* () { throw err },
+    }
+
+    const result = await agent.prompt('hello')
+
+    expect(result.is_error).toBe(true)
+    expect(result.error_type).toBe('auth')
+    expect(result.errors?.join(' ')).toContain('401')
+    expect(createMessage).toHaveBeenCalledTimes(1) // no retries for auth
+  })
+
+  it('surfaces a UserPromptSubmit hook block as an error result', async () => {
+    const createMessage = vi.fn()
+    const agent = new Agent(makeBaseOptions({
+      hooks: {
+        UserPromptSubmit: [{ hooks: [async () => ({ block: true })] }],
+      },
+    }))
+    ;(agent as any).provider = {
+      apiType: 'anthropic-messages',
+      createMessage,
+      createMessageStream: async function* () { throw new Error('should not be called') },
+    }
+
+    const result = await agent.prompt('hello')
+
+    expect(result.is_error).toBe(true)
+    expect(result.error_type).toBe('error_during_execution')
+    expect(result.errors?.join(' ')).toContain('Blocked by UserPromptSubmit hook')
+    expect(createMessage).not.toHaveBeenCalled() // provider never invoked
+  })
+
+  it('surfaces retryable overload errors after retries are exhausted', async () => {
+    vi.useFakeTimers()
+    const agent = new Agent(makeBaseOptions())
+    const err = Object.assign(new Error('529 overloaded'), { status: 529 })
+    const createMessage = vi.fn(async () => { throw err })
+    ;(agent as any).provider = {
+      apiType: 'anthropic-messages',
+      createMessage,
+      createMessageStream: async function* () { throw err },
+    }
+
+    const result = await settleWithFakeTimers(agent.prompt('hello'))
+
+    expect(result.is_error).toBe(true)
+    expect(result.error_type).toBe('overloaded')
+    expect(createMessage.mock.calls.length).toBeGreaterThan(1) // retried before giving up
+  })
+
+  it('success case: no error fields attached (shape unchanged)', async () => {
+    const agent = new Agent(makeBaseOptions())
+    ;(agent as any).provider = {
+      apiType: 'anthropic-messages',
+      createMessage: vi.fn(async () => ({
+        content: [{ type: 'text', text: 'final answer' }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'end_turn',
+      })),
+      createMessageStream: async function* () { /* not used */ },
+    }
+
+    const result = await agent.prompt('hello')
+
+    expect(result.text).toBe('final answer')
+    expect(result.is_error).toBeUndefined()
+    expect(result.error_type).toBeUndefined()
+    expect(result.errors).toBeUndefined()
   })
 })
