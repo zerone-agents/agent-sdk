@@ -233,10 +233,24 @@ function mockSuccessfulRun(stdout = 'ok\n') {
     ;(proc as any).pid = 12345
     setTimeout(() => {
       ;(proc as any).stdout.emit('data', Buffer.from(stdout))
-      proc.emit('exit', 0)
+      proc.emit('exit', 0, null)
     }, 0)
     return proc as any
   })
+}
+
+/**
+ * Set up mockSpawn to simulate a child process that never exits on its own.
+ * Returns the proc so tests can emit events manually (e.g. after advancing
+ * fake timers past the timeout).
+ */
+function mockHangingRun() {
+  const proc = new EventEmitter()
+  ;(proc as any).stdout = new EventEmitter()
+  ;(proc as any).stderr = new EventEmitter()
+  ;(proc as any).pid = 12345
+  mockSpawn.mockImplementation(() => proc as any)
+  return proc
 }
 
 describe('BashTool.call shell selection', () => {
@@ -370,4 +384,185 @@ describe('BashTool.inputSchema', () => {
     expect(schema.properties.shell.enum).toEqual(['bash', 'zsh', 'sh', 'powershell', 'pwsh', 'cmd'])
     expect(schema.required).not.toContain('shell')
   })
+
+  it('documents timeout in seconds with explicit bounds (issue #27)', () => {
+    const schema = BashTool.inputSchema as any
+    const timeout = schema.properties.timeout
+    expect(timeout).toBeDefined()
+    expect(timeout.minimum).toBe(1)
+    expect(timeout.maximum).toBe(600)
+    expect(timeout.description).toContain('seconds')
+    expect(timeout.description).not.toContain('milliseconds')
+  })
 })
+
+const { resolveTimeoutMs } = await import('./bash.js')
+
+describe('resolveTimeoutMs (issue #27: seconds unit)', () => {
+  it('defaults to 120 seconds when timeout is omitted', () => {
+    expect(resolveTimeoutMs(undefined)).toBe(120_000)
+  })
+
+  it('converts seconds to milliseconds (15 → 15000, the exact misuse case from the issue)', () => {
+    expect(resolveTimeoutMs(15)).toBe(15_000)
+  })
+
+  it('clamps to a minimum of 1 second', () => {
+    expect(resolveTimeoutMs(0)).toBe(1_000)
+    expect(resolveTimeoutMs(-5)).toBe(1_000)
+  })
+
+  it('clamps to a maximum of 600 seconds', () => {
+    expect(resolveTimeoutMs(9999)).toBe(600_000)
+    expect(resolveTimeoutMs(15000)).toBe(600_000) // legacy ms-style input is clamped, not silently honored
+  })
+
+  it('accepts fractional seconds within bounds', () => {
+    expect(resolveTimeoutMs(2.5)).toBe(2_500)
+  })
+})
+
+describe('BashTool.call timeout semantics (issue #27)', () => {
+  afterEach(() => {
+    restorePlatform()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    vi.clearAllMocks()
+  })
+
+  it('a successful command with no output still resolves to "(no output)" success', async () => {
+    setPlatform('linux')
+    // default shell is computed at import; mockSuccessfulRun works for any shell
+    mockSpawn.mockImplementation(() => {
+      const proc = new EventEmitter()
+      ;(proc as any).stdout = new EventEmitter()
+      ;(proc as any).stderr = new EventEmitter()
+      ;(proc as any).pid = 12345
+      setTimeout(() => proc.emit('exit', 0, null), 0)
+      return proc as any
+    })
+
+    const result = await BashTool.call({ command: 'true' } as any, makeContext()) as any
+    expect(result.content).toBe('(no output)')
+    expect(result.is_error).toBe(false)
+  })
+
+  it('timeout: 15 means 15 SECONDS — a fast command is not killed (issue repro)', async () => {
+    setPlatform('linux')
+    vi.useFakeTimers()
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    mockSuccessfulRun('streamed-result')
+
+    const promise = BashTool.call({ command: 'sleep 0.05; printf streamed-result', timeout: 15 } as any, makeContext())
+    await vi.advanceTimersByTimeAsync(0) // mock emits data + exit(0)
+    const result = (await promise) as any
+
+    expect(result.content).toContain('streamed-result')
+    expect(result.is_error).toBe(false)
+    expect(kill).not.toHaveBeenCalled()
+  })
+
+  it('a command killed by timeout returns an error result, never "(no output)" success', async () => {
+    setPlatform('linux')
+    vi.useFakeTimers()
+    vi.spyOn(process, 'kill').mockImplementation(() => true)
+    const proc = mockHangingRun()
+
+    const promise = BashTool.call({ command: 'sleep 999', timeout: 1 } as any, makeContext())
+    // advance past the 1s timeout → tool marks timedOut and kills the group
+    await vi.advanceTimersByTimeAsync(1_000)
+    // simulate the OS reporting signal termination (code null, signal SIGTERM)
+    proc.emit('exit', null, 'SIGTERM')
+    const result = (await promise) as any
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('timed out after 1 seconds')
+    expect(result.content).not.toBe('(no output)')
+  })
+
+  it('timeout error includes partial output captured before the kill', async () => {
+    setPlatform('linux')
+    vi.useFakeTimers()
+    vi.spyOn(process, 'kill').mockImplementation(() => true)
+    const proc = mockHangingRun()
+
+    const promise = BashTool.call({ command: 'printf progress; sleep 999', timeout: 2 } as any, makeContext())
+    ;(proc as any).stdout.emit('data', Buffer.from('progress'))
+    await vi.advanceTimersByTimeAsync(2_000)
+    proc.emit('exit', null, 'SIGTERM')
+    const result = (await promise) as any
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('timed out after 2 seconds')
+    expect(result.content).toContain('progress')
+  })
+
+  it('clamps sub-1s input up to the 1-second minimum (timeout fires at 1000ms, not earlier)', async () => {
+    setPlatform('linux')
+    vi.useFakeTimers()
+    vi.spyOn(process, 'kill').mockImplementation(() => true)
+    const proc = mockHangingRun()
+
+    const promise = BashTool.call({ command: 'sleep 999', timeout: 0 } as any, makeContext())
+    await vi.advanceTimersByTimeAsync(999)
+    expect(process.kill).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    proc.emit('exit', null, 'SIGTERM')
+    const result = (await promise) as any
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('timed out after 1 seconds')
+  })
+
+  it('clamps oversized input down to 600 seconds (legacy ms-style 15000 → 600s)', async () => {
+    setPlatform('linux')
+    vi.useFakeTimers()
+    vi.spyOn(process, 'kill').mockImplementation(() => true)
+    const proc = mockHangingRun()
+
+    const promise = BashTool.call({ command: 'sleep 999', timeout: 15000 } as any, makeContext())
+    await vi.advanceTimersByTimeAsync(599_999)
+    expect(process.kill).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    proc.emit('exit', null, 'SIGTERM')
+    const result = (await promise) as any
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('timed out after 600 seconds')
+  })
+
+  it('a command terminated by an external signal (abort) returns an error result', async () => {
+    setPlatform('linux')
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    const controller = new AbortController()
+    const proc = mockHangingRun()
+
+    const promise = BashTool.call(
+      { command: 'sleep 999' } as any,
+      makeContext({ abortSignal: controller.signal }),
+    )
+    controller.abort()
+    // OS reports signal termination
+    proc.emit('exit', null, 'SIGTERM')
+    const result = (await promise) as any
+
+    expect(kill).toHaveBeenCalled()
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('terminated by signal SIGTERM')
+    expect(result.content).not.toBe('(no output)')
+  })
+
+  it('spawn-level errors still resolve with an error message and clear the timeout timer', async () => {
+    setPlatform('linux')
+    vi.useFakeTimers()
+    const proc = mockHangingRun()
+
+    const promise = BashTool.call({ command: 'whatever' } as any, makeContext())
+    proc.emit('error', new Error('spawn ENOENT'))
+    const result = (await promise) as any
+
+    expect(result.content).toContain('Error executing command')
+    expect(result.content).toContain('spawn ENOENT')
+    // advancing far past the default timeout must not kill anything or double-resolve
+    await vi.advanceTimersByTimeAsync(200_000)
+  })
+})
+
