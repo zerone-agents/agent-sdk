@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
 import type { QueryEngineConfig, SDKMessage, SDKResultMessage, SDKToolResultMessage, ToolDefinition } from './types.js'
-import type { LLMProvider, StreamChunk } from './providers/types.js'
+import type { LLMProvider, StreamChunk, CreateMessageParams, NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
 import { vi } from 'vitest'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createEmptyServices } from './tools/services.js'
-import { getTodos } from './tools/todowrite.js'
+import { getTodos, TodoWriteTool } from './tools/todowrite.js'
 
 // Mirrors the real @anthropic-ai/sdk APIConnectionError: a plain Error with
 // name='Error', fixed message, and the underlying failure on `cause`.
@@ -817,13 +817,16 @@ describe('QueryEngine per-turn todos reminder injection', () => {
   // ---- issue #32: all-terminal TodoList must not leak into the next query ----
 
   /** Build a streaming provider that captures the messages it was called with. */
-  function makeCapturingProvider(): { provider: LLMProvider; getCaptured: () => any } {
-    let captured: any
+  function makeCapturingProvider(): {
+    provider: LLMProvider
+    getCaptured: () => NormalizedMessageParam[]
+  } {
+    let captured: NormalizedMessageParam[] = []
     const provider: LLMProvider = {
       apiType: 'anthropic-messages',
       async createMessage() { throw new Error('not used') },
-      async *createMessageStream(params: any): AsyncGenerator<StreamChunk> {
-        captured = params.messages
+      async *createMessageStream(params: CreateMessageParams): AsyncGenerator<StreamChunk> {
+        captured = params.messages as NormalizedMessageParam[]
         yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
         yield { type: 'done', index: -1 } as StreamChunk
       },
@@ -831,9 +834,10 @@ describe('QueryEngine per-turn todos reminder injection', () => {
     return { provider, getCaptured: () => captured }
   }
 
-  function lastMessageContent(captured: any): string {
+  function lastMessageContent(captured: NormalizedMessageParam[]): string {
     const last = captured[captured.length - 1]
-    return typeof last?.content === 'string' ? last.content : ''
+    const content = last?.content
+    return typeof content === 'string' ? content : ''
   }
 
   it('does NOT inject an all-completed TodoList into the next turn (issue #32)', async () => {
@@ -916,6 +920,67 @@ describe('QueryEngine per-turn todos reminder injection', () => {
 
     const after = await getTodos(sid)
     expect(after).toEqual([])
+  })
+
+  it('list completed during query A survives until query B starts (lifecycle boundary, issue #32)', async () => {
+    const sid = 'engine-test-multiturn-lifecycle'
+    // Seed an ACTIVE list — query A start will NOT clear it.
+    await seedTodos(sid, [
+      { content: 'Implement feature', status: 'in_progress', priority: 'high' },
+    ])
+
+    let pass = 0
+    let capturedB: NormalizedMessageParam[] = []
+    const completedInput = JSON.stringify({
+      todos: [{ content: 'Implement feature', status: 'completed', priority: 'high' }],
+    })
+
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(params: CreateMessageParams): AsyncGenerator<StreamChunk> {
+        if (pass === 0) {
+          // Query A, turn 1: model calls TodoWrite to mark everything completed
+          pass++
+          yield { type: 'tool_use', index: 1, id: 'tu_todo', name: 'TodoWrite', input: completedInput } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        } else if (pass === 1) {
+          // Query A, turn 2: final text — query A ends
+          pass++
+          yield { type: 'text', index: 0, delta: 'query A done' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        } else {
+          // Query B: capture messages and end immediately
+          pass++
+          capturedB = params.messages as NormalizedMessageParam[]
+          yield { type: 'text', index: 0, delta: 'query B done' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        }
+      },
+    }
+
+    // TodoWriteTool is the real tool so the engine actually persists the list.
+    const engine = new QueryEngine({ ...makeConfig(provider, [TodoWriteTool]), sessionId: sid })
+
+    // --- Query A ---
+    await run(engine)
+
+    // SURVIVAL: the all-terminal list written during query A is still persisted.
+    // Cleanup did NOT fire mid-query (only at the NEXT query's start).
+    const afterA = await getTodos(sid)
+    expect(afterA).toHaveLength(1)
+    expect(afterA[0].status).toBe('completed')
+
+    // --- Query B (same engine + session) ---
+    await run(engine)
+
+    // CLEARANCE: query B's provider call received NO stale reminder.
+    expect(lastMessageContent(capturedB)).not.toContain('<system-reminder>')
+    expect(lastMessageContent(capturedB)).not.toContain('Current task list:')
+
+    // And the persisted store is now empty.
+    const afterB = await getTodos(sid)
+    expect(afterB).toEqual([])
   })
 })
 
