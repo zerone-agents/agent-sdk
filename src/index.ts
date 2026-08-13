@@ -105,7 +105,7 @@ export {
   AskUserQuestionTool,
 
   // Discovery
-  ToolSearchTool,
+  FindToolTool,
 
   // Scheduling
   CronCreateTool,

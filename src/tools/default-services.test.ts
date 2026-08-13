@@ -38,11 +38,11 @@ describe('DefaultToolServices', () => {
       }
 
       // Add to instance 1
-      services1.toolSearch.deferredTools.push(mockTool)
-      expect(services1.toolSearch.deferredTools).toHaveLength(1)
+      services1.findTool.deferredTools.push(mockTool)
+      expect(services1.findTool.deferredTools).toHaveLength(1)
 
       // Instance 2 should be unaffected
-      expect(services2.toolSearch.deferredTools).toHaveLength(0)
+      expect(services2.findTool.deferredTools).toHaveLength(0)
     })
 
     it('creates separate config storage per instance', () => {
@@ -67,7 +67,7 @@ describe('DefaultToolServices', () => {
       const services = new DefaultToolServices()
 
       expect(services.askUser).toBeNull()
-      expect(services.toolSearch.deferredTools).toHaveLength(0)
+      expect(services.findTool.deferredTools).toHaveLength(0)
       expect(services.config.size).toBe(0)
     })
   })

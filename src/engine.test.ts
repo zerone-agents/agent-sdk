@@ -1005,7 +1005,7 @@ describe('QueryEngine per-turn tool activation', () => {
     } as any
   }
 
-  function makeToolSearchStandIn() {
+  function makeFindToolStandIn() {
     return {
       name: 'FindTool',
       description: 'search',
@@ -1015,7 +1015,7 @@ describe('QueryEngine per-turn tool activation', () => {
       isEnabled: () => true,
       async call(input: any, ctx: any) {
         if (input?.query === 'select:CronList') {
-          ctx.services.toolSearch.activatedTools.add('CronList')
+          ctx.services.findTool.activatedTools.add('CronList')
           return { type: 'tool_result', tool_use_id: '', content: 'Loaded 1 tool(s): CronList' }
         }
         return { type: 'tool_result', tool_use_id: '', content: 'no match' }
@@ -1055,7 +1055,7 @@ describe('QueryEngine per-turn tool activation', () => {
       },
       resolved: {
         definition: { description: 'test', prompt: 'test' },
-        tools: [makeToolSearchStandIn()],
+        tools: [makeFindToolStandIn()],
         deferredTools: [makeDeferredCronListTool()],
         skills: [],
       } as any,
@@ -1104,7 +1104,7 @@ describe('QueryEngine per-turn tool activation', () => {
       },
       resolved: {
         definition: { description: 'test', prompt: 'test' },
-        tools: [makeToolSearchStandIn()],
+        tools: [makeFindToolStandIn()],
         deferredTools: [makeDeferredCronListTool()],
         skills: [],
       } as any,

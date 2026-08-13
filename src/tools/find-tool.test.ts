@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ToolSearchTool } from './find-tool.js'
+import { FindToolTool } from './find-tool.js'
 import { createEmptyServices } from './services.js'
 import type { ToolContext } from '../types.js'
 
-async function callToolSearch(
+async function callFindTool(
   query: string,
   deferredTools: any[],
   existingActivated: string[] = [],
 ) {
   const services = createEmptyServices()
-  services.toolSearch.deferredTools = deferredTools
-  services.toolSearch.activatedTools = new Set(existingActivated)
+  services.findTool.deferredTools = deferredTools
+  services.findTool.activatedTools = new Set(existingActivated)
   const ctx = {
     cwd: '/tmp',
     agentId: 'test',
@@ -18,8 +18,8 @@ async function callToolSearch(
     subprocessEnv: {} as any,
     services,
   } as unknown as ToolContext
-  const result = await ToolSearchTool.call({ query }, ctx)
-  return { result, activated: services.toolSearch.activatedTools }
+  const result = await FindToolTool.call({ query }, ctx)
+  return { result, activated: services.findTool.activatedTools }
 }
 
 describe('FindTool activation', () => {
@@ -28,7 +28,7 @@ describe('FindTool activation', () => {
       { name: 'CronList', description: 'list crons', call: vi.fn() },
       { name: 'CronCreate', description: 'create cron', call: vi.fn() },
     ]
-    const { result, activated } = await callToolSearch('select:CronList,CronCreate', deferred)
+    const { result, activated } = await callFindTool('select:CronList,CronCreate', deferred)
     expect(result.is_error).toBeFalsy()
     expect(activated.has('CronList')).toBe(true)
     expect(activated.has('CronCreate')).toBe(true)
@@ -39,7 +39,7 @@ describe('FindTool activation', () => {
 
   it('does not activate on non-matching query', async () => {
     const deferred = [{ name: 'CronList', description: 'list crons', call: vi.fn() }]
-    const { activated } = await callToolSearch('select:Nonexistent', deferred)
+    const { activated } = await callFindTool('select:Nonexistent', deferred)
     expect(activated.size).toBe(0)
   })
 
@@ -49,9 +49,9 @@ describe('FindTool activation', () => {
       { name: 'Config', description: 'read write config', call: vi.fn() },
     ]
     // First call activates CronList
-    const { activated: after1 } = await callToolSearch('select:CronList', deferred)
+    const { activated: after1 } = await callFindTool('select:CronList', deferred)
     // Second call activates Config — pass after1 as existingActivated to simulate persistence
-    const { activated: after2 } = await callToolSearch(
+    const { activated: after2 } = await callFindTool(
       'select:Config', deferred, Array.from(after1),
     )
     expect(after2.has('CronList')).toBe(true)
@@ -60,14 +60,14 @@ describe('FindTool activation', () => {
   })
 
   it('returns "No deferred tools available" when registry is empty', async () => {
-    const { result, activated } = await callToolSearch('select:Foo', [])
+    const { result, activated } = await callFindTool('select:Foo', [])
     expect(result.content).toContain('No deferred tools available')
     expect(activated.size).toBe(0)
   })
 
   it('returns "No tools found" on non-matching keyword search', async () => {
     const deferred = [{ name: 'CronList', description: 'list crons', call: vi.fn() }]
-    const { result, activated } = await callToolSearch('nonmatchingkeyword', deferred)
+    const { result, activated } = await callFindTool('nonmatchingkeyword', deferred)
     expect(result.content).toContain('No tools found')
     expect(activated.size).toBe(0)
   })
@@ -77,7 +77,7 @@ describe('FindTool activation', () => {
       { name: 'CronList', description: 'list scheduled cron tasks', call: vi.fn() },
       { name: 'Config', description: 'read write config', call: vi.fn() },
     ]
-    const { result, activated } = await callToolSearch('cron', deferred)
+    const { result, activated } = await callFindTool('cron', deferred)
     expect(activated.has('CronList')).toBe(true)
     expect(activated.has('Config')).toBe(false)
     expect(result.content).toContain('CronList')
@@ -87,7 +87,7 @@ describe('FindTool activation', () => {
     const deferred = [
       { name: 'CronList', description: 'long description', shortDescription: 'List scheduled tasks', call: vi.fn() },
     ]
-    const { result } = await callToolSearch('select:CronList', deferred)
+    const { result } = await callFindTool('select:CronList', deferred)
     // shortDescription is used, not the long description
     expect(result.content).toContain('- CronList: List scheduled tasks')
     expect(result.content).not.toContain('long description')
@@ -97,7 +97,7 @@ describe('FindTool activation', () => {
     const deferred = [
       { name: 'CronList', description: 'B'.repeat(250), call: vi.fn() },
     ]
-    const { result } = await callToolSearch('select:CronList', deferred)
+    const { result } = await callFindTool('select:CronList', deferred)
     expect(result.content).toContain('- CronList: ' + 'B'.repeat(200) + '...(more)')
   })
 })

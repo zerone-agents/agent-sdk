@@ -39,7 +39,7 @@ export type AskUserHandler = (
  * Currently stored as module-level global in find-tool.ts:
  *   let deferredTools: ToolDefinition[] = []
  */
-export interface ToolSearchRegistry {
+export interface FindToolRegistry {
   deferredTools: ToolDefinition[]
   /**
    * Names of tools activated via FindTool in the current query.
@@ -69,7 +69,7 @@ export type ConfigState = Map<string, unknown>
  */
 export interface ToolServices {
   askUser: AskUserHandler | null
-  toolSearch: ToolSearchRegistry
+  findTool: FindToolRegistry
   config: ConfigState
   /** Optional WebSearch provider configuration; absent = anonymous Exa → Parallel default. */
   webSearch?: WebSearchConfig
@@ -89,7 +89,7 @@ export interface ToolServices {
 export function createEmptyServices(): ToolServices {
   return {
     askUser: null,
-    toolSearch: {
+    findTool: {
       deferredTools: [],
       activatedTools: new Set<string>(),
     },

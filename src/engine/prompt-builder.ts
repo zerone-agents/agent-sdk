@@ -80,9 +80,9 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
     })
     parts.push([
       '<available_deferred_tools>',
-      '<using_toolsearch>',
-      SYSTEM_PROMPTS.toolsearch_guidance,
-      '</using_toolsearch>',
+      '<using_findtool>',
+      SYSTEM_PROMPTS.findtool_guidance,
+      '</using_findtool>',
       ...toolXml,
       '</available_deferred_tools>',
     ].join('\n'))

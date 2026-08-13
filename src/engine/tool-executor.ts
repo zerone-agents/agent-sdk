@@ -287,7 +287,7 @@ export async function runToolsBackground(
   // load their schema (engine.ts rebuilds the provider tools array per turn
   // based on activatedTools). We mirror that here so tool-executor can
   // dispatch tool_use blocks for tools activated earlier in the same query.
-  const activatedNames = ctx.config.env.toolServices?.toolSearch?.activatedTools
+  const activatedNames = ctx.config.env.toolServices?.findTool?.activatedTools
   const deferredPool = activatedNames && activatedNames.size > 0
     ? ctx.config.resolved.deferredTools.filter(t => activatedNames.has(t.name))
     : []

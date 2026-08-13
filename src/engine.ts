@@ -190,8 +190,8 @@ export class QueryEngine {
     // activations are session-scoped (per Agent instance's ToolServices),
     // not query-scoped. This avoids re-FindTool-ing the same tools when the
     // user asks follow-up questions in the same session.
-    if (this.config.env.toolServices?.toolSearch) {
-      this.config.env.toolServices.toolSearch.deferredTools = this.config.resolved.deferredTools
+    if (this.config.env.toolServices?.findTool) {
+      this.config.env.toolServices.findTool.deferredTools = this.config.resolved.deferredTools
       // Note: deliberately NOT resetting activatedTools here.
     }
 
@@ -306,7 +306,7 @@ export class QueryEngine {
       // Recomputed every turn because activatedTools may grow during the query
       // (e.g. the model called FindTool in turn N — those schemas appear in turn N+1).
       const eagerTools = this.config.resolved.tools.map(toProviderTool)
-      const activatedNames = this.config.env.toolServices?.toolSearch?.activatedTools ?? new Set<string>()
+      const activatedNames = this.config.env.toolServices?.findTool?.activatedTools ?? new Set<string>()
       const activatedDeferred = this.config.resolved.deferredTools
         .filter(t => activatedNames.has(t.name))
         .map(toProviderTool)
