@@ -66,7 +66,7 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
     ].join('\n'))
   }
 
-  // Deferred tools catalog — lets the model know what's ToolSearch-able
+  // Deferred tools catalog — lets the model know what's FindTool-able
   if (config.resolved.deferredTools.length > 0) {
     const sorted = [...config.resolved.deferredTools].sort((a, b) => a.name.localeCompare(b.name))
     const toolXml = sorted.map(t => {

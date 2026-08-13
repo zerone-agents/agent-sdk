@@ -89,7 +89,7 @@ export function setDeferredTools(tools: ToolDefinition[]): void {
 // ============================================================================
 
 export const ToolSearchTool: ToolDefinition = {
-  name: 'ToolSearch',
+  name: 'FindTool',
   description: _description,
   inputSchema: {
     type: 'object',

@@ -98,7 +98,7 @@ describe('buildEnvironmentPrompt', () => {
     const config = makeConfig({
       resolved: {
         definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
-        tools: [{ name: 'ToolSearch', call: () => Promise.resolve({}) } as any],
+        tools: [{ name: 'FindTool', call: () => Promise.resolve({}) } as any],
         deferredTools: [
           {
             name: 'CronList',
@@ -126,7 +126,7 @@ describe('buildEnvironmentPrompt', () => {
     const config = makeConfig({
       resolved: {
         definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
-        tools: [{ name: 'ToolSearch', call: () => Promise.resolve({}) } as any],
+        tools: [{ name: 'FindTool', call: () => Promise.resolve({}) } as any],
         deferredTools: [
           {
             name: 'Mystery',

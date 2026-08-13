@@ -316,7 +316,7 @@ export interface ToolDefinition {
 
   /**
    * If true, this tool is NOT eagerly loaded into the provider's `tools`
-   * array. The model must use ToolSearch to load its full schema before
+   * array. The model must use FindTool to load its full schema before
    * invoking it. Default: false (eager).
    *
    * NOTE: "deferred" is about schema visibility, NOT access control.

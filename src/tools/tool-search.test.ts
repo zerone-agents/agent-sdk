@@ -22,7 +22,7 @@ async function callToolSearch(
   return { result, activated: services.toolSearch.activatedTools }
 }
 
-describe('ToolSearch activation', () => {
+describe('FindTool activation', () => {
   it('activates matched tools on successful search', async () => {
     const deferred = [
       { name: 'CronList', description: 'list crons', call: vi.fn() },

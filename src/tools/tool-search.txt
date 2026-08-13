@@ -15,4 +15,4 @@ Search for and activate tools that exist but are not yet loaded into your tool s
 ## Behavior
 - Matched tools' schemas are appended to your tool set starting the NEXT turn (this turn's LLM call already happened).
 - Activation is session-scoped: tools stay loaded for the rest of this session (across user queries); new sessions start fresh.
-- Calling ToolSearch with a name that's already active is a no-op (safe to retry).
+- Calling FindTool with a name that's already active is a no-op (safe to retry).

@@ -283,7 +283,7 @@ export async function runToolsBackground(
   const mutations: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []
 
   // Build the lookup pool: eager tools + activated deferred tools.
-  // Deferred tools only become callable after the model calls ToolSearch to
+  // Deferred tools only become callable after the model calls FindTool to
   // load their schema (engine.ts rebuilds the provider tools array per turn
   // based on activatedTools). We mirror that here so tool-executor can
   // dispatch tool_use blocks for tools activated earlier in the same query.

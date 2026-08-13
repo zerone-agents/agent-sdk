@@ -42,7 +42,7 @@ export type AskUserHandler = (
 export interface ToolSearchRegistry {
   deferredTools: ToolDefinition[]
   /**
-   * Names of tools activated via ToolSearch in the current query.
+   * Names of tools activated via FindTool in the current query.
    * Reset by the engine at the start of each new query.
    * Used by engine.ts to merge activated deferred schemas into the per-turn tools array.
    */
