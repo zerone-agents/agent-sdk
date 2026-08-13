@@ -98,7 +98,7 @@ describe('buildEnvironmentPrompt', () => {
     const config = makeConfig({
       resolved: {
         definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
-        tools: [{ name: 'ToolSearch', call: () => Promise.resolve({}) } as any],
+        tools: [{ name: 'FindTool', call: () => Promise.resolve({}) } as any],
         deferredTools: [
           {
             name: 'CronList',
@@ -112,8 +112,8 @@ describe('buildEnvironmentPrompt', () => {
     } as any)
     const envPrompt = await buildEnvironmentPrompt(config)
     expect(envPrompt).toContain('<available_deferred_tools>')
-    expect(envPrompt).toContain('<using_toolsearch>')
-    expect(envPrompt).toContain('</using_toolsearch>')
+    expect(envPrompt).toContain('<using_findtool>')
+    expect(envPrompt).toContain('</using_findtool>')
     expect(envPrompt).toContain('<deferred_tool>')
     expect(envPrompt).toContain('<name>CronList</name>')
     expect(envPrompt).toContain('<description>List scheduled tasks</description>')
@@ -126,7 +126,7 @@ describe('buildEnvironmentPrompt', () => {
     const config = makeConfig({
       resolved: {
         definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },
-        tools: [{ name: 'ToolSearch', call: () => Promise.resolve({}) } as any],
+        tools: [{ name: 'FindTool', call: () => Promise.resolve({}) } as any],
         deferredTools: [
           {
             name: 'Mystery',

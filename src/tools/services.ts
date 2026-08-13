@@ -4,7 +4,7 @@
  * Defines the service dependencies that each Agent instance provides
  * to its tools, replacing the current module-level global state.
  *
- * Currently, 3 tool modules (ask-user.ts, tool-search.ts, config.ts) store
+ * Currently, 3 tool modules (ask-user.ts, find-tool.ts, config.ts) store
  * state in module-level variables. When multiple Agent instances coexist,
  * these globals are overwritten. ToolServices moves that state into
  * per-agent containers.
@@ -36,13 +36,13 @@ export type AskUserHandler = (
 /**
  * Tool search registry — tracks deferred/lazy-loaded tools.
  *
- * Currently stored as module-level global in tool-search.ts:
+ * Currently stored as module-level global in find-tool.ts:
  *   let deferredTools: ToolDefinition[] = []
  */
-export interface ToolSearchRegistry {
+export interface FindToolRegistry {
   deferredTools: ToolDefinition[]
   /**
-   * Names of tools activated via ToolSearch in the current query.
+   * Names of tools activated via FindTool in the current query.
    * Reset by the engine at the start of each new query.
    * Used by engine.ts to merge activated deferred schemas into the per-turn tools array.
    */
@@ -69,7 +69,7 @@ export type ConfigState = Map<string, unknown>
  */
 export interface ToolServices {
   askUser: AskUserHandler | null
-  toolSearch: ToolSearchRegistry
+  findTool: FindToolRegistry
   config: ConfigState
   /** Optional WebSearch provider configuration; absent = anonymous Exa → Parallel default. */
   webSearch?: WebSearchConfig
@@ -89,7 +89,7 @@ export interface ToolServices {
 export function createEmptyServices(): ToolServices {
   return {
     askUser: null,
-    toolSearch: {
+    findTool: {
       deferredTools: [],
       activatedTools: new Set<string>(),
     },

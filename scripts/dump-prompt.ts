@@ -63,7 +63,7 @@ async function main() {
         { name: 'Task', call: async () => ({}) } as any,
         { name: 'MultiTask', call: async () => ({}) } as any,
         { name: 'Skill', call: async () => ({}) } as any,
-        { name: 'ToolSearch', call: async () => ({}) } as any,
+        { name: 'FindTool', call: async () => ({}) } as any,
       ],
       deferredTools: [
         {

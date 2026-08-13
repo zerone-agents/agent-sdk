@@ -17,10 +17,10 @@ Do not use subagents for trivial 1-2 step tasks that you can handle directly. Ea
   })
 })
 
-describe('toolsearch guidance', () => {
-  it('explains lazy-load and ToolSearch-before-invoke contract', () => {
-    expect(SYSTEM_PROMPTS.toolsearch_guidance).toBe(`Tool schemas are loaded lazily to conserve context. The <deferred_tool> entries below expose names and one-line descriptions only — their input schemas are not yet in your context.
-Before invoking a deferred tool, use the ToolSearch tool to load its schema; calling an unloaded tool will fail.
+describe('findtool guidance', () => {
+  it('explains lazy-load and FindTool-before-invoke contract', () => {
+    expect(SYSTEM_PROMPTS.findtool_guidance).toBe(`Tool schemas are loaded lazily to conserve context. The <deferred_tool> entries below expose names and one-line descriptions only — their input schemas are not yet in your context.
+Before invoking a deferred tool, use the FindTool tool to load its schema; calling an unloaded tool will fail.
 Load promptly when the task clearly requires it, but avoid speculative loads — each schema consumes context budget.`)
   })
 })

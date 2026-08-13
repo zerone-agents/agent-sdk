@@ -267,7 +267,7 @@ export async function connectMCPServer(
  * Create a ToolDefinition wrapping an MCP server tool.
  *
  * By default the returned tool is marked `deferred: true` so it opts into
- * the ToolSearch lazy-loading system (sub-project 2). Pass `{ deferred: false }`
+ * the FindTool lazy-loading system (sub-project 2). Pass `{ deferred: false }`
  * in options to force eager loading. Per-server `deferred` overrides are
  * forwarded from connectOnce; the agent loop resolves the global default
  * for `undefined` values.

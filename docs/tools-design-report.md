@@ -50,7 +50,7 @@ ALL_TOOLS (20个)  →  buildToolPool()        →  executeTools()
 | **多 Agent** | Task | ✗ | ✗ | `task-tool.ts` |
 | | MultiTask | ✗ | ✗ | `multi-task.ts` |
 | **用户交互** | AskUserQuestion | ✓ | ✗ | `ask-user.ts` |
-| **发现** | ToolSearch | ✓ | ✓ | `tool-search.ts` |
+| **发现** | FindTool | ✓ | ✓ | `find-tool.ts` |
 | ~~**MCP 资源**~~ | ~~ListMcpResources~~ | ✗ | ✗ | `mcp-resource-tools.ts`（**已在 #3 删除**） |
 | | ~~ReadMcpResource~~ | ✗ | ✗ | 同上（**已在 #3 删除**） |
 | **调度** | CronCreate | ✗ | ✓ | `cron-tools.ts` |
@@ -298,7 +298,7 @@ AskUserQuestion：向用户提问并等待回复。
 
 以下工具存在完整接口定义，但**核心逻辑未接入**：
 
-### 5.1 ToolSearch（`tool-search.ts`）
+### 5.1 FindTool（`find-tool.ts`）
 
 **设计目标**：延迟加载工具发现机制，让 LLM 按需搜索未加载的工具。
 
@@ -349,7 +349,7 @@ AskUserQuestion：向用户提问并等待回复。
 
 | 工具 | 缺失环节 | 激活方式 |
 |------|---------|---------|
-| ToolSearch | 无调用方为 deferredTools 喂数据 | 在 Agent.setup() 中调用 `setDeferredTools()` |
+| FindTool | 无调用方为 deferredTools 喂数据 | 在 Agent.setup() 中调用 `setDeferredTools()` |
 | ~~ListMcpResources~~ | ~~无调用方注入 MCP connections~~ | **已在 #3 删除** |
 | ~~ReadMcpResource~~ | ~~同上~~ | **已在 #3 删除** |
 | CronCreate/Delete/List | Agent 未调用 `initCronTools()` 注入 storage | 在 Agent 构造函数中消费 `cronStorage` 选项 |
@@ -464,7 +464,7 @@ interface CronStorage {
 
 ### 8.2 空壳工具未标记
 
-**问题**：ToolSearch、MCP Resources、Cron 都是空壳，但对 LLM 不可见——LLM 会尝试调用并得到无意义的结果。
+**问题**：FindTool、MCP Resources、Cron 都是空壳，但对 LLM 不可见——LLM 会尝试调用并得到无意义的结果。
 
 **建议**：
 - 在 `isEnabled()` 中检查前置条件，未满足时返回 false
@@ -500,6 +500,6 @@ Open Agent SDK 的 Tools 体系设计层次清晰：
 
 1. **核心工具**（文件 I/O、Web、搜索）——功能完整，可直接使用
 2. **多 Agent 协作**（Agent、Task）——框架完整，适合基础协作场景
-3. **扩展工具**（Cron、MCP Resources、ToolSearch）——接口设计合理，但**核心逻辑未接入**，均为架构占位
+3. **扩展工具**（Cron、MCP Resources、FindTool）——接口设计合理，但**核心逻辑未接入**，均为架构占位
 
 主要技术债务集中在：进程级单例状态、空壳工具未标记、`allowedTools` 语义与实现不一致。建议优先解决语义混淆和空壳标记问题，再逐步接入调度器和 MCP Resource 的实际逻辑。

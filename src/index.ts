@@ -105,7 +105,7 @@ export {
   AskUserQuestionTool,
 
   // Discovery
-  ToolSearchTool,
+  FindToolTool,
 
   // Scheduling
   CronCreateTool,
@@ -344,7 +344,7 @@ export {
 
 export {
   setDeferredTools,
-} from './tools/tool-search.js'
+} from './tools/find-tool.js'
 
 export {
   getAllCronJobs,

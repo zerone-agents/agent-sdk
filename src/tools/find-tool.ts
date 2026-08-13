@@ -1,5 +1,5 @@
 /**
- * ToolSearchTool - Discover deferred/lazy-loaded tools
+ * FindToolTool - Discover deferred/lazy-loaded tools
  *
  * Allows the model to search for tools that haven't been loaded yet.
  * Supports keyword search and exact name selection.
@@ -10,34 +10,34 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
-import type { ToolSearchRegistry } from './services.js'
+import type { FindToolRegistry } from './services.js'
 import { truncateForCatalog } from './helpers.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 let _description: string
 try {
-  _description = readFileSync(join(__dirname, 'tool-search.txt'), 'utf-8')
+  _description = readFileSync(join(__dirname, 'find-tool.txt'), 'utf-8')
 } catch {
   _description = 'Search for additional tools that may be available but not yet loaded.'
 }
 
 // ============================================================================
-// ToolSearchRegistry Helper Functions (new API)
+// FindToolRegistry Helper Functions (new API)
 // ============================================================================
 
 /**
- * Set deferred tools available for search on a ToolSearchRegistry.
+ * Set deferred tools available for search on a FindToolRegistry.
  */
-export function setDeferredToolsInService(reg: ToolSearchRegistry, tools: ToolDefinition[]): void {
+export function setDeferredToolsInService(reg: FindToolRegistry, tools: ToolDefinition[]): void {
   reg.deferredTools = tools
 }
 
 /**
- * Search for deferred tools in a ToolSearchRegistry.
+ * Search for deferred tools in a FindToolRegistry.
  */
 export function searchDeferredTools(
-  reg: ToolSearchRegistry,
+  reg: FindToolRegistry,
   query: string,
   maxResults: number = 5,
 ): ToolDefinition[] {
@@ -67,17 +67,17 @@ export function searchDeferredTools(
 
 /**
  * @deprecated Module-level deferred tools storage is deprecated.
- * Use ToolServices.toolSearch instead for per-agent isolation.
+ * Use ToolServices.findTool instead for per-agent isolation.
  * This shim exists for backward compatibility with external callers.
  */
-const legacyRegistry: ToolSearchRegistry = {
+const legacyRegistry: FindToolRegistry = {
   deferredTools: [],
   activatedTools: new Set<string>(),
 }
 
 /**
  * Set deferred tools available for search.
- * @deprecated Use ToolServices.toolSearch instead. This function uses module-level global state
+ * @deprecated Use ToolServices.findTool instead. This function uses module-level global state
  * and will be removed in a future version.
  */
 export function setDeferredTools(tools: ToolDefinition[]): void {
@@ -85,11 +85,11 @@ export function setDeferredTools(tools: ToolDefinition[]): void {
 }
 
 // ============================================================================
-// ToolSearchTool
+// FindToolTool
 // ============================================================================
 
-export const ToolSearchTool: ToolDefinition = {
-  name: 'ToolSearch',
+export const FindToolTool: ToolDefinition = {
+  name: 'FindTool',
   description: _description,
   inputSchema: {
     type: 'object',
@@ -111,7 +111,7 @@ export const ToolSearchTool: ToolDefinition = {
   async prompt() { return _description },
   async call(input: any, ctx: ToolContext): Promise<ToolResult> {
     const { query, max_results = 5 } = input
-    const registry = ctx.services.toolSearch
+    const registry = ctx.services.findTool
 
     if (registry.deferredTools.length === 0) {
       return {

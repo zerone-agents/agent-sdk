@@ -12,7 +12,7 @@ import type { ToolDefinition } from '../types.js'
 import type {
   ToolServices,
   AskUserHandler,
-  ToolSearchRegistry,
+  FindToolRegistry,
   ConfigState,
 } from './services.js'
 import type { WebSearchConfig } from './web-search.js'
@@ -26,7 +26,7 @@ import type { WebFetchConfig } from './web-fetch-providers.js'
  */
 export class DefaultToolServices implements ToolServices {
   askUser: AskUserHandler | null
-  toolSearch: ToolSearchRegistry
+  findTool: FindToolRegistry
   config: ConfigState
   /** Optional WebSearch provider configuration; absent = anonymous Exa → Parallel default. */
   webSearch?: WebSearchConfig
@@ -38,7 +38,7 @@ export class DefaultToolServices implements ToolServices {
     this.askUser = null
 
     // Initialize tool search registry with empty array
-    this.toolSearch = {
+    this.findTool = {
       deferredTools: [],
       activatedTools: new Set(),
     }

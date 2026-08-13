@@ -17,11 +17,11 @@ export function resolveAgent(env: AgentEnvironment, definition: AgentDefinition)
   )
   const filtered = filterTools(pool, definition.allowedTools, definition.disallowedTools)
 
-  // Lazy-loading requires ToolSearch to be available AND eager. If filtered
+  // Lazy-loading requires FindTool to be available AND eager. If filtered
   // out (allow-list miss or deny-list hit) or marked deferred itself (a
   // misconfiguration), fall back to all-eager — otherwise deferred tools
   // would be neither visible nor discoverable.
-  const lazyLoadingEnabled = filtered.some(t => t.name === 'ToolSearch' && !t.deferred)
+  const lazyLoadingEnabled = filtered.some(t => t.name === 'FindTool' && !t.deferred)
 
   const tools = lazyLoadingEnabled ? filtered.filter(t => !t.deferred) : filtered
   const deferredTools = lazyLoadingEnabled ? filtered.filter(t => t.deferred) : []
