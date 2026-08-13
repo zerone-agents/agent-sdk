@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ToolSearchTool } from './tool-search.js'
+import { ToolSearchTool } from './find-tool.js'
 import { createEmptyServices } from './services.js'
 import type { ToolContext } from '../types.js'
 

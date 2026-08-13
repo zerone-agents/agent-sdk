@@ -17,7 +17,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 let _description: string
 try {
-  _description = readFileSync(join(__dirname, 'tool-search.txt'), 'utf-8')
+  _description = readFileSync(join(__dirname, 'find-tool.txt'), 'utf-8')
 } catch {
   _description = 'Search for additional tools that may be available but not yet loaded.'
 }

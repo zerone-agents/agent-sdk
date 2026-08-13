@@ -27,7 +27,7 @@ import { MultiTaskTool } from './multi-task.js'
 import { AskUserQuestionTool } from './ask-user.js'
 
 // Discovery
-import { ToolSearchTool } from './tool-search.js'
+import { ToolSearchTool } from './find-tool.js'
 
 // Scheduling
 import { CronCreateTool, CronDeleteTool, CronListTool, initCronTools } from './cron.js'

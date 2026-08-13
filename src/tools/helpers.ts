@@ -4,7 +4,7 @@
  *
  * Used by:
  * - prompt-builder.ts: <available_deferred_tools> catalog fallback path
- * - tool-search.ts: tool result fallback path
+ * - find-tool.ts: tool result fallback path
  * - mcp/client.ts: auto-generated shortDescription for external MCP tools
  */
 export function truncateForCatalog(text: string, maxLen = 200): string {

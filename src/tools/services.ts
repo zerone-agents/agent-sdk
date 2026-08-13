@@ -4,7 +4,7 @@
  * Defines the service dependencies that each Agent instance provides
  * to its tools, replacing the current module-level global state.
  *
- * Currently, 3 tool modules (ask-user.ts, tool-search.ts, config.ts) store
+ * Currently, 3 tool modules (ask-user.ts, find-tool.ts, config.ts) store
  * state in module-level variables. When multiple Agent instances coexist,
  * these globals are overwritten. ToolServices moves that state into
  * per-agent containers.
@@ -36,7 +36,7 @@ export type AskUserHandler = (
 /**
  * Tool search registry — tracks deferred/lazy-loaded tools.
  *
- * Currently stored as module-level global in tool-search.ts:
+ * Currently stored as module-level global in find-tool.ts:
  *   let deferredTools: ToolDefinition[] = []
  */
 export interface ToolSearchRegistry {
