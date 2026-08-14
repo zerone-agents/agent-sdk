@@ -70,11 +70,11 @@ describe('classifyError', () => {
     expect(result.isRetryable).toBe(true)
   })
 
-  it('classifies HTTP 429 as rate_limit (retryable)', () => {
+  it('classifies HTTP 429 as rate_limit (not retryable — fails fast)', () => {
     const err = { status: 429, message: 'Too Many Requests' }
     const result = classifyError(err)
     expect(result.type).toBe('rate_limit')
-    expect(result.isRetryable).toBe(true)
+    expect(result.isRetryable).toBe(false)
   })
 
   it('classifies HTTP 529 as overloaded (retryable)', () => {
@@ -109,7 +109,7 @@ describe('classifyError', () => {
     const err = { status: 200, error: { type: 'rate_limit_error', message: 'Rate limit exceeded' } }
     const result = classifyError(err)
     expect(result.type).toBe('rate_limit')
-    expect(result.isRetryable).toBe(true)
+    expect(result.isRetryable).toBe(false)
   })
 
   it('classifies AbortError as not retryable', () => {
@@ -146,6 +146,10 @@ describe('isRetryableError', () => {
   it('still treats auth errors as not retryable', () => {
     expect(isRetryableError({ status: 401, message: 'Unauthorized' })).toBe(false)
   })
+
+  it('treats HTTP 429 as not retryable (fails fast)', () => {
+    expect(isRetryableError({ status: 429, message: 'Too Many Requests' })).toBe(false)
+  })
 })
 
 describe('DEFAULT_MAX_STREAM_RETRIES', () => {
@@ -155,14 +159,14 @@ describe('DEFAULT_MAX_STREAM_RETRIES', () => {
 })
 
 describe('getStreamRetryDelay', () => {
-  it('uses rate_limit config: base 3s, max 60s', () => {
+  it('falls back to server config for unmapped types (rate_limit no longer retried)', () => {
     const d0 = getStreamRetryDelay(0, 'rate_limit')
-    expect(d0).toBeGreaterThanOrEqual(2250)
-    expect(d0).toBeLessThanOrEqual(3750)
+    expect(d0).toBeGreaterThanOrEqual(1500)
+    expect(d0).toBeLessThanOrEqual(2500)
 
     const d2 = getStreamRetryDelay(2, 'rate_limit')
-    expect(d2).toBeGreaterThanOrEqual(9000)
-    expect(d2).toBeLessThanOrEqual(60000)
+    expect(d2).toBeGreaterThanOrEqual(6000)
+    expect(d2).toBeLessThanOrEqual(30000)
   })
 
   it('uses connection config: base 1s, max 15s', () => {
