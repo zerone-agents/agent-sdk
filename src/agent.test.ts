@@ -252,7 +252,7 @@ describe('Agent.prompt() error propagation (issue #28)', () => {
     const agent = new Agent(makeBaseOptions())
     const err = Object.assign(new Error('429 Too Many Requests: rate limited'), { status: 429 })
     // Non-streaming default path: engine calls createMessage via withRetry.
-    // 429 is retryable (rate_limit) → real backoff sleeps; fake timers skip them.
+    // 429 is NOT retryable (fails fast, no backoff); fake timers are a no-op here.
     ;(agent as any).provider = {
       apiType: 'anthropic-messages',
       createMessage: vi.fn(async () => { throw err }),

@@ -22,7 +22,9 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
   maxRetries: 3,
   baseDelayMs: 2000,
   maxDelayMs: 30000,
-  retryableStatusCodes: [429, 500, 502, 503, 529],
+  // Note: 429 (rate limit) is intentionally NOT retried — it fails fast
+  // so callers can surface the error instead of waiting through backoff.
+  retryableStatusCodes: [500, 502, 503, 529],
 }
 
 /**
@@ -198,7 +200,6 @@ export interface ErrorClassification {
 }
 
 const RETRY_CONFIGS: Record<string, { baseMs: number; factor: number; maxMs: number }> = {
-  rate_limit:   { baseMs: 3000, factor: 2, maxMs: 60000 },
   overloaded:   { baseMs: 2000, factor: 2, maxMs: 30000 },
   server:       { baseMs: 2000, factor: 2, maxMs: 30000 },
   connection:   { baseMs: 1000, factor: 2, maxMs: 15000 },
@@ -256,7 +257,7 @@ export function classifyError(err: any): ErrorClassification {
   }
 
   switch (status) {
-    case 429: return { type: 'rate_limit', isRetryable: true, retryAfterMs, message: err.message ?? '' }
+    case 429: return { type: 'rate_limit', isRetryable: false, retryAfterMs, message: err.message ?? '' }
     case 529: return { type: 'overloaded', isRetryable: true, retryAfterMs, message: err.message ?? '' }
     case 500: case 502: case 503:
       return { type: 'server', isRetryable: true, retryAfterMs, message: err.message ?? '' }
@@ -277,7 +278,7 @@ export function classifyError(err: any): ErrorClassification {
     return { type: 'overloaded', isRetryable: true, retryAfterMs, message: err.message ?? '' }
   }
   if (err?.error?.type === 'rate_limit_error') {
-    return { type: 'rate_limit', isRetryable: true, retryAfterMs, message: err.message ?? '' }
+    return { type: 'rate_limit', isRetryable: false, retryAfterMs, message: err.message ?? '' }
   }
 
   return { type: 'unknown', isRetryable: false, retryAfterMs: null, message: err.message ?? String(err) }
