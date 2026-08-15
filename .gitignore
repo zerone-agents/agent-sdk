@@ -6,7 +6,6 @@ dist/
 .env
 .env.*
 !.env.example
-AGENTS.md
 .codegraph/
 .zerone-uploads/
 *.tgz
