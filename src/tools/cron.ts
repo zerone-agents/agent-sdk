@@ -71,7 +71,8 @@ export async function getAllCronJobs(): Promise<CronTask[]> {
  */
 export async function clearCronJobs(): Promise<void> {
   if (!storage) return
-  await storage.save([])
+  const tasks = await storage.load()
+  await storage.remove(tasks.map((task) => task.id))
 }
 
 export const CronCreateTool: ToolDefinition = {

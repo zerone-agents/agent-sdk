@@ -1,0 +1,45 @@
+import type {
+  CronExecution,
+  CronExecutionQuery,
+  CronExecutionStatus,
+  CronExecutionTrigger,
+} from './types.js'
+
+export type ExecutionStatusPatch = {
+  output?: string
+  error?: string
+  startedAt?: number
+  completedAt?: number
+}
+
+export type ExecutionClaimResult =
+  | { kind: 'claimed'; execution: CronExecution }
+  | { kind: 'duplicate'; execution: CronExecution }
+  | { kind: 'skipped'; execution: CronExecution }
+
+/**
+ * Port: persistence + atomic bookkeeping for execution records.
+ *
+ * Guarantees required from implementations (issue #42):
+ * - claim() is atomic: the same (taskId, scheduledFireTime) is claimed once,
+ *   ever (including across process restarts) -> `duplicate`.
+ * - at most one active (pending/running) execution per task; a new claim for
+ *   an active task records a `skipped` execution.
+ * - recoverInterrupted() moves startup-time pending/running records to
+ *   `interrupted` and returns how many were recovered.
+ */
+export interface ExecutionStore {
+  recoverInterrupted(): Promise<number>
+  claim(input: {
+    taskId: string
+    scheduledFireTime: number
+    trigger: CronExecutionTrigger
+  }): Promise<ExecutionClaimResult>
+  get(executionId: string): Promise<CronExecution | null>
+  list(query?: CronExecutionQuery): Promise<CronExecution[]>
+  updateStatus(
+    executionId: string,
+    status: CronExecutionStatus,
+    patch?: ExecutionStatusPatch,
+  ): Promise<CronExecution | null>
+}
