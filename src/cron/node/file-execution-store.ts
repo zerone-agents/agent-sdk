@@ -123,17 +123,23 @@ export class FileExecutionStore implements ExecutionStore {
   }
 
   private ensureLoaded(): Promise<void> {
-    // Memoized: all callers share ONE replay so a later load cannot overwrite
-    // commits made by a caller that already finished loading.
-    this.loadPromise ??= (async () => {
-      const { executions, seq } = await this.log.replay()
-      this.executions = executions
-      this.seq = seq
-      this.rebuildDerivedIndexes()
-      this.loaded = true
-      await this.persistIndex().catch(() => {})
-    })()
+    // Memoized: all callers share ONE in-flight replay (round-1 race guarantee).
+    // On failure the memo is cleared so the NEXT call retries the load — a
+    // transient replay error (EACCES/EMFILE) must not poison the store forever.
+    this.loadPromise ??= this.doLoad().catch((err) => {
+      this.loadPromise = null
+      throw err
+    })
     return this.loadPromise
+  }
+
+  private async doLoad(): Promise<void> {
+    const { executions, seq } = await this.log.replay()
+    this.executions = executions
+    this.seq = seq
+    this.rebuildDerivedIndexes()
+    this.loaded = true
+    await this.persistIndex().catch(() => {})
   }
 
   private rebuildDerivedIndexes(): void {

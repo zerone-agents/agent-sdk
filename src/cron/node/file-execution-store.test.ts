@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { chmod, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -120,5 +120,24 @@ describe('FileExecutionStore', () => {
     const record = await b.get(first.execution.id)
 
     expect(record).toMatchObject({ status: 'succeeded', output: 'ok' })
+  })
+
+  it('retries the load after a transient replay failure instead of caching the rejection', async () => {
+    const logPath = path.join(dir, 'executions.jsonl')
+    const store = new FileExecutionStore(dir)
+    // Prime the log file so it exists, then make it unreadable.
+    await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    await chmod(logPath, 0o000)
+
+    const failing = new FileExecutionStore(dir)
+    await expect(
+      failing.claim({ taskId: 't2', scheduledFireTime: 120_000, trigger: 'scheduled' }),
+    ).rejects.toThrow()
+
+    // Restore readability: the next call must retry (and succeed), not re-throw
+    // the memoized rejection.
+    await chmod(logPath, 0o644)
+    const retried = await failing.claim({ taskId: 't2', scheduledFireTime: 120_000, trigger: 'scheduled' })
+    expect(retried.kind).toBe('claimed')
   })
 })
