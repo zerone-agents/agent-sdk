@@ -15,6 +15,28 @@ vi.mock('./mcp/pool.js', async (importOriginal) => {
   }
 })
 
+// Retry backoff clamped to ~1ms: withRetry's real exponential backoff
+// (2s/4s/8s) makes retry-exhaustion tests either slow (14s of real waiting)
+// or dependent on vi.useFakeTimers — and fake timers starve real I/O
+// (child_process/undifi callbacks), which caused intermittent hangs when
+// mixed with other tests' leftover sockets. With 1ms delays the retry chain
+// completes in ~5ms under REAL timers: fast AND deterministic.
+// No other test in this file relies on real backoff durations.
+vi.mock('./utils/retry.js', async (importOriginal) => {
+  const actual = await importOriginal() as any
+  const fastConfig = (config: any) => ({
+    ...actual.DEFAULT_RETRY_CONFIG, // base when caller passes undefined
+    ...config,
+    baseDelayMs: 1, // force fast backoff either way
+    maxDelayMs: 1,
+  })
+  return {
+    ...actual,
+    withRetry: (fn: () => Promise<any>, config: any, signal?: AbortSignal) =>
+      actual.withRetry(fn, fastConfig(config), signal),
+  }
+})
+
 import { acquireMCPConnection } from './mcp/pool.js'
 
 /**
@@ -211,7 +233,15 @@ describe('Agent MCP stdio cwd resolution (issue #14 follow-up)', () => {
   })
 
   it('does not inject cwd for http transports', async () => {
-    const httpConfig: McpServerConfig = { type: 'streamable_http', url: 'https://x' }
+    // Short retryPolicy so the real fetch to the unresolvable host fails fast
+    // (200ms) instead of hanging for the default 5000ms MCP timeout — the
+    // default races against vitest's 5s test timeout and flakes depending on
+    // how quickly the network rejects the connection.
+    const httpConfig: McpServerConfig = {
+      type: 'streamable_http',
+      url: 'https://x',
+      retryPolicy: { timeoutMs: 200, maxRetries: 0 },
+    }
     const agent = new Agent(makeBaseOptions({
       cwd: '/agent/workspace',
       mcpServers: { srv: httpConfig },
@@ -228,38 +258,21 @@ describe('Agent MCP stdio cwd resolution (issue #14 follow-up)', () => {
 
 describe('Agent.prompt() error propagation (issue #28)', () => {
   afterEach(() => {
-    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
-  /**
-   * Drive a prompt() promise to completion under fake timers: advance the
-   * clock in small steps so chained backoff sleeps + microtask flushes
-   * interleave correctly (one big advance does not reliably settle the
-   * async-generator chain).
-   */
-  async function settleWithFakeTimers<T>(p: Promise<T>): Promise<T> {
-    let settled = false
-    void p.then(() => (settled = true), () => (settled = true))
-    for (let i = 0; i < 600 && !settled; i++) {
-      await vi.advanceTimersByTimeAsync(1_000)
-    }
-    return p
-  }
-
   it('surfaces a provider 429 as is_error with error_type preserved (never success-looking)', async () => {
-    vi.useFakeTimers()
     const agent = new Agent(makeBaseOptions())
     const err = Object.assign(new Error('429 Too Many Requests: rate limited'), { status: 429 })
     // Non-streaming default path: engine calls createMessage via withRetry.
-    // 429 is NOT retryable (fails fast, no backoff); fake timers are a no-op here.
+    // 429 is NOT retryable (fails fast, no backoff) — real timers suffice.
     ;(agent as any).provider = {
       apiType: 'anthropic-messages',
       createMessage: vi.fn(async () => { throw err }),
       createMessageStream: async function* () { throw err },
     }
 
-    const result = await settleWithFakeTimers(agent.prompt('hello'))
+    const result = await agent.prompt('hello')
 
     expect(result.is_error).toBe(true)
     expect(result.error_type).toBe('rate_limit')
@@ -308,7 +321,9 @@ describe('Agent.prompt() error propagation (issue #28)', () => {
   })
 
   it('surfaces retryable overload errors after retries are exhausted', async () => {
-    vi.useFakeTimers()
+    // 529 is retryable: withRetry runs the full chain (initial + 3 retries).
+    // The file-level retry mock clamps backoff to 1ms, so the chain completes
+    // in ~5ms under real timers — no fake timers needed (see mock comment).
     const agent = new Agent(makeBaseOptions())
     const err = Object.assign(new Error('529 overloaded'), { status: 529 })
     const createMessage = vi.fn(async () => { throw err })
@@ -318,7 +333,7 @@ describe('Agent.prompt() error propagation (issue #28)', () => {
       createMessageStream: async function* () { throw err },
     }
 
-    const result = await settleWithFakeTimers(agent.prompt('hello'))
+    const result = await agent.prompt('hello')
 
     expect(result.is_error).toBe(true)
     expect(result.error_type).toBe('overloaded')
