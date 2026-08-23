@@ -241,10 +241,53 @@ describe('createCronService', () => {
     // Next jittered slot is within (0, 66s]; advancing 66s crosses exactly one slot.
     await h.timer.advance(60_000 + 6_000)
 
-    const executions = await h.service.listExecutions({ cronTaskId: task.id })
-    expect(executions).toHaveLength(1)
-    expect(executions[0]).toMatchObject({ status: 'succeeded', output: 'ok' })
+    // Scheduled fires are fire-and-forget: the submit chain floats after the
+    // advance, so poll (real timers; the memory store resolves in microtasks)
+    // instead of sleeping.
+    await vi.waitFor(async () => {
+      const executions = await h.service.listExecutions({ cronTaskId: task.id })
+      expect(executions).toHaveLength(1)
+      expect(executions[0]).toMatchObject({ status: 'succeeded', output: 'ok' })
+    })
     const after = await h.service.get(task.id)
     expect(after?.lastFiredAt).toBeDefined()
+  })
+
+  it('a hung execution does not stall other tasks (cross-task non-blocking)', async () => {
+    // Task A's executor never resolves on its own — it only settles when the
+    // abort signal fires (stop with drainMs 0). Task B must still fire on
+    // time while A is stuck, proving the scheduler is a pure timer loop.
+    const executor: CronExecutor = async (task, context) => {
+      if (task.prompt === 'hang') {
+        await new Promise((_, reject) => {
+          if (context.signal.aborted) reject(context.signal.reason)
+          else context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true })
+        })
+      }
+      return { output: 'ok' }
+    }
+    const h = makeService({ executor })
+    await h.service.start()
+    const taskA = await h.service.create({ cron: '* * * * *', prompt: 'hang' })
+    const taskB = await h.service.create({ cron: '* * * * *', prompt: 'work' })
+
+    // Cross A's first slot and part of B's window (jittered within (0, 66s]
+    // after their own refresh); B is due while A is still hanging.
+    await h.timer.advance(2 * 60_000)
+
+    await vi.waitFor(async () => {
+      const b = await h.service.listExecutions({ cronTaskId: taskB.id })
+      expect(b.some((e) => e.status === 'succeeded' && e.output === 'ok')).toBe(true)
+    })
+    // A has fired but never reached a terminal status while hanging (later
+    // slots are recorded as skipped while its first execution is active).
+    const a = await h.service.listExecutions({ cronTaskId: taskA.id })
+    expect(a.some((e) => e.status === 'running' || e.status === 'pending')).toBe(true)
+    expect(a.some((e) => e.status === 'succeeded' || e.status === 'failed')).toBe(false)
+
+    // Cleanup: stop with drainMs 0 aborts A (interrupted); no dangling handles.
+    await h.service.stop({ drainMs: 0 })
+    const aAfter = await h.service.listExecutions({ cronTaskId: taskA.id })
+    expect(aAfter.some((e) => e.status === 'interrupted')).toBe(true)
   })
 })

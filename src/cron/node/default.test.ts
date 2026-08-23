@@ -83,9 +83,13 @@ describe('createDefaultCronService', () => {
 
     await timer.advance(60_000 + 6_000)
 
-    const executions = await service.listExecutions({ cronTaskId: task.id })
-    expect(executions).toHaveLength(1)
-    expect(executions[0]).toMatchObject({ status: 'succeeded', output: 'ran:tick' })
+    // Scheduled fires are fire-and-forget; the file-backed submit chain
+    // floats after the advance, so poll (real timers, fast fs) — no sleeps.
+    await vi.waitFor(async () => {
+      const executions = await service.listExecutions({ cronTaskId: task.id })
+      expect(executions).toHaveLength(1)
+      expect(executions[0]).toMatchObject({ status: 'succeeded', output: 'ran:tick' })
+    })
     expect(log).toContain('close')
     const after = await service.get(task.id)
     expect(after?.lastFiredAt).toBeDefined()
@@ -109,9 +113,12 @@ describe('createDefaultCronService', () => {
     clock.set(clock.now() + 5 * 60_000) // 5 minutes of system sleep, no timers
     await service.resume()
 
-    const executions = await service.listExecutions({ cronTaskId: task.id })
-    expect(executions).toHaveLength(1)
-    expect(executions[0]!.status).toBe('succeeded')
+    // The catch-up fire floats (fire-and-forget); poll for its completion.
+    await vi.waitFor(async () => {
+      const executions = await service.listExecutions({ cronTaskId: task.id })
+      expect(executions).toHaveLength(1)
+      expect(executions[0]!.status).toBe('succeeded')
+    })
     await service.stop()
   })
 

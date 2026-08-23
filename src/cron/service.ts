@@ -99,7 +99,12 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     timer,
     host: {
       onFire: async (task, scheduledFireTime) => {
-        await coordinator.submit(task, scheduledFireTime, 'scheduled')
+        // Fire-and-forget for scheduled triggers: the scheduler's timer loop
+        // must never depend on execution duration (a hung executor with a
+        // 30-minute timeout would stall every other task's schedule). Per-task
+        // serialization is already the ExecutionStore's job (claim / skipped /
+        // duplicate). runNow still awaits submit() for its final status.
+        void coordinator.submit(task, scheduledFireTime, 'scheduled').catch(() => {})
       },
     },
     jitterConfig: options.jitterConfig,
