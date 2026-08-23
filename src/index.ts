@@ -346,12 +346,6 @@ export {
   setDeferredTools,
 } from './tools/find-tool.js'
 
-export {
-  getAllCronJobs,
-  clearCronJobs,
-} from './tools/cron.js'
-export type { CronJob } from './tools/cron.js'
-
 // --------------------------------------------------------------------------
 // Cron Utilities
 // --------------------------------------------------------------------------
