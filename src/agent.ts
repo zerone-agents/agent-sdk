@@ -133,8 +133,6 @@ interface MiscConfig {
   agentId?: string
   agent?: AgentDefinition
   customTools?: ToolDefinition[]
-  cronStorage?: import('./cron/storage.js').CronStorage
-  cronJitterConfig?: Partial<import('./cron/types.js').CronJitterConfig>
   maxBudgetUsd?: number
   plugins?: Array<{ name: string; config?: Record<string, unknown> }>
   debug?: boolean
@@ -364,8 +362,6 @@ export class Agent {
       agentId: opts.agentId,
       agent: opts.agent,
       customTools: opts.customTools,
-      cronStorage: opts.cronStorage,
-      cronJitterConfig: opts.cronJitterConfig,
       maxBudgetUsd: opts.maxBudgetUsd,
       plugins: opts.plugins,
       debug: opts.debug,

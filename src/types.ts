@@ -783,10 +783,6 @@ export interface AgentOptions {
   agent?: AgentDefinition
   /** Caller-provided custom tools, merged with the built-in tool pool. */
   customTools?: ToolDefinition[]
-  /** Cron storage implementation for scheduled tasks. */
-  cronStorage?: import('./cron/storage.js').CronStorage
-  /** Optional jitter configuration override. */
-  cronJitterConfig?: Partial<import('./cron/types.js').CronJitterConfig>
   /** Maximum USD budget per query. */
   maxBudgetUsd?: number
   /** Plugin configurations. */

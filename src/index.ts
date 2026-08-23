@@ -346,24 +346,8 @@ export {
   setDeferredTools,
 } from './tools/find-tool.js'
 
-// --------------------------------------------------------------------------
-// Cron Utilities
-// --------------------------------------------------------------------------
-
-export {
-  cronToHuman,
-  computeNextCronRun,
-  parseCronExpression,
-  DEFAULT_CRON_JITTER_CONFIG,
-  jitteredNextCronRunMs,
-  jitterFrac,
-} from './cron/index.js'
-export type {
-  CronFields,
-  CronJitterConfig,
-  CronTask,
-  CronStorage,
-} from './cron/index.js'
+// Cron kernel: CronService + ports + scheduler/coordinator/runtime + utilities
+export * from './cron/index.js'
 
 export {
   getConfig,
