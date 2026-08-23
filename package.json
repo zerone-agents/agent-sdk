@@ -22,6 +22,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./cron/node": {
+      "types": "./dist/cron/node/index.d.ts",
+      "import": "./dist/cron/node/index.js",
+      "default": "./dist/cron/node/index.js"
     }
   },
   "files": [

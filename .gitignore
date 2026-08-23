@@ -13,3 +13,5 @@ dist/
 .backup/
 docs/superpowers/
 prompt-dump.txt
+CONTEXT.md
+docs/adr/
