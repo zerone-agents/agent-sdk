@@ -330,10 +330,9 @@ AskUserQuestion：向用户提问并等待回复。
 **设计目标**：本地定时任务调度。
 
 **当前状态**：
-- `CronStorage` 接口已定义（`load/save/add/remove/markFired`）
-- `AgentOptions.cronStorage` 已暴露
-- `initCronTools()` 已导出
-- **但 Agent 构造函数中从未调用 `initCronTools()` 注入 storage**
+- Cron 已升级为完整 Runtime（issue #42）：`CronService` 单一入口 + Scheduler/Coordinator/Runtime 内核 + 文件适配器（子路径导出 `@zerone-agent/agent-sdk/cron/node`）
+- `initCronTools(service: CronService)` 接受 Service；旧 `initCronTools(storage)` 签名已删除，无兼容层（`src/cron/type-contracts.ts` 在类型层面防回归）
+- `AgentOptions.cronStorage` / `cronJitterConfig` 已移除（原本就未被消费）
 - 所有 Cron 工具（Create/Delete/List）返回 `"Cron storage is not initialized."`
 
 **缺失环节**：
@@ -352,7 +351,7 @@ AskUserQuestion：向用户提问并等待回复。
 | FindTool | 无调用方为 deferredTools 喂数据 | 在 Agent.setup() 中调用 `setDeferredTools()` |
 | ~~ListMcpResources~~ | ~~无调用方注入 MCP connections~~ | **已在 #3 删除** |
 | ~~ReadMcpResource~~ | ~~同上~~ | **已在 #3 删除** |
-| CronCreate/Delete/List | Agent 未调用 `initCronTools()` 注入 storage | 在 Agent 构造函数中消费 `cronStorage` 选项 |
+| CronCreate/Delete/List | （已修复）工具直接操作 Storage，绕过 Runtime | （issue #42）`initCronTools(service: CronService)`，SDK Tool 与宿主 API 共用同一 Service |
 
 > 注：`RemoteTrigger` 在源代码中处于注释状态（`src/tools/cron.ts:238-266`），未注册到 `ALL_TOOLS`，因此不计入空壳工具（既非内置工具也非可调用工具）。
 
@@ -429,8 +428,9 @@ interface CronTask {
 ```typescript
 interface CronStorage {
   load(): Promise<CronTask[]>
-  save(tasks: CronTask[]): Promise<void>
-  add(task: Omit<CronTask, 'id' | 'createdAt'>): Promise<string>
+  get(taskId: string): Promise<CronTask | null>
+  add(task: Omit<CronTask, 'id' | 'createdAt'>): Promise<CronTask>
+  update(taskId: string, changes: CronTaskChanges): Promise<CronTask | null>
   remove(ids: string[]): Promise<void>
   markFired(ids: string[], firedAt: number): Promise<void>
 }
