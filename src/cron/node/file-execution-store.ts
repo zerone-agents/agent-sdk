@@ -34,6 +34,8 @@ export class FileExecutionStore implements ExecutionStore {
   private byFire = new Map<string, string>()
   private activeByTask = new Map<string, string>()
   private loaded = false
+  /** Shared in-flight load so concurrent callers cannot clobber memory state. */
+  private loadPromise: Promise<void> | null = null
   private seq = 0
   private writeChain: Promise<unknown> = Promise.resolve()
 
@@ -120,14 +122,18 @@ export class FileExecutionStore implements ExecutionStore {
     return `${taskId}:${fireTime}`
   }
 
-  private async ensureLoaded(): Promise<void> {
-    if (this.loaded) return
-    const { executions, seq } = await this.log.replay()
-    this.executions = executions
-    this.seq = seq
-    this.rebuildDerivedIndexes()
-    this.loaded = true
-    await this.persistIndex().catch(() => {})
+  private ensureLoaded(): Promise<void> {
+    // Memoized: all callers share ONE replay so a later load cannot overwrite
+    // commits made by a caller that already finished loading.
+    this.loadPromise ??= (async () => {
+      const { executions, seq } = await this.log.replay()
+      this.executions = executions
+      this.seq = seq
+      this.rebuildDerivedIndexes()
+      this.loaded = true
+      await this.persistIndex().catch(() => {})
+    })()
+    return this.loadPromise
   }
 
   private rebuildDerivedIndexes(): void {
