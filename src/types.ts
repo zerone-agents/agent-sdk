@@ -773,8 +773,8 @@ export interface AgentOptions {
   onSkillsUpdated?: (event: import('./types.js').SDKSkillsUpdatedMessage) => void
 
   // ===========================================================================
-  // === MiscConfig === (13 fields)
-  // Miscellaneous: agent identity, tools, cron, budget, plugins, debug, hooks.
+  // === MiscConfig === (11 fields)
+  // Miscellaneous: agent identity, tools, budget, plugins, debug, hooks.
   // ===========================================================================
 
   /** Agent identifier. Defaults to 'main'. */

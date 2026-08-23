@@ -6,6 +6,7 @@
     "examples",
     "**/*.test.ts",
     "**/*.test.tsx",
-    "src/mcp/type-contracts.ts"
+    "src/mcp/type-contracts.ts",
+    "src/cron/type-contracts.ts"
   ]
 }
