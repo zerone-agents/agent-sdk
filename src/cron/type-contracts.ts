@@ -13,7 +13,8 @@ void acceptsService
 
 // Negative contract: the legacy initCronTools(storage: CronStorage) call must
 // NOT compile. If a compat overload is ever (re)introduced, the
-// expect-error below becomes "unused" and typecheck fails — the legacy path
-// must stay dead (issue #42: no overloads, no deprecated layer, no dual paths).
+// `@ts-expect-error` below becomes "unused" and typecheck fails — the legacy
+// path must stay dead (issue #42: no overloads, no deprecated layer, no dual
+// paths).
 // @ts-expect-error CronStorage does not satisfy CronService
 initCronTools({} as CronStorage)

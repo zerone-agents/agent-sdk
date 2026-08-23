@@ -6,6 +6,7 @@ import {
   CronCreateTool,
   CronDeleteTool,
   CronListTool,
+  DEFAULT_CRON_CREATE_DESCRIPTION,
   initCronTools,
 } from '../tools/cron.js'
 
@@ -130,6 +131,17 @@ describe('CronCreateTool', () => {
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('Cron task limit reached')
+  })
+
+  it('resets the agent list when re-initialized without agents', () => {
+    initCronTools(asService(service), { finance: { description: 'runs finance reports' } })
+    expect(CronCreateTool.description).toContain('"finance": runs finance reports')
+    expect(CronCreateTool.description).not.toBe(DEFAULT_CRON_CREATE_DESCRIPTION)
+
+    // A later re-init without agents must drop the stale agent list (and its
+    // contradicting "creation will fail" text), restoring the default.
+    initCronTools(asService(service))
+    expect(CronCreateTool.description).toBe(DEFAULT_CRON_CREATE_DESCRIPTION)
   })
 })
 

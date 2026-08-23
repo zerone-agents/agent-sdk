@@ -233,6 +233,37 @@ describe('createCronService', () => {
     expect(lock.release).toHaveBeenCalledTimes(1)
   })
 
+  it('a second start() on a running service is a no-op (no acquire, no release)', async () => {
+    const lock = { acquire: vi.fn(async () => {}), release: vi.fn(async () => {}) }
+    const h = makeService({ lock })
+    await h.service.start()
+    expect(lock.acquire).toHaveBeenCalledTimes(1)
+
+    // Double start must not throw, must not re-acquire, and — critically —
+    // must not release the still-live lock.
+    await expect(h.service.start()).resolves.toBeUndefined()
+    expect(lock.acquire).toHaveBeenCalledTimes(1)
+    expect(lock.release).not.toHaveBeenCalled()
+
+    // The runtime is still running: stop() works exactly once.
+    await h.service.stop()
+    expect(lock.release).toHaveBeenCalledTimes(1)
+  })
+
+  it('start() while suspended is a no-op', async () => {
+    const lock = { acquire: vi.fn(async () => {}), release: vi.fn(async () => {}) }
+    const h = makeService({ lock })
+    await h.service.start()
+    await h.service.suspend()
+
+    await expect(h.service.start()).resolves.toBeUndefined()
+    expect(lock.acquire).toHaveBeenCalledTimes(1)
+    expect(lock.release).not.toHaveBeenCalled()
+
+    await h.service.resume()
+    await h.service.stop()
+  })
+
   it('fires scheduled executions end-to-end via the injected timer', async () => {
     const h = makeService({})
     await h.service.start()

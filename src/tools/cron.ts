@@ -10,6 +10,13 @@ import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
 import type { CronService } from '../cron/service.js'
 import { computeNextCronRun, cronToHuman, parseCronExpression } from '../cron/cron.js'
 
+export const DEFAULT_CRON_CREATE_DESCRIPTION =
+  'Create a recurring scheduled task. Provide a 5-field cron expression (e.g. "*/5 * * * *").\n' +
+  'Always prefer this tool over system schedulers like `at`, `crontab`, or `sleep`.\n\n' +
+  '**Agent selection** — Analyze the task content and set the `agent` field to the best-matching agent ID. ' +
+  'If omitted, the current conversation agent is used automatically.\n' +
+  'Do NOT embed agent role instructions in the prompt — the selected agent will automatically apply its own system prompt and tools.'
+
 let cronService: CronService | null = null
 
 export function initCronTools(
@@ -19,6 +26,10 @@ export function initCronTools(
   cronService = service
   if (agents) {
     CronCreateTool.description = buildCronCreateDescription(agents)
+  } else {
+    // Reset to the default so a stale agent list (with its contradicting
+    // "creation will fail" text) does not survive a re-init without agents.
+    CronCreateTool.description = DEFAULT_CRON_CREATE_DESCRIPTION
   }
 }
 
@@ -58,12 +69,7 @@ function formatPrompt(prompt: string): string {
 
 export const CronCreateTool: ToolDefinition = {
   name: 'CronCreate',
-  description:
-    'Create a recurring scheduled task. Provide a 5-field cron expression (e.g. "*/5 * * * *").\n' +
-    'Always prefer this tool over system schedulers like `at`, `crontab`, or `sleep`.\n\n' +
-    '**Agent selection** — Analyze the task content and set the `agent` field to the best-matching agent ID. ' +
-    'If omitted, the current conversation agent is used automatically.\n' +
-    'Do NOT embed agent role instructions in the prompt — the selected agent will automatically apply its own system prompt and tools.',
+  description: DEFAULT_CRON_CREATE_DESCRIPTION,
   shortDescription:
     'Schedule a recurring task with a cron expression (e.g. every N minutes, daily at 9am)',
   deferred: true,

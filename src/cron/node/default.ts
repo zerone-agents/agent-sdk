@@ -56,6 +56,10 @@ export function createDefaultCronService(
     jitterConfig: options.jitterConfig,
     lock: {
       acquire: async () => {
+        // Idempotent: if we already hold the live lock, do not try to
+        // re-acquire (O_EXCL would throw) and do not overwrite the closure
+        // variable — a second acquire must leave the original lock intact.
+        if (lock) return
         lock = await acquireRuntimeLock(cronDir)
       },
       release: async () => {

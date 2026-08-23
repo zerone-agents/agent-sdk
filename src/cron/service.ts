@@ -116,6 +116,11 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
 
   return {
     async start(): Promise<void> {
+      // Idempotent start: a second start() while running (or suspended) must
+      // be a no-op. Without this guard, a failed re-acquire of the runtime
+      // lock would hit the catch below and RELEASE the still-live lock,
+      // letting a second process start on the same directory.
+      if (runtime.getState() !== 'stopped') return
       try {
         await options.lock?.acquire()
         await runtime.start()

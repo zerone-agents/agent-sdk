@@ -122,6 +122,35 @@ describe('createDefaultCronService', () => {
     await service.stop()
   })
 
+  it('a second start() on a running service keeps the lock held', async () => {
+    const { clock, log } = makeContext()
+    const serviceA = createDefaultCronService({
+      dataDir,
+      resolveAgent: async () => ({}),
+      createAgentFn: makeFakeAgent(log),
+      clock,
+      timer: new ManualTimer(clock),
+    })
+    await serviceA.start()
+
+    // Double start: no error, and the live lock must stay held.
+    await expect(serviceA.start()).resolves.toBeUndefined()
+
+    const b = makeContext()
+    const serviceB = createDefaultCronService({
+      dataDir,
+      resolveAgent: async () => ({}),
+      createAgentFn: makeFakeAgent(b.log),
+      clock: b.clock,
+      timer: new ManualTimer(b.clock),
+    })
+    // If the double start had released the lock, serviceB would now start.
+    await expect(serviceB.start()).rejects.toThrow(/already running/)
+    await expect(serviceB.stop()).resolves.toBeUndefined()
+
+    await serviceA.stop()
+  })
+
   it('prevents a second runtime on the same directory', async () => {
     const a = makeContext()
     const timerA = new ManualTimer(a.clock)
