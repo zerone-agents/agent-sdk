@@ -59,14 +59,14 @@ export interface CreateCronServiceOptions {
   lock?: CronRuntimeLock
 }
 
-function assertValidCronSpec(cron: string): void {
+function assertValidCronSpec(cron: string, clock: CronClock): void {
   const fields = parseCronExpression(cron)
   if (!fields) {
     throw new Error(
       `Invalid cron expression: "${cron}". Must be a valid 5-field cron (e.g. "0 16 * * *").`,
     )
   }
-  const next = computeNextCronRun(fields, new Date())
+  const next = computeNextCronRun(fields, new Date(clock.now()))
   if (!next) {
     throw new Error(`Cron expression has no matching run time within 366 days: ${cron}`)
   }
@@ -131,7 +131,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     resume: () => runtime.resume(),
 
     async create(input: CreateCronTaskInput): Promise<CronTask> {
-      assertValidCronSpec(input.cron)
+      assertValidCronSpec(input.cron, clock)
       const tasks = await taskStorage.load()
       if (tasks.length >= maxTasks) {
         throw new Error(`Cron task limit reached: maximum ${maxTasks} tasks.`)
@@ -152,7 +152,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     get: (taskId: string) => taskStorage.get(taskId),
 
     async update(taskId: string, changes: CronTaskChanges): Promise<CronTask | null> {
-      if (changes.cron !== undefined) assertValidCronSpec(changes.cron)
+      if (changes.cron !== undefined) assertValidCronSpec(changes.cron, clock)
       const updated = await taskStorage.update(taskId, changes)
       if (!updated) return null
       await scheduler.refresh()
