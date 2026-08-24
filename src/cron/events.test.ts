@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { emitCronEvent, noopEventSink } from './events.js'
+import { emitCronEvent, noopEventSink, reportCronDiagnostic } from './events.js'
 import type { CronExecution, CronTask } from './types.js'
 
 const task: CronTask = {
@@ -65,6 +65,26 @@ describe('emitCronEvent', () => {
     const onDiagnostic = vi.fn()
     await emitCronEvent(noopEventSink, { type: 'taskCreated', task }, onDiagnostic)
     expect(onDiagnostic).not.toHaveBeenCalled()
+  })
+
+  it('never rejects when the diagnostics sink itself throws', async () => {
+    const sink = vi.fn(() => { throw new Error('sink down') })
+    const onDiagnostic = vi.fn(() => { throw new Error('diagnostics down') })
+    await expect(
+      emitCronEvent(sink, { type: 'executionCompleted', execution }, onDiagnostic),
+    ).resolves.toBeUndefined()
+  })
+
+  it('reportCronDiagnostic delivers best-effort and never throws', () => {
+    const onDiagnostic = vi.fn()
+    reportCronDiagnostic(onDiagnostic, 'all good')
+    expect(onDiagnostic).toHaveBeenCalledWith('all good')
+    // A broken sink must not propagate.
+    expect(() =>
+      reportCronDiagnostic(() => { throw new Error('diagnostics down') }, 'm'),
+    ).not.toThrow()
+    // No sink configured: still a no-op, never a throw.
+    expect(() => reportCronDiagnostic(undefined, 'm')).not.toThrow()
   })
 
   it('noopEventSink accepts any event', () => {

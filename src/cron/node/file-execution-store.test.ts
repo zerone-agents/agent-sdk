@@ -137,6 +137,29 @@ describe('FileExecutionStore', () => {
     expect(await b.get(first.execution.id)).toMatchObject({ status: 'succeeded' })
   })
 
+  it('a throwing onDiagnostic during torn-tail replay does not break loading', async () => {
+    const a = new FileExecutionStore(dir)
+    const first = await a.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    await a.updateStatus(first.execution.id, 'succeeded', {})
+
+    const { appendFile } = await import('node:fs/promises')
+    await appendFile(
+      path.join(dir, 'executions.jsonl'),
+      '{"seq":2,"execution":{"id":"e2","cronTaskId":"t1","sched',
+      'utf8',
+    )
+
+    const b = new FileExecutionStore(dir, {
+      onDiagnostic: () => { throw new Error('diagnostics exploded') },
+    })
+
+    // The broken diagnostics sink must not break the replay: the store loads
+    // and claims normally, prior state intact.
+    const claim = await b.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
+    expect(claim.kind).toBe('claimed')
+    expect(await b.get(first.execution.id)).toMatchObject({ status: 'succeeded' })
+  })
+
   it('rebuilds state from the log when execution-index.json is deleted', async () => {
     const a = new FileExecutionStore(dir)
     const first = await a.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })

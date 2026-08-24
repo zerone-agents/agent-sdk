@@ -6,7 +6,7 @@ import type {
   ExecutionStatusPatch,
   ExecutionStore,
 } from '../execution-store.js'
-import type { CronDiagnosticSink } from '../events.js'
+import { reportCronDiagnostic, type CronDiagnosticSink } from '../events.js'
 import type {
   CronExecution,
   CronExecutionQuery,
@@ -141,7 +141,7 @@ export class FileExecutionStore implements ExecutionStore {
     const { executions, seq, diagnostics } = await this.log.replay()
     // Torn-tail diagnostics are reported, never thrown: replay already
     // recovered all intact records, so the store stays fully functional.
-    for (const d of diagnostics) this.onDiagnostic?.(d)
+    for (const d of diagnostics) reportCronDiagnostic(this.onDiagnostic, d)
     this.executions = executions
     this.seq = seq
     this.rebuildDerivedIndexes()

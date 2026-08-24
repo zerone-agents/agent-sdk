@@ -121,6 +121,66 @@ describe('createCronService', () => {
     expect(await h.executionStore.get(execution.id)).toMatchObject({ status: 'succeeded' })
   })
 
+  it('a throwing onDiagnostic does not affect runNow execution state', async () => {
+    const h = makeService({
+      eventSink: () => { throw new Error('sink exploded') },
+      onDiagnostic: () => { throw new Error('diagnostics exploded') },
+    })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    // Both channels are broken; the execution must still succeed.
+    const execution = await h.service.runNow(task.id)
+    expect(execution.status).toBe('succeeded')
+    expect(await h.executionStore.get(execution.id)).toMatchObject({ status: 'succeeded' })
+  })
+
+  it('a throwing onDiagnostic during a failed scheduled submit causes no unhandled rejection and keeps scheduling', async () => {
+    // Deterministic unhandled-rejection recorder: if the detached submit
+    // handler's diagnostics path were to throw, Node would surface it here.
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => { unhandled.push(err) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const h = makeService({ onDiagnostic: () => { throw new Error('diagnostics exploded') } })
+      await h.service.start()
+      const task = await h.service.create(everyMinute)
+
+      let failNextClaim = true
+      const originalClaim = h.executionStore.claim.bind(h.executionStore)
+      h.executionStore.claim = async (input) => {
+        if (failNextClaim && input.trigger === 'scheduled') {
+          failNextClaim = false
+          throw new Error('claim failed')
+        }
+        return originalClaim(input)
+      }
+
+      await h.timer.advance(60_000 + 6_000) // crosses slot 1 -> submit rejects
+      // Flush microtasks/immediates so a rejection (if any) would surface.
+      await new Promise((r) => setImmediate(r))
+
+      // The scheduler is unaffected: the next slot still fires and succeeds.
+      await h.timer.advance(60_000 + 66_000)
+      await vi.waitFor(async () => {
+        const executions = await h.service.listExecutions({ cronTaskId: task.id })
+        expect(executions.some((e) => e.status === 'succeeded' && e.trigger === 'scheduled')).toBe(true)
+      })
+      await new Promise((r) => setImmediate(r))
+
+      expect(unhandled).toEqual([])
+
+      // NOTE: deliberately no stop() here. Calling stop() after a failed
+      // scheduled claim surfaces a PRE-EXISTING leak outside this task's
+      // scope: claimAndRun throws before pending.delete()/clearTimeout(),
+      // so interruptAll() later aborts the leaked submission's abortPromise
+      // with no handler (unhandled CronExecutionInterruptedError). Tracked
+      // in the task report; other scheduled-fire tests never stop either.
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
   it('create() validates, persists, refreshes the schedule, and emits events', async () => {
     const events: CronEvent[] = []
     const h = makeService({ events })

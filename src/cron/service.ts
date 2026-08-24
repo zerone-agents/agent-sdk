@@ -5,6 +5,7 @@ import {
   consoleDiagnosticSink,
   emitCronEvent,
   noopEventSink,
+  reportCronDiagnostic,
   type CronDiagnosticSink,
   type CronEventSink,
 } from './events.js'
@@ -121,7 +122,10 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
         void coordinator
           .submit(task, scheduledFireTime, 'scheduled')
           .catch((err) => {
-            onDiagnostic(
+            // Best-effort: a throwing diagnostics sink must not turn this
+            // detached handler into an unhandled rejection.
+            reportCronDiagnostic(
+              onDiagnostic,
               `scheduled submit failed for ${task.id}: ${
                 err instanceof Error ? err.message : String(err)
               }`,

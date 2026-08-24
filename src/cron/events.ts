@@ -24,6 +24,22 @@ export const consoleDiagnosticSink: CronDiagnosticSink = (message) => {
   console.warn(`[cron] ${message}`)
 }
 
+/**
+ * Best-effort diagnostic delivery: the diagnostics channel itself must never
+ * throw, never reject, and never alter task/execution state (issue #42).
+ */
+export function reportCronDiagnostic(
+  onDiagnostic: CronDiagnosticSink | undefined,
+  message: string,
+): void {
+  if (!onDiagnostic) return
+  try {
+    onDiagnostic(message)
+  } catch {
+    // A broken diagnostics sink must not propagate.
+  }
+}
+
 export async function emitCronEvent(
   sink: CronEventSink | undefined,
   event: CronEvent,
@@ -33,7 +49,8 @@ export async function emitCronEvent(
   try {
     await sink(event)
   } catch (err) {
-    onDiagnostic?.(
+    reportCronDiagnostic(
+      onDiagnostic,
       `cron event sink failed: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
