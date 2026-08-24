@@ -111,6 +111,12 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
   })
   const runtime = new CronRuntime({ scheduler, coordinator })
 
+  // Monotonic manual fire time: guarantees distinct (taskId, scheduledFireTime)
+  // dedup keys even when runNow is called twice within the same millisecond
+  // (or on a frozen test clock), so concurrent triggers record `skipped`
+  // instead of collapsing into a `duplicate` with an inconsistent snapshot.
+  let lastManualFireAt = 0
+
   const emitSchedule = () =>
     emitCronEvent(events, { type: 'scheduleUpdated', snapshots: scheduler.snapshot() })
 
@@ -181,9 +187,12 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     },
 
     async runNow(taskId: string): Promise<CronExecution> {
-      // Capture the manual fire time eagerly (at invocation), so a task
-      // invoked twice gets two distinct fire times rather than a duplicate.
-      const fireTime = clock.now()
+      // Capture the manual fire time eagerly (at invocation) and keep it
+      // strictly monotonic across manual triggers, so a task invoked twice
+      // (even in the same millisecond) gets two distinct fire times rather
+      // than a duplicate.
+      const fireTime = Math.max(clock.now(), lastManualFireAt + 1)
+      lastManualFireAt = fireTime
       const task = await taskStorage.get(taskId)
       if (!task) throw new Error(`Cron task not found: ${taskId}`)
       return coordinator.submit(task, fireTime, 'manual')

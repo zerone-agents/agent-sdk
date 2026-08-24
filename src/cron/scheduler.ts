@@ -72,6 +72,10 @@ export class CronScheduler {
       }
       entry.nextRunAt = this.nextSlotAfter(entry.task, slot)
     }
+    // refresh() already armed the timer before catch-up ran; re-arm so the
+    // earliest recomputed nextRunAt wins (mirrors resume(), avoiding a
+    // stale-wake window until the next tick self-heals).
+    this.armTimer()
   }
 
   /**

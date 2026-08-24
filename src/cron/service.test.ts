@@ -199,6 +199,39 @@ describe('createCronService', () => {
     expect(await first).toMatchObject({ status: 'succeeded' })
   })
 
+  it('concurrent runNow calls in the same millisecond yield execute + skipped, not a duplicate', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => { release = r })
+    const h = makeService({ executor: async () => { await gate; return {} } })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    // Launch both concurrently (fire keys are captured synchronously at
+    // invocation, i.e. within the same frozen-clock millisecond), then
+    // release the gate so the succeeded execution can settle.
+    const pending = [h.service.runNow(task.id), h.service.runNow(task.id)]
+    release()
+    const [a, b] = await Promise.all(pending)
+
+    const statuses = [a.status, b.status].sort()
+    expect(statuses).toEqual(['skipped', 'succeeded']) // NOT duplicate/pending
+    expect(a.id).not.toBe(b.id)
+    release() // gate already consumed by the succeeded one; safe no-op otherwise
+  })
+
+  it('sequential runNow calls on a frozen clock are distinct executions', async () => {
+    const h = makeService({})
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    const first = await h.service.runNow(task.id)
+    const second = await h.service.runNow(task.id)
+
+    expect(first.id).not.toBe(second.id)
+    expect(second.status).toBe('succeeded')
+    expect(second.scheduledFireTime).toBeGreaterThan(first.scheduledFireTime)
+  })
+
   it('get/listExecutions/getExecution delegate to the stores', async () => {
     const h = makeService({})
     await h.service.start()
