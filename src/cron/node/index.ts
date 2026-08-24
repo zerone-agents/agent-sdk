@@ -7,5 +7,5 @@ export type {
   ExecutionLogReplayResult,
 } from './execution-log.js'
 export { acquireRuntimeLock } from './lock.js'
-export { createDefaultCronService } from './default.js'
+export { createDefaultCronService, defaultCronDataDir } from './default.js'
 export type { CreateDefaultCronServiceOptions } from './default.js'

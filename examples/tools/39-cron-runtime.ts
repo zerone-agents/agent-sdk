@@ -54,6 +54,8 @@ async function main() {
   console.log('--- Example 39: Cron Runtime ---\n')
 
   // --- 1. Default cron runtime: filesystem persistence + directory lock ----
+  // dataDir omitted would default to ~/.agents (files under ~/.agents/cron/);
+  // here we use a throwaway dir to keep the demo side-effect-free.
   const dataDir = await mkdtemp(path.join(tmpdir(), 'cron-example-'))
   const cronDir = path.join(dataDir, 'cron')
   const service = createDefaultCronService({

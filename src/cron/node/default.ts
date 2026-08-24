@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import path from 'node:path'
 
 import type { Agent } from '../../agent.js'
@@ -11,9 +12,21 @@ import { FileCronStorage } from './file-storage.js'
 import { FileExecutionStore } from './file-execution-store.js'
 import { acquireRuntimeLock } from './lock.js'
 
+/**
+ * Default cron data root: `~/.agents` — the same user-level home the SDK
+ * already uses for sessions, snapshots, and skills (cron state lands under
+ * `~/.agents/cron/`). Resolved lazily so HOME changes are respected.
+ */
+export function defaultCronDataDir(): string {
+  return path.join(homedir(), '.agents')
+}
+
 export interface CreateDefaultCronServiceOptions {
-  /** Root data directory; cron state lives under `<dataDir>/cron/`. */
-  dataDir: string
+  /**
+   * Root data directory; cron state lives under `<dataDir>/cron/`.
+   * Defaults to `~/.agents` (i.e. `~/.agents/cron/`) when omitted.
+   */
+  dataDir?: string
   /** Resolves the CURRENT agent definition on every fire (issue #42). */
   resolveAgent: CronAgentResolver
   /** Test seam for DefaultAgentCronExecutor; defaults to the real createAgent. */
@@ -35,7 +48,7 @@ export interface CreateDefaultCronServiceOptions {
 export function createDefaultCronService(
   options: CreateDefaultCronServiceOptions,
 ): CronService {
-  const cronDir = path.join(options.dataDir, 'cron')
+  const cronDir = path.join(options.dataDir ?? defaultCronDataDir(), 'cron')
   const taskStorage = new FileCronStorage(cronDir)
   const executionStore = new FileExecutionStore(cronDir)
   const executor = createDefaultAgentCronExecutor(
