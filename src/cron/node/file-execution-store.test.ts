@@ -823,4 +823,57 @@ describe('FileExecutionStore', () => {
     const store = new FileExecutionStore(dir)
     await expect(store.list()).rejects.toThrow(/corrupted/i)
   })
+
+  it('replay refuses a newline-terminated record prefixed with a UTF-8 BOM', async () => {
+    // The SDK never writes BOMs, so a mid-file EF BB BF is corruption. The
+    // default TextDecoder strips one BOM PER decode() call — per-line
+    // decoding silently normalized these bytes away; the decoder must keep
+    // U+FEFF so JSON.parse rejects the line and replay refuses to start.
+    const logPath = path.join(dir, 'executions.jsonl')
+    const good = (seq: number, id: string) =>
+      `{"seq":${seq},"execution":{"id":"${id}","cronTaskId":"t1","scheduledFireTime":60000,"trigger":"scheduled","status":"pending"}}\n`
+    await writeFile(
+      logPath,
+      Buffer.concat([
+        Buffer.from(good(1, 'e1'), 'utf8'),
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from(good(2, 'e2'), 'utf8'),
+      ]),
+    )
+
+    const store = new FileExecutionStore(dir)
+    await expect(store.list()).rejects.toThrow(/corrupted/i)
+  })
+
+  it('a BOM-prefixed no-newline tail is truncated, not completed', async () => {
+    // Same corruption at the tail (no trailing newline): repairTail must not
+    // mistake the BOM-prefixed bytes for a complete valid record and append
+    // the delimiter — the tail is invalid and gets truncated.
+    const logPath = path.join(dir, 'executions.jsonl')
+    const good =
+      '{"seq":1,"execution":{"id":"e1","cronTaskId":"t1","scheduledFireTime":60000,"trigger":"scheduled","status":"pending"}}\n'
+    const tail =
+      '{"seq":2,"execution":{"id":"e2","cronTaskId":"t1","scheduledFireTime":120000,"trigger":"scheduled","status":"pending"}}'
+    await writeFile(
+      logPath,
+      Buffer.concat([
+        Buffer.from(good, 'utf8'),
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from(tail, 'utf8'),
+      ]),
+    )
+
+    const onDiagnostic = vi.fn()
+    const store = new FileExecutionStore(dir, { onDiagnostic })
+    const claimed = await store.claim({ taskId: 't2', scheduledFireTime: 180_000, trigger: 'scheduled' })
+    expect(claimed.kind).toBe('claimed')
+    expect(onDiagnostic.mock.calls.some((c) => /truncated/.test(String(c[0])))).toBe(true)
+
+    // The BOM-prefixed record must not be durable: a fresh replay sees only
+    // the clean first record.
+    const third = new FileExecutionStore(dir)
+    const list = await third.list()
+    expect(list.filter((e) => e.id === 'e1')).toHaveLength(1)
+    expect(list.filter((e) => e.id === 'e2')).toHaveLength(0)
+  })
 })

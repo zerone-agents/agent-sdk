@@ -19,8 +19,14 @@ export interface ExecutionLogReplayResult {
  * silently replaces invalid bytes with U+FFFD — a structurally complete
  * record containing invalid bytes would then pass validation and be
  * solidified as durable history. Invalid UTF-8 is corruption, not data.
+ *
+ * `ignoreBOM: true` keeps U+FEFF in the decoded output: the default strips
+ * one BOM PER decode() call, so per-line decoding would silently normalize
+ * EF BB BF bytes in front of ANY record — mid-log corruption the SDK never
+ * writes. Keeping the BOM makes JSON.parse reject such lines, routing them
+ * into the torn-tail / refuse-to-start handling instead.
  */
-const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true })
+const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 function isExecutionLogRecord(value: unknown): value is ExecutionLogRecord {
   if (typeof value !== 'object' || value === null) return false
