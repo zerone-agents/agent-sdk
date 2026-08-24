@@ -47,6 +47,15 @@ export class FileExecutionStore implements ExecutionStore {
   private loadPromise: Promise<void> | null = null
   private seq = 0
   private writeChain: Promise<unknown> = Promise.resolve()
+  /**
+   * Set when a source-of-truth append fails: the durability of that append
+   * is uncertain (nothing / torn / fully written) and the log tail may be
+   * torn. A poisoned store refuses every further operation on this instance
+   * — accepting more writes could append a newline-terminated record onto
+   * torn bytes, turning an ignorable replay tail into mid-log corruption.
+   * Recovery requires a fresh instance (or restart) to replay the log.
+   */
+  private poisoned: string | null = null
 
   private readonly onDiagnostic?: CronDiagnosticSink
 
@@ -57,6 +66,7 @@ export class FileExecutionStore implements ExecutionStore {
   }
 
   async recoverInterrupted(): Promise<number> {
+    this.assertHealthy()
     await this.ensureLoaded()
     // One transaction for the whole sweep: concurrent claims must not observe
     // the speculative transition of any record, and a mid-loop append failure
@@ -78,6 +88,7 @@ export class FileExecutionStore implements ExecutionStore {
   }
 
   async claim(input: ExecutionClaimInput): Promise<ExecutionClaimResult> {
+    this.assertHealthy()
     await this.ensureLoaded()
     // Full runtime validation for JS/host callers bypassing the compile-time
     // union. Trigger must be an exact known value: anything else must not fall
@@ -100,6 +111,24 @@ export class FileExecutionStore implements ExecutionStore {
     } else if ((input as { dedupKey?: unknown }).dedupKey !== undefined) {
       throw new TypeError('scheduled claim must not carry a dedupKey')
     }
+    // Canonical snapshot: the caller-owned input is untrusted mutable state.
+    // The transaction callback runs LATER (possibly behind queued work), and
+    // re-reading `input` there would let a JS/host caller mutate fields after
+    // validation (TOCTOU). Everything below the queue boundary uses only
+    // this SDK-owned copy.
+    const request: ExecutionClaimInput =
+      input.trigger === 'manual'
+        ? {
+            taskId: input.taskId,
+            scheduledFireTime: input.scheduledFireTime,
+            trigger: 'manual',
+            dedupKey: input.dedupKey,
+          }
+        : {
+            taskId: input.taskId,
+            scheduledFireTime: input.scheduledFireTime,
+            trigger: 'scheduled',
+          }
     // Identities are namespaced per kind: scheduled claims consult `byFire`
     // (the DEFAULT `${taskId}:${scheduledFireTime}` identity), manual claims
     // consult `byDedup` (the custom identity). A custom key whose text happens
@@ -111,27 +140,28 @@ export class FileExecutionStore implements ExecutionStore {
     // before the next queued operation runs.
     return this.serialize(async () => {
       const existingId =
-        input.trigger === 'manual'
-          ? this.byDedup.get(input.dedupKey)
-          : this.byFire.get(this.fireKey(input.taskId, input.scheduledFireTime))
+        request.trigger === 'manual'
+          ? this.byDedup.get(request.dedupKey)
+          : this.byFire.get(this.fireKey(request.taskId, request.scheduledFireTime))
       if (existingId) {
         const existing = this.executions.get(existingId)
         if (existing) return { kind: 'duplicate', execution: { ...existing } }
       }
-      const activeId = this.activeByTask.get(input.taskId)
+      const activeId = this.activeByTask.get(request.taskId)
       const created: CronExecution = {
         id: randomUUID(),
-        cronTaskId: input.taskId,
-        scheduledFireTime: input.scheduledFireTime,
-        trigger: input.trigger,
+        cronTaskId: request.taskId,
+        scheduledFireTime: request.scheduledFireTime,
+        trigger: request.trigger,
         status: activeId ? 'skipped' : 'pending',
       }
-      await this.commit(created, input)
+      await this.commit(created, request)
       return { kind: activeId ? 'skipped' : 'claimed', execution: { ...created } }
     })
   }
 
   async get(executionId: string): Promise<CronExecution | null> {
+    this.assertHealthy()
     await this.ensureLoaded()
     // Reads also run inside the transaction chain: a read must never observe
     // speculative (not-yet-durable) state staged by an in-flight write.
@@ -142,6 +172,7 @@ export class FileExecutionStore implements ExecutionStore {
   }
 
   async list(query?: CronExecutionQuery): Promise<CronExecution[]> {
+    this.assertHealthy()
     await this.ensureLoaded()
     return this.serialize(async () => {
       let out = [...this.executions.values()].sort(
@@ -161,6 +192,7 @@ export class FileExecutionStore implements ExecutionStore {
     status: CronExecutionStatus,
     patch?: ExecutionStatusPatch,
   ): Promise<CronExecution | null> {
+    this.assertHealthy()
     await this.ensureLoaded()
     return this.serialize(async () => {
       const existing = this.executions.get(executionId)
@@ -173,6 +205,21 @@ export class FileExecutionStore implements ExecutionStore {
 
   private fireKey(taskId: string, fireTime: number): string {
     return `${taskId}:${fireTime}`
+  }
+
+  /**
+   * Throws when the store is poisoned: after a failed source-of-truth append
+   * the durability of that record is uncertain and the log tail may be torn,
+   * so no further operation may run on THIS instance. Recovery = recreate the
+   * store (or restart) so replay decides what actually got persisted.
+   */
+  private assertHealthy(): void {
+    if (this.poisoned !== null) {
+      throw new Error(
+        `FileExecutionStore is unavailable after a failed log append (${this.poisoned}). ` +
+          'Recreate the store (or restart) so the log can be replayed and recovered.',
+      )
+    }
   }
 
   private ensureLoaded(): Promise<void> {
@@ -281,6 +328,11 @@ export class FileExecutionStore implements ExecutionStore {
       }
       if (prevActive === undefined) this.activeByTask.delete(execution.cronTaskId)
       else this.activeByTask.set(execution.cronTaskId, prevActive)
+      // Poison the store: the failed append's durability is uncertain (the
+      // bytes may be absent, torn, or fully written) and only a replay by a
+      // fresh instance can settle it. This instance must accept no further
+      // operations — see assertHealthy().
+      this.poisoned = err instanceof Error ? err.message : String(err)
       throw err
     }
   }
@@ -310,7 +362,13 @@ export class FileExecutionStore implements ExecutionStore {
   }
 
   private serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.writeChain.then(fn, fn)
+    const run = this.writeChain.then(async () => {
+      // Queued transactions are refused once poisoned: a previous append
+      // failed with uncertain durability — this instance must not decide or
+      // write anything until the log is replayed by a fresh instance.
+      this.assertHealthy()
+      return fn()
+    })
     this.writeChain = run.then(
       () => undefined,
       () => undefined,

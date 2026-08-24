@@ -7,16 +7,36 @@ import type { CronExecution } from '../types.js'
 import { FileExecutionStore } from './file-execution-store.js'
 
 /**
- * Per-record append failure injection for the phantom-index race test: the
- * mock delegates to the real ExecutionLog except when `failForTask` matches
- * the record's task id, in which case append rejects. Transparent by default,
- * so no other test in this file is affected.
+ * Failure/timing injection for the concurrency + recovery tests: the mock
+ * delegates to the real ExecutionLog except for the configured controls —
+ * `gate` delays every append (blocks the transaction chain deterministically),
+ * `tornTask` writes partial bytes and then rejects (torn tail), `failForTask`
+ * rejects without writing. All disabled by default so other tests are
+ * unaffected.
  */
-const appendControl = vi.hoisted(() => ({ failForTask: null as string | null }))
+const appendControl = vi.hoisted(() => ({
+  failForTask: null as string | null,
+  tornTask: null as string | null,
+  gate: null as Promise<void> | null,
+}))
 vi.mock('./execution-log.js', async (importOriginal) => {
   const mod = await importOriginal<typeof import('./execution-log.js')>()
   class ControlledExecutionLog extends mod.ExecutionLog {
+    private readonly ownPath: string
+    constructor(filePath: string) {
+      super(filePath)
+      this.ownPath = filePath
+    }
+
     async append(seq: number, execution: CronExecution): Promise<void> {
+      if (appendControl.gate) await appendControl.gate
+      if (appendControl.tornTask === execution.cronTaskId) {
+        // Simulate a crash mid-append: partial JSON bytes, no trailing
+        // newline, then a rejected promise.
+        const { appendFile } = await import('node:fs/promises')
+        await appendFile(this.ownPath, `{"seq":${seq},"execution":{"id":"torn-${execution.id}"`)
+        throw new Error('injected torn append failure')
+      }
       if (appendControl.failForTask === execution.cronTaskId) {
         throw new Error('injected append failure')
       }
@@ -430,23 +450,29 @@ describe('FileExecutionStore', () => {
     const first = await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
     expect(first.kind).toBe('claimed')
 
-    // Break the source-of-truth log: replacing the file with a directory makes
-    // appendFile fail (EISDIR) for the next commit.
+    // Break the source-of-truth log: a read-only file makes append fail
+    // (EACCES) while preserving the durable records for the replay below.
     const logPath = path.join(dir, 'executions.jsonl')
-    await rm(logPath)
-    await mkdir(logPath)
+    await chmod(logPath, 0o444)
 
     await expect(
       store.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' }),
     ).rejects.toThrow()
 
-    // The failed claim must leave NO phantom state: once the log is writable
-    // again, the identical claim must succeed — not report `duplicate` — and
-    // the failed task must not linger as an active/skip blocker.
-    await rm(logPath, { recursive: true })
-    const retried = await store.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    // The failed append poisons THIS instance (append durability uncertain);
+    // further operations are refused on it.
+    await expect(
+      store.claim({ taskId: 't3', scheduledFireTime: 60_000, trigger: 'scheduled' }),
+    ).rejects.toThrow(/append/i)
+
+    // Once writable again, a fresh instance replays the log: the identical
+    // claim must succeed — not report a phantom `duplicate` — and no t2
+    // record may exist.
+    await chmod(logPath, 0o644)
+    const fresh = new FileExecutionStore(dir)
+    const retried = await fresh.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' })
     expect(retried.kind).toBe('claimed')
-    expect((await store.list()).filter((e) => e.cronTaskId === 't2')).toHaveLength(1)
+    expect((await fresh.list()).filter((e) => e.cronTaskId === 't2')).toHaveLength(1)
   })
 
   it('a failed execution-index.json write does not fail a durable claim and is reported via diagnostics', async () => {
@@ -476,8 +502,7 @@ describe('FileExecutionStore', () => {
 
     // Break the log AFTER priming so both concurrent claims fail at append.
     const logPath = path.join(dir, 'executions.jsonl')
-    await rm(logPath)
-    await mkdir(logPath)
+    await chmod(logPath, 0o444)
 
     // Same DEFAULT identity, issued concurrently: if B could observe A's
     // speculative registration it would return a phantom `duplicate` pointing
@@ -487,11 +512,13 @@ describe('FileExecutionStore', () => {
     await expect(pA).rejects.toThrow()
     await expect(pB).rejects.toThrow()
 
-    // After rollback, the identity is free again and exactly one record exists.
-    await rm(logPath, { recursive: true })
-    const retried = await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    // A fresh instance replays the durable log (no phantom t1 records): the
+    // identity is free again and exactly one record exists after claiming.
+    await chmod(logPath, 0o644)
+    const fresh = new FileExecutionStore(dir)
+    const retried = await fresh.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
     expect(retried.kind).toBe('claimed')
-    expect((await store.list()).filter((e) => e.cronTaskId === 't1')).toHaveLength(1)
+    expect((await fresh.list()).filter((e) => e.cronTaskId === 't1')).toHaveLength(1)
   })
 
   it('a failed terminal updateStatus does not free the active slot for a concurrent claim', async () => {
@@ -500,8 +527,7 @@ describe('FileExecutionStore', () => {
     expect(a.kind).toBe('claimed')
 
     const logPath = path.join(dir, 'executions.jsonl')
-    await rm(logPath)
-    await mkdir(logPath)
+    await chmod(logPath, 0o444)
 
     // The terminal update fails to persist; the concurrent claim must not be
     // decided against the speculative deletion of the active slot.
@@ -510,11 +536,13 @@ describe('FileExecutionStore', () => {
     await expect(pUpdate).rejects.toThrow()
     await expect(pClaim).rejects.toThrow()
 
-    await rm(logPath, { recursive: true })
-    // The original execution is still pending (not phantom-succeeded) and the
-    // active slot is still held, so the follow-up claim is skipped.
-    expect(await store.get(a.execution.id)).toMatchObject({ status: 'pending' })
-    const after = await store.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
+    // A fresh instance replays the durable log: the terminal transition never
+    // persisted, so the record is still pending (not phantom-succeeded) and
+    // the active slot is still held — the follow-up claim is skipped.
+    await chmod(logPath, 0o644)
+    const fresh = new FileExecutionStore(dir)
+    expect(await fresh.get(a.execution.id)).toMatchObject({ status: 'pending' })
+    const after = await fresh.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
     expect(after.kind).toBe('skipped')
   })
 
@@ -525,19 +553,20 @@ describe('FileExecutionStore', () => {
     const store = new FileExecutionStore(dir)
     await store.list() // force the replay before breaking the log
     const logPath = path.join(dir, 'executions.jsonl')
-    await rm(logPath)
-    await mkdir(logPath)
+    await chmod(logPath, 0o444)
 
     const pRecover = store.recoverInterrupted()
     const pClaim = store.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
     await expect(pRecover).rejects.toThrow()
     await expect(pClaim).rejects.toThrow()
 
-    await rm(logPath, { recursive: true })
-    // Recovery never persisted: the record must still be pending (not
-    // phantom-interrupted) and still holds the active slot.
-    expect(await store.get(seeded.execution.id)).toMatchObject({ status: 'pending' })
-    const after = await store.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
+    // A fresh instance replays the durable log: recovery never persisted —
+    // the record is still pending (not phantom-interrupted) and still holds
+    // the active slot.
+    await chmod(logPath, 0o644)
+    const fresh = new FileExecutionStore(dir)
+    expect(await fresh.get(seeded.execution.id)).toMatchObject({ status: 'pending' })
+    const after = await fresh.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
     expect(after.kind).toBe('skipped')
   })
 
@@ -560,5 +589,80 @@ describe('FileExecutionStore', () => {
       executions: Array<{ cronTaskId: string }>
     }
     expect(index.executions.map((e) => e.cronTaskId)).toEqual(['t1'])
+  })
+
+  it('mutating the caller-owned input while the transaction is queued does not affect the claim', async () => {
+    const store = new FileExecutionStore(dir)
+    await store.claim({ taskId: 't0', scheduledFireTime: 1, trigger: 'scheduled' })
+
+    let release!: () => void
+    appendControl.gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    try {
+      // First claim's append is gated, so the second claim's transaction
+      // stays queued behind it.
+      const first = store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+      const mutInput = {
+        taskId: 't2',
+        scheduledFireTime: 99_000,
+        trigger: 'manual' as const,
+        dedupKey: 'manual:orig',
+      }
+      const second = store.claim(mutInput)
+
+      // Let both claims' synchronous validation run, THEN mutate the
+      // caller-owned object while the second transaction is still queued.
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      mutInput.taskId = 't3'
+      mutInput.scheduledFireTime = 1
+      mutInput.dedupKey = ''
+      mutInput.trigger = 'bogus' as never
+
+      release()
+      expect((await first).kind).toBe('claimed')
+      const s = await second
+      // The claim must use the validated snapshot, not the mutated object.
+      expect(s.kind).toBe('claimed')
+      expect(s.execution).toMatchObject({
+        cronTaskId: 't2',
+        scheduledFireTime: 99_000,
+        trigger: 'manual',
+      })
+    } finally {
+      appendControl.gate = null
+    }
+  })
+
+  it('poisons the store after a torn append so the log stays replay-recoverable', async () => {
+    const store = new FileExecutionStore(dir)
+    await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+
+    appendControl.tornTask = 't2'
+    try {
+      await expect(
+        store.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' }),
+      ).rejects.toThrow('injected torn append failure')
+
+      // Accepting further writes could append a newline-terminated record
+      // onto the torn bytes, turning the ignorable tail into mid-log
+      // corruption at replay. The poisoned store must refuse everything.
+      await expect(
+        store.claim({ taskId: 't3', scheduledFireTime: 60_000, trigger: 'scheduled' }),
+      ).rejects.toThrow(/append/i)
+      await expect(store.list()).rejects.toThrow(/append/i)
+    } finally {
+      appendControl.tornTask = null
+    }
+
+    // A fresh instance replays: the torn tail is ignored with a diagnostic
+    // and the store is fully functional — the log never became unbootable.
+    const onDiagnostic = vi.fn()
+    const fresh = new FileExecutionStore(dir, { onDiagnostic })
+    const after = await fresh.claim({ taskId: 't3', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(after.kind).toBe('claimed')
+    expect(
+      onDiagnostic.mock.calls.some((c) => /incomplete trailing record/.test(String(c[0]))),
+    ).toBe(true)
   })
 })
