@@ -48,6 +48,14 @@ interface PendingSubmission {
   abort: AbortController
 }
 
+/** Handles wired at submission time and passed through claimAndRun → run. */
+interface SubmissionHandles {
+  abort: AbortController
+  abortPromise: Promise<never>
+  timeoutHandle: unknown
+  submission: PendingSubmission
+}
+
 /**
  * Owns the execution state machine: atomic claim, dedup, per-task
  * serialization (via the store), timeout, cancel, startup recovery, and
@@ -139,12 +147,7 @@ export class CronExecutionCoordinator {
     task: CronTask,
     scheduledFireTime: number,
     trigger: CronExecutionTrigger,
-    handles: {
-      abort: AbortController
-      abortPromise: Promise<never>
-      timeoutHandle: unknown
-      submission: PendingSubmission
-    },
+    handles: SubmissionHandles,
   ): Promise<CronExecution> {
     const claim = await this.deps.executionStore.claim({
       taskId: task.id,
@@ -162,12 +165,7 @@ export class CronExecutionCoordinator {
   private run(
     task: CronTask,
     execution: CronExecution,
-    handles: {
-      abort: AbortController
-      abortPromise: Promise<never>
-      timeoutHandle: unknown
-      submission: PendingSubmission
-    },
+    handles: SubmissionHandles,
   ): Promise<CronExecution> {
     const { abort, abortPromise, timeoutHandle, submission } = handles
     this.pending.delete(submission)
