@@ -168,6 +168,27 @@ describe('createCronService', () => {
     await expect(h.service.update('missing', { name: 'x' })).resolves.toBeNull()
   })
 
+  it('a failed start leaves the service not accepting runNow and the lock released', async () => {
+    const lock = { acquire: vi.fn(async () => {}), release: vi.fn(async () => {}) }
+    const h = makeService({ lock })
+    // Make scheduler startup fail: storage.load rejects until flipped back.
+    let failLoad = false
+    const originalLoad = h.taskStorage.load.bind(h.taskStorage)
+    h.taskStorage.load = async () => {
+      if (failLoad) throw new Error('tasks.json unreadable')
+      return originalLoad()
+    }
+    failLoad = true
+    await expect(h.service.start()).rejects.toThrow('tasks.json unreadable')
+    expect(lock.release).toHaveBeenCalled()
+
+    // With storage healthy again, mutations work, but runNow must be
+    // rejected: the coordinator was rolled back and is not accepting work.
+    failLoad = false
+    const task = await h.service.create(everyMinute)
+    await expect(h.service.runNow(task.id)).rejects.toThrow(/not accepting submissions/)
+  })
+
   it('runNow() executes manually through the same coordinator', async () => {
     const h = makeService({})
     await h.service.start()

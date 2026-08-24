@@ -23,7 +23,14 @@ export class CronRuntime {
     if (this.state !== 'stopped') return
     // Coordinator first: recover leftover executions before scheduling fires.
     await this.deps.coordinator.start()
-    await this.deps.scheduler.start()
+    try {
+      await this.deps.scheduler.start()
+    } catch (err) {
+      // Roll back so no component accepts work after a failed start.
+      this.deps.scheduler.stop()
+      await this.deps.coordinator.stop()
+      throw err
+    }
     this.state = 'running'
   }
 

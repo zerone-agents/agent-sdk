@@ -38,6 +38,18 @@ describe('CronRuntime', () => {
     expect(runtime.getState()).toBe('running')
   })
 
+  it('rolls back the coordinator when scheduler start fails', async () => {
+    const { scheduler, coordinator, runtime } = makeParts()
+    scheduler.start.mockRejectedValue(new Error('storage down'))
+    coordinator.stop.mockResolvedValue(undefined)
+
+    await expect(runtime.start()).rejects.toThrow('storage down')
+
+    expect(scheduler.stop).toHaveBeenCalled()
+    expect(coordinator.stop).toHaveBeenCalled()
+    expect(runtime.getState()).toBe('stopped')
+  })
+
   it('stop() stops the scheduler before draining the coordinator', async () => {
     const { scheduler, coordinator, runtime } = makeParts()
     const order: string[] = []
