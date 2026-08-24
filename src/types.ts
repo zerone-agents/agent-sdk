@@ -699,6 +699,13 @@ export interface AgentOptions {
   maxRequestBodyBytes?: number
   /** Per-agent tool services for state isolation. Defaults to a fresh DefaultToolServices. */
   toolServices?: ToolServices
+  /**
+   * Cron service for the CronCreate/CronDelete/CronList tools (ADR 0005 per-Agent state).
+   * When provided, it is injected into `toolServices.cron` — overriding any value already
+   * present on a caller-provided `toolServices`. Null/undefined = cron tools report
+   * "Cron service is not initialized."
+   */
+  cronService?: import('./cron/service.js').CronService
 
   // ===========================================================================
   // === SessionConfig === (9 fields)

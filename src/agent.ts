@@ -145,6 +145,7 @@ interface MiscConfig {
     timeout?: number
   }>>
   maxSessionTurns?: number
+  cronService?: import('./cron/service.js').CronService
 }
 
 // --------------------------------------------------------------------------
@@ -370,6 +371,7 @@ export class Agent {
       extraArgs: opts.extraArgs,
       hooks: opts.hooks,
       maxSessionTurns: opts.maxSessionTurns,
+      cronService: opts.cronService,
     }
   }
 
@@ -384,6 +386,12 @@ export class Agent {
     const skillConfig = this.extractSkillConfig(opts)
     const miscConfig = this.extractMiscConfig(opts)
 
+    // Per-agent tool services (ADR 0005). Precedence: an explicit `cronService` option
+    // wins and is injected into whichever ToolServices instance is used (default or
+    // caller-provided).
+    const toolServices = opts.toolServices ?? new DefaultToolServices()
+    if (miscConfig.cronService) toolServices.cron = miscConfig.cronService
+
     // Construct AgentEnvironment from the most relevant groups
     return {
       provider,
@@ -394,7 +402,7 @@ export class Agent {
       mcpTools: this.toolPool,
       settingSources: skillConfig.settingSources,
       skillRegistry: this.skillRegistry,
-      toolServices: opts.toolServices ?? new DefaultToolServices(),
+      toolServices,
       subprocessEnv: resolveSubprocessEnv({
         toolEnv: envConfig.toolEnv,
         toolEnvInherit: envConfig.toolEnvInherit,

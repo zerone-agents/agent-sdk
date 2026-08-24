@@ -4,8 +4,8 @@
  * End-to-end demonstration of the SDK cron runtime (issue #42):
  *   1. createDefaultCronService({ dataDir, resolveAgent }) — filesystem
  *      adapters + single-writer runtime.lock under <dataDir>/cron/
- *   2. initCronTools(service) — CronCreate/CronDelete/CronList bound to the
- *      SAME CronService the host uses (single entry point)
+ *   2. AgentOptions.cronService — CronCreate/CronDelete/CronList read the
+ *      SAME CronService the host uses from per-agent toolServices (ADR 0005)
  *   3. Ask the LLM to schedule a recurring task — the model resolves the
  *      deferred tool first: FindTool(select:CronCreate) -> CronCreate
  *   4. service.runNow(taskId) — manual trigger through the coordinator and
@@ -25,16 +25,19 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { createAgent, initCronTools } from '../../src/index.js'
+import { createAgent } from '../../src/index.js'
 import { createDefaultCronService } from '../../src/cron/node/index.js'
 import type { AgentOptions } from '../../src/types.js'
+import type { CronService } from '../../src/cron/service.js'
 
 const MODEL = process.env.ZERONE_AGENT_MODEL || 'claude-sonnet-4-6'
 
 /** Agent definition used both for the interactive query and for cron fires. */
-function agentOptions(): AgentOptions {
+function agentOptions(cron?: CronService): AgentOptions {
   return {
     model: MODEL,
+    // ADR 0005: cron tools resolve the service from per-agent toolServices.
+    ...(cron ? { cronService: cron } : {}),
     agent: {
       description: 'Cron runtime demo agent',
       prompt: { type: 'preset', preset: 'default' },
@@ -66,12 +69,11 @@ async function main() {
   await service.start()
   console.log(`[1] cron runtime started: ${cronDir}`)
 
-  // --- 2. Bind the SDK tools to the same service the host uses -------------
-  initCronTools(service)
-  console.log('[2] initCronTools(service) — Cron tools share the host CronService\n')
+  // --- 2. Wire the SDK tools to the same service the host uses -------------
+  console.log('[2] AgentOptions.cronService — cron tools share the host CronService\n')
 
   // --- 3. Let the LLM schedule a task (deferred: FindTool -> CronCreate) ----
-  const agent = createAgent(agentOptions())
+  const agent = createAgent(agentOptions(service))
   const userPrompt =
     'Schedule a recurring task using the CronCreate tool: every minute, ' +
     'prompt: "Run `git log --oneline -1` in the current directory and report the result in one sentence." ' +

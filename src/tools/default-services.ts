@@ -17,6 +17,7 @@ import type {
 } from './services.js'
 import type { WebSearchConfig } from './web-search.js'
 import type { WebFetchConfig } from './web-fetch-providers.js'
+import type { CronService } from '../cron/service.js'
 
 /**
  * Default implementation of ToolServices.
@@ -32,6 +33,8 @@ export class DefaultToolServices implements ToolServices {
   webSearch?: WebSearchConfig
   /** Optional WebFetch provider configuration; absent = anonymous Jina → Local default. */
   webFetch?: WebFetchConfig
+  /** Cron service shared by the cron tools; null = not initialized. */
+  cron: CronService | null = null
 
   constructor() {
     // No user handler by default (non-interactive mode)

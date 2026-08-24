@@ -16,6 +16,7 @@
 import type { ToolDefinition } from '../types.js'
 import type { WebSearchConfig } from './web-search.js'
 import type { WebFetchConfig } from './web-fetch-providers.js'
+import type { CronService } from '../cron/service.js'
 
 // ============================================================================
 // Service Types
@@ -75,6 +76,8 @@ export interface ToolServices {
   webSearch?: WebSearchConfig
   /** Optional WebFetch provider configuration; absent = anonymous Jina → local default. */
   webFetch?: WebFetchConfig
+  /** Cron service shared by the CronCreate/CronDelete/CronList tools; null = not initialized. */
+  cron: CronService | null
 }
 
 // ============================================================================
@@ -94,5 +97,6 @@ export function createEmptyServices(): ToolServices {
       activatedTools: new Set<string>(),
     },
     config: new Map<string, unknown>(),
+    cron: null,
   }
 }

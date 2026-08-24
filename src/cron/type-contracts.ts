@@ -1,20 +1,19 @@
 /**
- * CI-level type contracts for the issue #42 breaking change.
+ * CI-level type contracts for the ADR 0005 cron tool scoping (issue #42 reopen).
  * Not shipped: excluded from tsconfig.build.json (see src/mcp/type-contracts.ts
  * for the precedent). `npm run typecheck` enforces these.
  */
+import type { AgentOptions } from '../types.js'
 import type { CronService } from './service.js'
-import type { CronStorage } from './storage.js'
+
+// Positive contract: AgentOptions accepts a per-Agent cronService, which the
+// Agent injects into toolServices.cron (ADR 0005 — no module-level globals).
+const opts: AgentOptions = { cronService: {} as CronService }
+void opts
+
+// initCronTools must NOT return: it was removed with the module-global state.
+// If a compat export is ever (re)introduced, the import below fails typecheck —
+// the module-global path must stay dead.
+// @ts-expect-error initCronTools no longer exists on the public surface
 import { initCronTools } from '../tools/cron.js'
-
-// Positive contract: initCronTools accepts a CronService.
-const acceptsService: (service: CronService) => void = initCronTools
-void acceptsService
-
-// Negative contract: the legacy initCronTools(storage: CronStorage) call must
-// NOT compile. If a compat overload is ever (re)introduced, the
-// `@ts-expect-error` below becomes "unused" and typecheck fails — the legacy
-// path must stay dead (issue #42: no overloads, no deprecated layer, no dual
-// paths).
-// @ts-expect-error CronStorage does not satisfy CronService
-initCronTools({} as CronStorage)
+void initCronTools
