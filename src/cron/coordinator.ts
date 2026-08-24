@@ -1,7 +1,7 @@
 import type { CronClock, CronTimer } from './clock.js'
 import { waitViaTimer } from './clock.js'
 import { emitCronEvent, type CronEventSink } from './events.js'
-import type { ExecutionStore } from './execution-store.js'
+import type { ExecutionClaimInput, ExecutionStore } from './execution-store.js'
 import type { CronExecutor } from './executor.js'
 import type { CronStorage } from './storage.js'
 import type { CronExecution, CronExecutionTrigger, CronTask } from './types.js'
@@ -153,12 +153,25 @@ export class CronExecutionCoordinator {
   ): Promise<CronExecution> {
     let claim: Awaited<ReturnType<ExecutionStore['claim']>>
     try {
-      claim = await this.deps.executionStore.claim({
-        taskId: task.id,
-        scheduledFireTime,
-        trigger,
-        ...(dedupKey !== undefined ? { dedupKey } : {}),
-      })
+      // The claim input is a discriminated union: scheduled claims use the
+      // DEFAULT time-derived identity; manual claims MUST carry a custom
+      // dedupKey. Guard the untyped boundary (JS/host callers) so an
+      // inconsistent (trigger, dedupKey) pair is refused instead of silently
+      // remapped to the wrong identity. Nested branches — not a ternary — so
+      // control-flow analysis narrows `dedupKey` to string after the throw.
+      let claimInput: ExecutionClaimInput
+      if (trigger === 'manual') {
+        if (dedupKey === undefined) {
+          throw new TypeError('manual submissions require a custom dedupKey')
+        }
+        claimInput = { taskId: task.id, scheduledFireTime, trigger, dedupKey }
+      } else {
+        if (dedupKey !== undefined) {
+          throw new TypeError('scheduled submissions must not carry a dedupKey')
+        }
+        claimInput = { taskId: task.id, scheduledFireTime, trigger }
+      }
+      claim = await this.deps.executionStore.claim(claimInput)
     } catch (err) {
       // A rejected claim must not leak the submission: perform the same
       // cleanup as the non-claimed path below, otherwise stop()/suspend()

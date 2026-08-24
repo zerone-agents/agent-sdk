@@ -170,7 +170,7 @@ describe('CronExecutionCoordinator', () => {
     await h.coordinator.start()
     const first = h.coordinator.submit(task, 60_000, 'scheduled')
 
-    const manual = await h.coordinator.submit(task, 61_000, 'manual')
+    const manual = await h.coordinator.submit(task, 61_000, 'manual', 'manual:skip-1')
 
     expect(manual.status).toBe('skipped')
     expect(first).toBeDefined()
@@ -261,7 +261,7 @@ describe('CronExecutionCoordinator', () => {
     const h = makeHarness({ executor: okExecutor })
     await h.coordinator.start()
 
-    const manual = await h.coordinator.submit(task, 123, 'manual')
+    const manual = await h.coordinator.submit(task, 123, 'manual', 'manual:shared-1')
 
     expect(manual.trigger).toBe('manual')
     expect(manual.status).toBe('succeeded')
@@ -303,5 +303,28 @@ describe('CronExecutionCoordinator', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled)
     }
+  })
+
+  it('rejects a manual submission without a dedupKey at the coordinator boundary', async () => {
+    const h = makeHarness({ executor: okExecutor })
+    await h.coordinator.start()
+
+    // The claim-input union makes this unrepresentable for typed callers; the
+    // coordinator still refuses at runtime for JS/host callers, and the
+    // rejected submission is cleaned up like any rejected claim.
+    await expect(h.coordinator.submit(task, 60_000, 'manual')).rejects.toThrow(/dedupKey/)
+
+    await h.coordinator.stop()
+  })
+
+  it('rejects a scheduled submission carrying a dedupKey at the coordinator boundary', async () => {
+    const h = makeHarness({ executor: okExecutor })
+    await h.coordinator.start()
+
+    await expect(
+      h.coordinator.submit(task, 60_000, 'scheduled', 'manual:wrong'),
+    ).rejects.toThrow(/dedupKey/)
+
+    await h.coordinator.stop()
   })
 })

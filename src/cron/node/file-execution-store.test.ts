@@ -46,7 +46,12 @@ describe('FileExecutionStore', () => {
     const store = new FileExecutionStore(dir)
     const active = await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
 
-    const skipped = await store.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'manual' })
+    const skipped = await store.claim({
+      taskId: 't1',
+      scheduledFireTime: 120_000,
+      trigger: 'manual',
+      dedupKey: 'manual:skip-1',
+    })
     expect(skipped.kind).toBe('skipped')
 
     await store.updateStatus(active.execution.id, 'succeeded', {})
@@ -72,7 +77,7 @@ describe('FileExecutionStore', () => {
     for (const time of [60_000, 120_000, 180_000]) {
       await store.claim({ taskId: 't1', scheduledFireTime: time, trigger: 'scheduled' })
     }
-    await store.claim({ taskId: 't2', scheduledFireTime: 90_000, trigger: 'manual' })
+    await store.claim({ taskId: 't2', scheduledFireTime: 90_000, trigger: 'manual', dedupKey: 'manual:list-1' })
 
     const all = await store.list()
     expect(all.map((e) => e.scheduledFireTime)).toEqual([180_000, 120_000, 90_000, 60_000])
@@ -164,6 +169,61 @@ describe('FileExecutionStore', () => {
       dedupKey: 'manual:b',
     })
     expect(second.kind).toBe('skipped')
+  })
+
+  it('a pending manual execution from a previous process still blocks a new claim after restart', async () => {
+    const a = new FileExecutionStore(dir)
+    const manual = await a.claim({
+      taskId: 't1',
+      scheduledFireTime: 60_000,
+      trigger: 'manual',
+      dedupKey: 'manual:abc',
+    })
+    expect(manual.kind).toBe('claimed')
+    // simulate crash: no terminal status written, no recoverInterrupted()
+
+    // The at-most-one-active guarantee is trigger-agnostic: replay must rebuild
+    // activeByTask for manual records too, or a fresh store would accept a
+    // second active execution for the same task.
+    const b = new FileExecutionStore(dir)
+    const again = await b.claim({
+      taskId: 't1',
+      scheduledFireTime: 120_000,
+      trigger: 'manual',
+      dedupKey: 'manual:def',
+    })
+    expect(again.kind).toBe('skipped')
+  })
+
+  it('a running manual execution from a previous process still blocks a scheduled claim after restart', async () => {
+    const a = new FileExecutionStore(dir)
+    const manual = await a.claim({
+      taskId: 't1',
+      scheduledFireTime: 60_000,
+      trigger: 'manual',
+      dedupKey: 'manual:abc',
+    })
+    await a.updateStatus(manual.execution.id, 'running', { startedAt: 60_000 })
+    // simulate crash mid-run
+
+    const b = new FileExecutionStore(dir)
+    const blocked = await b.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
+    expect(blocked.kind).toBe('skipped')
+
+    // recoverInterrupted() clears the rebuilt active entry; claims resume.
+    await b.recoverInterrupted()
+    const after = await b.claim({ taskId: 't1', scheduledFireTime: 180_000, trigger: 'scheduled' })
+    expect(after.kind).toBe('claimed')
+  })
+
+  it('rejects a manual claim without a dedupKey instead of silently keying it by time', async () => {
+    const store = new FileExecutionStore(dir)
+    // JS/host callers bypassing the compile-time union must be refused: a
+    // manual claim keyed by time would occupy the DEFAULT identity in-process
+    // while replay derives none for manual records — cross-restart dedup would
+    // silently diverge. The guard makes the divergence loud instead.
+    const legacyInput = { taskId: 't1', scheduledFireTime: 60_000, trigger: 'manual' as const }
+    await expect(store.claim(legacyInput as never)).rejects.toThrow(/dedupKey/)
   })
 
   it('re-claiming the same manual dedupKey is a duplicate while in-process dedup applies', async () => {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 
 import type {
+  ExecutionClaimInput,
   ExecutionClaimResult,
   ExecutionStatusPatch,
   ExecutionStore,
@@ -11,7 +12,6 @@ import type {
   CronExecution,
   CronExecutionQuery,
   CronExecutionStatus,
-  CronExecutionTrigger,
 } from '../types.js'
 import { ExecutionLog } from './execution-log.js'
 import { atomicWriteJson } from './json-utils.js'
@@ -64,13 +64,15 @@ export class FileExecutionStore implements ExecutionStore {
     return count
   }
 
-  async claim(input: {
-    taskId: string
-    scheduledFireTime: number
-    trigger: CronExecutionTrigger
-    dedupKey?: string
-  }): Promise<ExecutionClaimResult> {
+  async claim(input: ExecutionClaimInput): Promise<ExecutionClaimResult> {
     await this.ensureLoaded()
+    // Runtime guard for JS/host callers bypassing the compile-time union: a
+    // manual claim keyed by time would occupy the DEFAULT identity in-process
+    // while replay derives none for manual records — cross-restart dedup would
+    // silently diverge. Refuse loudly instead.
+    if (input.trigger === 'manual' && (input as { dedupKey?: string }).dedupKey === undefined) {
+      throw new TypeError('manual claim requires an explicit dedupKey (custom identity)')
+    }
     // Memory maps are read AND written synchronously below (commit mutates
     // memory before its first await), so concurrent claims cannot race.
     // An explicit dedupKey (manual triggers) decouples identity from time;
@@ -157,11 +159,17 @@ export class FileExecutionStore implements ExecutionStore {
     this.byFire = new Map()
     this.activeByTask = new Map()
     for (const ex of this.executions.values()) {
-      // Manual records claim a unique custom dedupKey at claim time; that
-      // identity is process-local by contract, so replay derives no DEFAULT
-      // entry for them — a manual run must never occupy a scheduled slot.
-      if (ex.trigger === 'manual') continue
-      this.byFire.set(this.fireKey(ex.cronTaskId, ex.scheduledFireTime), ex.id)
+      // The DEFAULT identity is derived ONLY for scheduled records: manual
+      // records claimed a custom dedupKey that is process-local by contract,
+      // so replay derives no DEFAULT entry for them — a manual run must never
+      // occupy a scheduled slot.
+      if (ex.trigger === 'scheduled') {
+        this.byFire.set(this.fireKey(ex.cronTaskId, ex.scheduledFireTime), ex.id)
+      }
+      // The active set is trigger-agnostic: the at-most-one-active guarantee
+      // must survive restarts for manual executions too, otherwise a manual
+      // run that crashed mid-flight would silently stop blocking new claims
+      // until recoverInterrupted() runs.
       if (isActive(ex)) this.activeByTask.set(ex.cronTaskId, ex.id)
     }
   }
