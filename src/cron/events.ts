@@ -34,9 +34,14 @@ export function reportCronDiagnostic(
 ): void {
   if (!onDiagnostic) return
   try {
-    onDiagnostic(message)
+    const result = onDiagnostic(message) as unknown
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      ;(result as Promise<void>).then(undefined, () => {
+        // A broken (async) diagnostics sink must not propagate.
+      })
+    }
   } catch {
-    // A broken diagnostics sink must not propagate.
+    // A broken (sync) diagnostics sink must not propagate.
   }
 }
 

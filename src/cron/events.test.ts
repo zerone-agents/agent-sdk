@@ -87,6 +87,22 @@ describe('emitCronEvent', () => {
     expect(() => reportCronDiagnostic(undefined, 'm')).not.toThrow()
   })
 
+  it('reportCronDiagnostic swallows rejected promises from async sinks', async () => {
+    const rejections: unknown[] = []
+    const onUnhandled = (err: unknown) => rejections.push(err)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      expect(() =>
+        reportCronDiagnostic(async () => { throw new Error('async diagnostics down') }, 'm'),
+      ).not.toThrow()
+      // Flush microtasks (and any unhandled-rejection detection) before asserting.
+      await new Promise((resolve) => setImmediate(resolve))
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+    expect(rejections).toEqual([])
+  })
+
   it('noopEventSink accepts any event', () => {
     expect(() => noopEventSink({ type: 'taskDeleted', taskId: 't1' })).not.toThrow()
   })
