@@ -51,7 +51,7 @@ import type { NormalizedMessageParam } from './providers/types.js'
 import { DEFAULT_MAX_TOKENS } from './engine.js'
 import { compactConversationWithProtectedTail, type AutoCompactState } from './utils/compact.js'
 import { resolveSubprocessEnv } from './utils/subprocess-env.js'
-import { DefaultToolServices } from './tools/default-services.js'
+import { resolveToolServices } from './tools/services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
 export type QueryOverrides = Partial<AgentOptions> &
@@ -386,11 +386,12 @@ export class Agent {
     const skillConfig = this.extractSkillConfig(opts)
     const miscConfig = this.extractMiscConfig(opts)
 
-    // Per-agent tool services (ADR 0005). Precedence: an explicit `cronService` option
-    // wins and is injected into whichever ToolServices instance is used (default or
-    // caller-provided).
-    const toolServices = opts.toolServices ?? new DefaultToolServices()
-    if (miscConfig.cronService) toolServices.cron = miscConfig.cronService
+    // Per-agent tool services (ADR 0005). Precedence: an explicit `cronService`
+    // option wins and is combined into a fresh per-Agent COPY — the caller's
+    // ToolServices object is never mutated, so Agents sharing one container
+    // keep independent cron bindings. Without an override the caller's object
+    // (or a fresh default) is used as-is.
+    const toolServices = resolveToolServices(opts.toolServices, miscConfig.cronService)
 
     // Construct AgentEnvironment from the most relevant groups
     return {
