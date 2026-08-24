@@ -321,4 +321,35 @@ describe('createCronService', () => {
     const aAfter = await h.service.listExecutions({ cronTaskId: taskA.id })
     expect(aAfter.some((e) => e.status === 'interrupted')).toBe(true)
   })
+
+  it('catches up the most recent missed slot after a full restart', async () => {
+    const h = makeService({})
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    await h.timer.advance(60_000 + 6_000) // fires slot 1; markFired stamps lastFiredAt
+    await vi.waitFor(async () => {
+      const execs = await h.service.listExecutions({ cronTaskId: task.id })
+      expect(execs).toHaveLength(1)
+      expect(execs[0]!.status).toBe('succeeded')
+    })
+    // Flush the fire-and-forget chain (active-run bookkeeping) before stop()
+    // so the drain loop has nothing in flight under the manual timer.
+    await new Promise((r) => setTimeout(r, 0))
+    await h.service.stop()
+
+    h.clock.set(h.clock.now() + 5 * 60_000) // downtime, no timers ran
+
+    await h.service.start()
+
+    // Scheduled fires are fire-and-forget; poll for the catch-up execution.
+    await vi.waitFor(async () => {
+      expect(await h.service.listExecutions({ cronTaskId: task.id })).toHaveLength(2)
+    })
+    const executions = await h.service.listExecutions({ cronTaskId: task.id })
+    expect(executions[0]!.status).toBe('succeeded')
+    // Newest first: the catch-up fire is the most recent missed slot.
+    expect(executions[0]!.scheduledFireTime).toBeGreaterThan(executions[1]!.scheduledFireTime)
+    expect(executions[0]!.scheduledFireTime).toBeLessThanOrEqual(h.clock.now())
+  })
 })

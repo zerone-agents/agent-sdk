@@ -23,6 +23,8 @@ function taskFingerprint(task: CronTask): string {
   ])
 }
 
+const MAX_CATCHUP_WALK = 100_000
+
 /**
  * Schedules task fires. Knows nothing about executions or persistence of
  * run state: it computes jittered slots, diffs task snapshots by content
@@ -49,6 +51,45 @@ export class CronScheduler {
     this.started = true
     this.suspended = false
     await this.refresh()
+    await this.catchUpAfterRestart()
+  }
+
+  /**
+   * After a process restart (entries rebuilt from storage), each task's
+   * missed-most-recent slot since its persisted anchor is submitted once.
+   * The ExecutionStore's permanent (taskId, fireTime) dedup absorbs slots
+   * that already executed before the downtime, so submitting is safe.
+   */
+  private async catchUpAfterRestart(): Promise<void> {
+    const now = this.deps.clock.now()
+    for (const entry of this.entries.values()) {
+      const slot = this.mostRecentSlotSince(entry.task, now)
+      if (slot === null) continue
+      try {
+        await this.deps.host.onFire(entry.task, slot)
+      } catch {
+        // Host (coordinator) errors never break the scheduling loop.
+      }
+      entry.nextRunAt = this.nextSlotAfter(entry.task, slot)
+    }
+  }
+
+  /**
+   * Most recent jittered slot in (anchor, now]; anchor = lastFiredAt ?? createdAt.
+   * The walk is capped at MAX_CATCHUP_WALK; on cap exhaustion the task gives
+   * up (no fire) — astronomically rare, and firing a stale slot would be worse.
+   */
+  private mostRecentSlotSince(task: CronTask, now: number): number | null {
+    const anchor = task.lastFiredAt ?? task.createdAt
+    let last: number | null = null
+    let slot = this.nextSlotAfter(task, anchor)
+    let guard = 0
+    while (slot !== null && slot <= now && guard < MAX_CATCHUP_WALK) {
+      last = slot
+      slot = this.nextSlotAfter(task, slot)
+      guard++
+    }
+    return last
   }
 
   stop(): void {

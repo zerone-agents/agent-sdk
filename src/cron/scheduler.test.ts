@@ -140,4 +140,53 @@ describe('CronScheduler', () => {
     const [snap] = h.scheduler.snapshot()
     expect(snap!.nextRunAt).toBeNull()
   })
+
+  describe('restart catch-up', () => {
+    it('fires the most recent missed slot once after stop/start downtime', async () => {
+      const h = makeHarness([makeTask()])
+      await h.scheduler.start()
+      const first = h.scheduler.snapshot()[0]!.nextRunAt!
+
+      // Simulate: slot `first` fired before shutdown; coordinator stamped lastFiredAt.
+      h.tasks[0]!.lastFiredAt = first + 1
+      h.scheduler.stop()
+
+      h.clock.set(first + 5 * 60_000) // 5 minutes of downtime, no timers ran
+      await h.scheduler.start() // fresh entries rebuilt from storage
+
+      expect(h.fired).toHaveLength(1)
+      const slot = h.fired[0]!.slot
+      expect(slot).toBeGreaterThan(h.tasks[0]!.lastFiredAt!)
+      expect(slot).toBeLessThanOrEqual(h.clock.now())
+    })
+
+    it('fires nothing on a quick restart with no missed slot', async () => {
+      const h = makeHarness([makeTask()])
+      await h.scheduler.start()
+      const first = h.scheduler.snapshot()[0]!.nextRunAt!
+      h.tasks[0]!.lastFiredAt = first + 1
+      h.scheduler.stop()
+
+      h.clock.set(first + 2_000) // restarted 2s later, next slot still future
+      await h.scheduler.start()
+
+      expect(h.fired).toHaveLength(0)
+      expect(h.scheduler.snapshot()[0]!.nextRunAt).toBeGreaterThan(h.clock.now())
+    })
+
+    it('walks from createdAt when the task never fired', async () => {
+      const h = makeHarness([makeTask()])
+      await h.scheduler.start()
+      const first = h.scheduler.snapshot()[0]!.nextRunAt!
+      h.scheduler.stop()
+
+      h.clock.set(first + 2 * 60_000)
+      await h.scheduler.start()
+
+      // anchor = createdAt (0) -> most recent slot <= now fired once
+      expect(h.fired).toHaveLength(1)
+      expect(h.fired[0]!.slot).toBeGreaterThan(first)
+      expect(h.fired[0]!.slot).toBeLessThanOrEqual(h.clock.now())
+    })
+  })
 })
