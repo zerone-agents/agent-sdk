@@ -34,6 +34,13 @@ export interface ExecutionStore {
     taskId: string
     scheduledFireTime: number
     trigger: CronExecutionTrigger
+    /**
+     * Optional dedup identity. When omitted, the default key
+     * `${taskId}:${scheduledFireTime}` applies (keeps scheduled
+     * restart-dedup byte-identical). Manual triggers pass a unique
+     * key so identity is not encoded as a synthetic fire time.
+     */
+    dedupKey?: string
   }): Promise<ExecutionClaimResult>
   get(executionId: string): Promise<CronExecution | null>
   list(query?: CronExecutionQuery): Promise<CronExecution[]>

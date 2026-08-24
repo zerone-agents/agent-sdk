@@ -29,12 +29,13 @@ function execution(overrides: Partial<CronExecution> = {}): CronExecution {
   }
 }
 
-/** In-memory ExecutionStore mirroring the port contract. */
+/** In-memory ExecutionStore mirroring the port contract (incl. dedupKey). */
 function createStore(seeded: CronExecution[] = []) {
   const executions = new Map(seeded.map((e) => [e.id, { ...e }]))
   const byFire = new Map(
     [...executions.values()].map((e) => [`${e.cronTaskId}:${e.scheduledFireTime}`, e.id] as const),
   )
+  const claims: Array<{ taskId: string; scheduledFireTime: number; dedupKey?: string }> = []
   let activeByTask = new Map(
     [...executions.values()]
       .filter((e) => e.status === 'pending' || e.status === 'running')
@@ -55,7 +56,8 @@ function createStore(seeded: CronExecution[] = []) {
       return count
     },
     async claim(input) {
-      const key = `${input.taskId}:${input.scheduledFireTime}`
+      claims.push({ ...input })
+      const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
       const existingId = byFire.get(key)
       if (existingId) {
         return { kind: 'duplicate', execution: executions.get(existingId)! }
@@ -85,17 +87,27 @@ function createStore(seeded: CronExecution[] = []) {
       return { ...e }
     },
   }
-  return { store, executions }
+  return { store, executions, claims }
 }
 
 function makeHarness(opts: {
   executor: CronExecutor
   seeded?: CronExecution[]
   executionTimeoutMs?: number
+  claimError?: Error
 }) {
   const clock = new FakeClock(0)
   const timer = new ManualTimer(clock)
-  const { store, executions } = createStore(opts.seeded)
+  const { store, executions, claims } = createStore(opts.seeded)
+  const wrapped: ExecutionStore =
+    opts.claimError === undefined
+      ? store
+      : {
+          ...store,
+          claim: async (_input) => {
+            throw opts.claimError
+          },
+        }
   const markFired = vi.fn()
   const storage = {
     load: async () => [],
@@ -108,7 +120,7 @@ function makeHarness(opts: {
   const events: CronEvent[] = []
   const sink: CronEventSink = (e) => { events.push(e) }
   const coordinator = new CronExecutionCoordinator({
-    executionStore: store,
+    executionStore: wrapped,
     executor: opts.executor,
     storage,
     clock,
@@ -116,7 +128,7 @@ function makeHarness(opts: {
     events: sink,
     executionTimeoutMs: opts.executionTimeoutMs,
   })
-  return { clock, timer, executions, markFired, events, coordinator }
+  return { clock, timer, executions, claims, markFired, events, coordinator }
 }
 
 const okExecutor: CronExecutor = async () => ({ output: 'done' })
@@ -257,5 +269,39 @@ describe('CronExecutionCoordinator', () => {
 
   it('CronExecutionInterruptedError is constructible with a reason', () => {
     expect(new CronExecutionInterruptedError('stop').message).toContain('stop')
+  })
+
+  it('passes dedupKey through to claim for manual submissions, not scheduled ones', async () => {
+    const h = makeHarness({ executor: okExecutor })
+    await h.coordinator.start()
+
+    await h.coordinator.submit(task, 60_000, 'scheduled')
+    await h.coordinator.submit(task, 70_000, 'manual', 'manual:test-uuid')
+
+    expect(h.claims).toHaveLength(2)
+    expect(h.claims[0]?.dedupKey).toBeUndefined()
+    expect(h.claims[1]?.dedupKey).toBe('manual:test-uuid')
+  })
+
+  it('a rejected claim cleans up the pending submission so stop() never unhandled-rejects', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => { unhandled.push(err) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const h = makeHarness({ executor: okExecutor, claimError: new Error('claim failed') })
+      await h.coordinator.start()
+
+      const promise = h.coordinator.submit(task, 60_000, 'scheduled')
+      await expect(promise).rejects.toThrow('claim failed')
+
+      // Before the fix this stop() aborted the leaked PendingSubmission,
+      // whose abortPromise rejected with no handler attached.
+      await h.coordinator.stop()
+      await new Promise<void>((resolve) => setImmediate(resolve))
+
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 })

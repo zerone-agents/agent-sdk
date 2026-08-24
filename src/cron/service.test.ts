@@ -32,12 +32,14 @@ class MemoryCronStorage implements CronStorage {
 
 class MemoryExecutionStore implements ExecutionStore {
   executions: CronExecution[] = []
+  /** dedup key -> execution id; honors input.dedupKey like FileExecutionStore. */
+  private byFire = new Map<string, string>()
   private nextId = 1
   async recoverInterrupted() { return 0 }
   async claim(input) {
-    const dup = this.executions.find(
-      (e) => e.cronTaskId === input.taskId && e.scheduledFireTime === input.scheduledFireTime,
-    )
+    const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
+    const dupId = this.byFire.get(key)
+    const dup = dupId !== undefined ? this.executions.find((e) => e.id === dupId) : undefined
     if (dup) return { kind: 'duplicate' as const, execution: dup }
     const active = this.executions.find(
       (e) => e.cronTaskId === input.taskId && (e.status === 'pending' || e.status === 'running'),
@@ -50,6 +52,7 @@ class MemoryExecutionStore implements ExecutionStore {
       status: active ? 'skipped' : 'pending',
     }
     this.executions.push(created)
+    this.byFire.set(key, created.id)
     return { kind: active ? ('skipped' as const) : ('claimed' as const), execution: created }
   }
   async get(id) { return this.executions.find((e) => e.id === id) ?? null }
@@ -170,12 +173,12 @@ describe('createCronService', () => {
 
       expect(unhandled).toEqual([])
 
-      // NOTE: deliberately no stop() here. Calling stop() after a failed
-      // scheduled claim surfaces a PRE-EXISTING leak outside this task's
-      // scope: claimAndRun throws before pending.delete()/clearTimeout(),
-      // so interruptAll() later aborts the leaked submission's abortPromise
-      // with no handler (unhandled CronExecutionInterruptedError). Tracked
-      // in the task report; other scheduled-fire tests never stop either.
+      // The leak documented in round-2 review is fixed: claimAndRun now
+      // cleans up (clearTimeout + pending.delete) when claim rejects, so
+      // stop() cannot abort a leaked submission's unhandled abortPromise.
+      await h.service.stop()
+      await new Promise((r) => setImmediate(r))
+      expect(unhandled).toEqual([])
     } finally {
       process.off('unhandledRejection', onUnhandled)
     }
@@ -335,7 +338,10 @@ describe('createCronService', () => {
 
     expect(first.id).not.toBe(second.id)
     expect(second.status).toBe('succeeded')
-    expect(second.scheduledFireTime).toBeGreaterThan(first.scheduledFireTime)
+    // No drift: identity comes from a unique dedup key, not synthetic fire
+    // times — both executions report the REAL (frozen) clock time.
+    expect(first.scheduledFireTime).toBe(h.clock.now())
+    expect(second.scheduledFireTime).toBe(h.clock.now())
   })
 
   it('get/listExecutions/getExecution delegate to the stores', async () => {

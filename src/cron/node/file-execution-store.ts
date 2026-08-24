@@ -68,12 +68,16 @@ export class FileExecutionStore implements ExecutionStore {
     taskId: string
     scheduledFireTime: number
     trigger: CronExecutionTrigger
+    dedupKey?: string
   }): Promise<ExecutionClaimResult> {
     await this.ensureLoaded()
     // Memory maps are read AND written synchronously below (commit mutates
     // memory before its first await), so concurrent claims cannot race.
-    const fireKey = this.fireKey(input.taskId, input.scheduledFireTime)
-    const existingId = this.byFire.get(fireKey)
+    // An explicit dedupKey (manual triggers) decouples identity from time;
+    // without one the default `${taskId}:${scheduledFireTime}` applies,
+    // keeping scheduled restart-dedup byte-identical.
+    const key = input.dedupKey ?? this.fireKey(input.taskId, input.scheduledFireTime)
+    const existingId = this.byFire.get(key)
     if (existingId) {
       const existing = this.executions.get(existingId)
       if (existing) return { kind: 'duplicate', execution: { ...existing } }
@@ -86,7 +90,7 @@ export class FileExecutionStore implements ExecutionStore {
       trigger: input.trigger,
       status: activeId ? 'skipped' : 'pending',
     }
-    await this.commit(created)
+    await this.commit(created, key)
     return { kind: activeId ? 'skipped' : 'claimed', execution: { ...created } }
   }
 
@@ -158,9 +162,15 @@ export class FileExecutionStore implements ExecutionStore {
     }
   }
 
-  private async commit(execution: CronExecution): Promise<void> {
+  private async commit(execution: CronExecution, key?: string): Promise<void> {
     this.executions.set(execution.id, execution)
-    this.byFire.set(this.fireKey(execution.cronTaskId, execution.scheduledFireTime), execution.id)
+    // When `key` is undefined (updateStatus / recoverInterrupted paths), the
+    // default fire key is derived as before. For manual records claimed under
+    // a unique dedup key this adds a harmless SECONDARY default-key entry
+    // alongside the unique one — both point to the same executionId, and
+    // manual triggers are never replayed across restarts, so cross-restart
+    // semantics do not rely on either entry.
+    this.byFire.set(key ?? this.fireKey(execution.cronTaskId, execution.scheduledFireTime), execution.id)
     if (isActive(execution)) {
       this.activeByTask.set(execution.cronTaskId, execution.id)
     } else if (this.activeByTask.get(execution.cronTaskId) === execution.id) {

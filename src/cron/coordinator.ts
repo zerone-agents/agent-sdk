@@ -85,6 +85,7 @@ export class CronExecutionCoordinator {
     task: CronTask,
     scheduledFireTime: number,
     trigger: CronExecutionTrigger,
+    dedupKey?: string,
   ): Promise<CronExecution> {
     if (!this.started || this.draining) {
       return Promise.reject(
@@ -103,7 +104,7 @@ export class CronExecutionCoordinator {
     })
     const submission: PendingSubmission = { abort, promise: null as never }
     this.pending.add(submission)
-    const promise = this.claimAndRun(task, scheduledFireTime, trigger, {
+    const promise = this.claimAndRun(task, scheduledFireTime, trigger, dedupKey, {
       abort,
       abortPromise,
       timeoutHandle,
@@ -147,13 +148,26 @@ export class CronExecutionCoordinator {
     task: CronTask,
     scheduledFireTime: number,
     trigger: CronExecutionTrigger,
+    dedupKey: string | undefined,
     handles: SubmissionHandles,
   ): Promise<CronExecution> {
-    const claim = await this.deps.executionStore.claim({
-      taskId: task.id,
-      scheduledFireTime,
-      trigger,
-    })
+    let claim: Awaited<ReturnType<ExecutionStore['claim']>>
+    try {
+      claim = await this.deps.executionStore.claim({
+        taskId: task.id,
+        scheduledFireTime,
+        trigger,
+        ...(dedupKey !== undefined ? { dedupKey } : {}),
+      })
+    } catch (err) {
+      // A rejected claim must not leak the submission: perform the same
+      // cleanup as the non-claimed path below, otherwise stop()/suspend()
+      // would later abort the leaked abortPromise with no handler attached
+      // (unhandled CronExecutionInterruptedError).
+      this.deps.timer.clearTimeout(handles.timeoutHandle)
+      this.pending.delete(handles.submission)
+      throw err
+    }
     if (claim.kind !== 'claimed') {
       this.deps.timer.clearTimeout(handles.timeoutHandle)
       this.pending.delete(handles.submission)
