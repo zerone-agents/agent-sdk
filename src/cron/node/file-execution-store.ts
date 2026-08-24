@@ -171,7 +171,7 @@ export class FileExecutionStore implements ExecutionStore {
     this.seq = seq
     this.rebuildDerivedIndexes()
     this.loaded = true
-    await this.persistIndex().catch(() => {})
+    await this.persistIndexBestEffort()
   }
 
   private rebuildDerivedIndexes(): void {
@@ -197,6 +197,16 @@ export class FileExecutionStore implements ExecutionStore {
   }
 
   private async commit(execution: CronExecution, claimInput?: ExecutionClaimInput): Promise<void> {
+    // Memory is mutated synchronously BEFORE the durable write so concurrent
+    // claims see a consistent view (single-process atomicity). If the
+    // source-of-truth append then fails, the in-memory changes are rolled
+    // back — a failed claim must leave no phantom record, identity, or active
+    // slot, so a retry cannot observe a phantom duplicate/skipped.
+    const prevExecution = this.executions.get(execution.id)
+    let fireIdentity: { key: string; prev: string | undefined } | undefined
+    let dedupIdentity: { key: string; prev: string | undefined } | undefined
+    const prevActive = this.activeByTask.get(execution.cronTaskId)
+
     this.executions.set(execution.id, execution)
     // The dedup identity is registered ONLY at claim time: updateStatus and
     // recoverInterrupted pass no claim input, so they must not touch the
@@ -205,12 +215,13 @@ export class FileExecutionStore implements ExecutionStore {
     // scheduled DEFAULT slot in `byFire`, whatever the key text looks like.
     if (claimInput !== undefined) {
       if (claimInput.trigger === 'manual') {
-        this.byDedup.set(claimInput.dedupKey, execution.id)
+        const key = claimInput.dedupKey
+        dedupIdentity = { key, prev: this.byDedup.get(key) }
+        this.byDedup.set(key, execution.id)
       } else {
-        this.byFire.set(
-          this.fireKey(claimInput.taskId, claimInput.scheduledFireTime),
-          execution.id,
-        )
+        const key = this.fireKey(claimInput.taskId, claimInput.scheduledFireTime)
+        fireIdentity = { key, prev: this.byFire.get(key) }
+        this.byFire.set(key, execution.id)
       }
     }
     if (isActive(execution)) {
@@ -218,11 +229,42 @@ export class FileExecutionStore implements ExecutionStore {
     } else if (this.activeByTask.get(execution.cronTaskId) === execution.id) {
       this.activeByTask.delete(execution.cronTaskId)
     }
-    await this.serialize(async () => {
-      this.seq += 1
-      await this.log.append(this.seq, execution)
-      await this.persistIndex()
-    })
+
+    try {
+      await this.serialize(async () => {
+        this.seq += 1
+        await this.log.append(this.seq, execution)
+        await this.persistIndexBestEffort()
+      })
+    } catch (err) {
+      // Roll back memory: the commit failed, so nothing it staged may remain
+      // observable. Restores are CONDITIONAL — each entry is reverted only
+      // while it still holds THIS commit's value (or, for the active-slot
+      // delete path, is still absent) — so an interleaved successful commit
+      // is never clobbered. `seq` is intentionally NOT decremented: a
+      // monotonic gap is harmless, and a possibly-torn append must never be
+      // renumbered onto by a later record.
+      if (this.executions.get(execution.id) === execution) {
+        if (prevExecution === undefined) this.executions.delete(execution.id)
+        else this.executions.set(execution.id, prevExecution)
+      }
+      if (fireIdentity && this.byFire.get(fireIdentity.key) === execution.id) {
+        if (fireIdentity.prev === undefined) this.byFire.delete(fireIdentity.key)
+        else this.byFire.set(fireIdentity.key, fireIdentity.prev)
+      }
+      if (dedupIdentity && this.byDedup.get(dedupIdentity.key) === execution.id) {
+        if (dedupIdentity.prev === undefined) this.byDedup.delete(dedupIdentity.key)
+        else this.byDedup.set(dedupIdentity.key, dedupIdentity.prev)
+      }
+      // Active-slot revert condition differs per branch: we either SET our id
+      // (active execution) or DELETED our id (terminal transition).
+      const currentActive = this.activeByTask.get(execution.cronTaskId)
+      if (isActive(execution) ? currentActive === execution.id : currentActive === undefined) {
+        if (prevActive === undefined) this.activeByTask.delete(execution.cronTaskId)
+        else this.activeByTask.set(execution.cronTaskId, prevActive)
+      }
+      throw err
+    }
   }
 
   private async persistIndex(): Promise<void> {
@@ -230,6 +272,22 @@ export class FileExecutionStore implements ExecutionStore {
       seq: this.seq,
       active: [...this.activeByTask.entries()],
       executions: [...this.executions.values()],
+    })
+  }
+
+  /**
+   * execution-index.json is a rebuildable observability snapshot, never the
+   * source of truth — a write failure must not fail an already-durable claim
+   * or load. Report it via the diagnostics channel instead.
+   */
+  private persistIndexBestEffort(): Promise<void> {
+    return this.persistIndex().catch((err: unknown) => {
+      reportCronDiagnostic(
+        this.onDiagnostic,
+        `failed to persist execution-index.json: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
     })
   }
 

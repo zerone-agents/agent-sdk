@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -402,5 +402,50 @@ describe('FileExecutionStore', () => {
     await chmod(logPath, 0o644)
     const retried = await failing.claim({ taskId: 't2', scheduledFireTime: 120_000, trigger: 'scheduled' })
     expect(retried.kind).toBe('claimed')
+  })
+
+  it('rolls back in-memory claim state when the log append fails, so a retry is not a phantom duplicate', async () => {
+    const store = new FileExecutionStore(dir)
+    const first = await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(first.kind).toBe('claimed')
+
+    // Break the source-of-truth log: replacing the file with a directory makes
+    // appendFile fail (EISDIR) for the next commit.
+    const logPath = path.join(dir, 'executions.jsonl')
+    await rm(logPath)
+    await mkdir(logPath)
+
+    await expect(
+      store.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' }),
+    ).rejects.toThrow()
+
+    // The failed claim must leave NO phantom state: once the log is writable
+    // again, the identical claim must succeed — not report `duplicate` — and
+    // the failed task must not linger as an active/skip blocker.
+    await rm(logPath, { recursive: true })
+    const retried = await store.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(retried.kind).toBe('claimed')
+    expect((await store.list()).filter((e) => e.cronTaskId === 't2')).toHaveLength(1)
+  })
+
+  it('a failed execution-index.json write does not fail a durable claim and is reported via diagnostics', async () => {
+    // Break the rebuildable observability index: a directory at the target
+    // path makes atomicWriteJson's rename fail.
+    await mkdir(path.join(dir, 'execution-index.json'))
+
+    const onDiagnostic = vi.fn()
+    const store = new FileExecutionStore(dir, { onDiagnostic })
+
+    // The source-of-truth log append succeeds, so the claim IS durable: it
+    // must report success and the execution must remain fully usable.
+    const result = await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(result.kind).toBe('claimed')
+    expect(result.execution.status).toBe('pending')
+
+    const done = await store.updateStatus(result.execution.id, 'succeeded', { output: 'ok' })
+    expect(done).toMatchObject({ status: 'succeeded', output: 'ok' })
+
+    const messages = onDiagnostic.mock.calls.map((c) => String(c[0]))
+    expect(messages.some((m) => /execution-index\.json/.test(m))).toBe(true)
   })
 })
