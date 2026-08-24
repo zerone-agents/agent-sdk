@@ -174,6 +174,39 @@ describe('CronScheduler', () => {
       expect(h.scheduler.snapshot()[0]!.nextRunAt).toBeGreaterThan(h.clock.now())
     })
 
+    it('restart catch-up fires the MOST RECENT slot after extreme downtime (>100k periods)', async () => {
+      const h = makeHarness([makeTask()])
+      await h.scheduler.start()
+      const first = h.scheduler.snapshot()[0]!.nextRunAt!
+      h.tasks[0]!.lastFiredAt = first + 1
+      h.scheduler.stop()
+
+      // ~139 days of downtime for an every-minute task: 200,000 missed periods.
+      h.clock.set(first + 200_000 * 60_000)
+      await h.scheduler.start()
+
+      expect(h.fired).toHaveLength(1)
+      const slot = h.fired[0]!.slot
+      // The most recent slot is within one period + jitter of now — NOT the
+      // 100,000th slot after the anchor (which would be ~69 days stale).
+      expect(slot).toBeGreaterThan(h.clock.now() - 60_000 - 6_000)
+      expect(slot).toBeLessThanOrEqual(h.clock.now())
+    })
+
+    it('resume after extreme downtime fires the most recent slot once', async () => {
+      const h = makeHarness([makeTask()])
+      await h.scheduler.start()
+      const first = h.scheduler.snapshot()[0]!.nextRunAt!
+
+      h.scheduler.suspend()
+      h.clock.set(first + 200_000 * 60_000)
+      await h.scheduler.resume()
+
+      expect(h.fired).toHaveLength(1)
+      expect(h.fired[0]!.slot).toBeGreaterThan(h.clock.now() - 60_000 - 6_000)
+      expect(h.fired[0]!.slot).toBeLessThanOrEqual(h.clock.now())
+    })
+
     it('walks from createdAt when the task never fired', async () => {
       const h = makeHarness([makeTask()])
       await h.scheduler.start()
