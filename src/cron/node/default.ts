@@ -4,7 +4,7 @@ import path from 'node:path'
 import type { Agent } from '../../agent.js'
 import type { AgentOptions } from '../../types.js'
 import type { CronClock, CronTimer } from '../clock.js'
-import type { CronEventSink } from '../events.js'
+import type { CronDiagnosticSink, CronEventSink } from '../events.js'
 import { createDefaultAgentCronExecutor, type CronAgentResolver } from '../executor.js'
 import { createCronService, type CronRuntimeLock, type CronService } from '../service.js'
 import type { CronJitterConfig } from '../types.js'
@@ -33,6 +33,8 @@ export interface CreateDefaultCronServiceOptions {
   createAgentFn?: (options: AgentOptions) => Agent
   executionTimeoutMs?: number
   events?: CronEventSink
+  /** Diagnostics channel: sink/replay failures reported here, never thrown. */
+  onDiagnostic?: CronDiagnosticSink
   maxTasks?: number
   clock?: CronClock
   timer?: CronTimer
@@ -50,7 +52,7 @@ export function createDefaultCronService(
 ): CronService {
   const cronDir = path.join(options.dataDir ?? defaultCronDataDir(), 'cron')
   const taskStorage = new FileCronStorage(cronDir)
-  const executionStore = new FileExecutionStore(cronDir)
+  const executionStore = new FileExecutionStore(cronDir, { onDiagnostic: options.onDiagnostic })
   const executor = createDefaultAgentCronExecutor(
     options.resolveAgent,
     options.createAgentFn ? { createAgentFn: options.createAgentFn } : undefined,
@@ -62,6 +64,7 @@ export function createDefaultCronService(
     executionStore,
     executor,
     events: options.events,
+    onDiagnostic: options.onDiagnostic,
     executionTimeoutMs: options.executionTimeoutMs,
     maxTasks: options.maxTasks,
     clock: options.clock,

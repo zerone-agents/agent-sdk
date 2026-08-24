@@ -17,14 +17,24 @@ export type CronEventSink = (event: CronEvent) => void | Promise<void>
 
 export const noopEventSink: CronEventSink = () => {}
 
+/** Diagnostics channel: reported, never thrown, never alters state. */
+export type CronDiagnosticSink = (message: string) => void
+
+export const consoleDiagnosticSink: CronDiagnosticSink = (message) => {
+  console.warn(`[cron] ${message}`)
+}
+
 export async function emitCronEvent(
   sink: CronEventSink | undefined,
   event: CronEvent,
+  onDiagnostic?: CronDiagnosticSink,
 ): Promise<void> {
   if (!sink) return
   try {
     await sink(event)
-  } catch {
-    // Observational only — never propagate.
+  } catch (err) {
+    onDiagnostic?.(
+      `cron event sink failed: ${err instanceof Error ? err.message : String(err)}`,
+    )
   }
 }

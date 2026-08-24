@@ -1,7 +1,7 @@
 import { chmod, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { FileExecutionStore } from './file-execution-store.js'
 
@@ -108,6 +108,33 @@ describe('FileExecutionStore', () => {
     const again = await b.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
 
     expect(again.kind).toBe('duplicate')
+  })
+
+  it('reports torn-tail replay diagnostics via onDiagnostic and still functions', async () => {
+    const a = new FileExecutionStore(dir)
+    const first = await a.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    await a.updateStatus(first.execution.id, 'succeeded', {})
+
+    // Manually append a truncated JSON line (torn tail from a crash mid-write),
+    // reusing the corruption pattern from execution-log.test.ts.
+    const { appendFile } = await import('node:fs/promises')
+    await appendFile(
+      path.join(dir, 'executions.jsonl'),
+      '{"seq":2,"execution":{"id":"e2","cronTaskId":"t1","sched',
+      'utf8',
+    )
+
+    const onDiagnostic = vi.fn()
+    const b = new FileExecutionStore(dir, { onDiagnostic })
+
+    // First operation triggers the replay which reports the torn tail.
+    const claim = await b.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
+
+    expect(onDiagnostic).toHaveBeenCalled()
+    expect(onDiagnostic.mock.calls[0]![0]).toMatch(/incomplete trailing record/)
+    // State is unaffected: the store still functions and prior state is intact.
+    expect(claim.kind).toBe('claimed')
+    expect(await b.get(first.execution.id)).toMatchObject({ status: 'succeeded' })
   })
 
   it('rebuilds state from the log when execution-index.json is deleted', async () => {

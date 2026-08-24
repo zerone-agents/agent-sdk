@@ -1,7 +1,13 @@
 import { computeNextCronRun, parseCronExpression } from './cron.js'
 import { systemClock, systemTimer, type CronClock, type CronTimer } from './clock.js'
 import { CronExecutionCoordinator } from './coordinator.js'
-import { emitCronEvent, noopEventSink, type CronEventSink } from './events.js'
+import {
+  consoleDiagnosticSink,
+  emitCronEvent,
+  noopEventSink,
+  type CronDiagnosticSink,
+  type CronEventSink,
+} from './events.js'
 import type { ExecutionStore } from './execution-store.js'
 import type { CronExecutor } from './executor.js'
 import { CronRuntime } from './runtime.js'
@@ -51,6 +57,8 @@ export interface CreateCronServiceOptions {
   executionStore: ExecutionStore
   executor: CronExecutor
   events?: CronEventSink
+  /** Diagnostics channel: sink/replay failures reported here, never thrown. */
+  onDiagnostic?: CronDiagnosticSink
   executionTimeoutMs?: number
   maxTasks?: number
   clock?: CronClock
@@ -83,6 +91,12 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     events = noopEventSink,
     maxTasks = DEFAULT_MAX_CRON_TASKS,
   } = options
+  const onDiagnostic = options.onDiagnostic ?? consoleDiagnosticSink
+
+  // Wrap the sink once so EVERY emit — the coordinator's and the service's
+  // own — reports sink failures through the diagnostics channel instead of
+  // swallowing them silently. Diagnostics never reject or alter state.
+  const safeEvents: CronEventSink = (event) => emitCronEvent(events, event, onDiagnostic)
 
   const coordinator = new CronExecutionCoordinator({
     executionStore,
@@ -90,7 +104,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     storage: taskStorage,
     clock,
     timer,
-    events,
+    events: safeEvents,
     executionTimeoutMs,
   })
   const scheduler = new CronScheduler({
@@ -118,7 +132,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
   let lastManualFireAt = 0
 
   const emitSchedule = () =>
-    emitCronEvent(events, { type: 'scheduleUpdated', snapshots: scheduler.snapshot() })
+    emitCronEvent(events, { type: 'scheduleUpdated', snapshots: scheduler.snapshot() }, onDiagnostic)
 
   return {
     async start(): Promise<void> {
@@ -159,7 +173,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
         ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
       })
       await scheduler.refresh()
-      await emitCronEvent(events, { type: 'taskCreated', task })
+      await emitCronEvent(events, { type: 'taskCreated', task }, onDiagnostic)
       await emitSchedule()
       return task
     },
@@ -172,7 +186,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
       const updated = await taskStorage.update(taskId, changes)
       if (!updated) return null
       await scheduler.refresh()
-      await emitCronEvent(events, { type: 'taskUpdated', task: updated })
+      await emitCronEvent(events, { type: 'taskUpdated', task: updated }, onDiagnostic)
       await emitSchedule()
       return updated
     },
@@ -182,7 +196,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
       if (!existing) throw new Error(`Cron task not found: ${taskId}`)
       await taskStorage.remove([taskId])
       await scheduler.refresh()
-      await emitCronEvent(events, { type: 'taskDeleted', taskId })
+      await emitCronEvent(events, { type: 'taskDeleted', taskId }, onDiagnostic)
       await emitSchedule()
     },
 

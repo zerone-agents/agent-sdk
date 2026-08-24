@@ -72,13 +72,16 @@ function makeService(opts: {
   executor?: CronExecutor
   maxTasks?: number
   events?: CronEvent[]
+  eventSink?: CronEventSink
+  onDiagnostic?: (message: string) => void
   lock?: { acquire: () => Promise<void>; release: () => Promise<void> }
 }) {
   const taskStorage = new MemoryCronStorage()
   const executionStore = new MemoryExecutionStore()
   const clock = new FakeClock(0)
   const timer = new ManualTimer(clock)
-  const sink: CronEventSink | undefined = opts.events ? (e) => { opts.events!.push(e) } : undefined
+  const sink: CronEventSink | undefined =
+    opts.eventSink ?? (opts.events ? (e) => { opts.events!.push(e) } : undefined)
   const executor: CronExecutor = opts.executor ?? (async () => ({ output: 'ok' }))
   const service = createCronService({
     taskStorage,
@@ -88,6 +91,7 @@ function makeService(opts: {
     clock,
     timer,
     maxTasks: opts.maxTasks,
+    onDiagnostic: opts.onDiagnostic,
     lock: opts.lock,
   })
   return { service, taskStorage, executionStore, clock, timer }
@@ -96,6 +100,27 @@ function makeService(opts: {
 const everyMinute = { cron: '* * * * *', prompt: 'run report' }
 
 describe('createCronService', () => {
+  it('a throwing events sink does not affect execution state; failures are reported via onDiagnostic', async () => {
+    const onDiagnostic = vi.fn()
+    const h = makeService({
+      eventSink: () => { throw new Error('sink exploded') },
+      onDiagnostic,
+    })
+    await h.service.start()
+
+    const task = await h.service.create(everyMinute)
+    const execution = await h.service.runNow(task.id)
+
+    // Diagnostics were reported for every failed emit.
+    expect(onDiagnostic).toHaveBeenCalled()
+    for (const call of onDiagnostic.mock.calls) {
+      expect(call[0]).toMatch(/cron event sink failed/)
+    }
+    // State is unaffected: the execution still succeeded.
+    expect(execution.status).toBe('succeeded')
+    expect(await h.executionStore.get(execution.id)).toMatchObject({ status: 'succeeded' })
+  })
+
   it('create() validates, persists, refreshes the schedule, and emits events', async () => {
     const events: CronEvent[] = []
     const h = makeService({ events })

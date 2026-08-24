@@ -6,6 +6,7 @@ import type {
   ExecutionStatusPatch,
   ExecutionStore,
 } from '../execution-store.js'
+import type { CronDiagnosticSink } from '../events.js'
 import type {
   CronExecution,
   CronExecutionQuery,
@@ -39,9 +40,12 @@ export class FileExecutionStore implements ExecutionStore {
   private seq = 0
   private writeChain: Promise<unknown> = Promise.resolve()
 
-  constructor(cronDir: string) {
+  private readonly onDiagnostic?: CronDiagnosticSink
+
+  constructor(cronDir: string, opts?: { onDiagnostic?: CronDiagnosticSink }) {
     this.log = new ExecutionLog(path.join(cronDir, 'executions.jsonl'))
     this.indexPath = path.join(cronDir, 'execution-index.json')
+    this.onDiagnostic = opts?.onDiagnostic
   }
 
   async recoverInterrupted(): Promise<number> {
@@ -134,7 +138,10 @@ export class FileExecutionStore implements ExecutionStore {
   }
 
   private async doLoad(): Promise<void> {
-    const { executions, seq } = await this.log.replay()
+    const { executions, seq, diagnostics } = await this.log.replay()
+    // Torn-tail diagnostics are reported, never thrown: replay already
+    // recovered all intact records, so the store stays fully functional.
+    for (const d of diagnostics) this.onDiagnostic?.(d)
     this.executions = executions
     this.seq = seq
     this.rebuildDerivedIndexes()

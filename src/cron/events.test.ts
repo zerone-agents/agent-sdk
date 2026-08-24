@@ -42,6 +42,31 @@ describe('emitCronEvent', () => {
     await expect(emitCronEvent(undefined, { type: 'taskDeleted', taskId: 't1' })).resolves.toBeUndefined()
   })
 
+  it('reports sink failures via onDiagnostic without rejecting', async () => {
+    const sink = vi.fn(() => { throw new Error('sink down') })
+    const onDiagnostic = vi.fn()
+    await expect(
+      emitCronEvent(sink, { type: 'executionCompleted', execution }, onDiagnostic),
+    ).resolves.toBeUndefined()
+    expect(onDiagnostic).toHaveBeenCalledOnce()
+    expect(onDiagnostic.mock.calls[0]![0]).toMatch(/sink down/)
+  })
+
+  it('reports async sink failures via onDiagnostic', async () => {
+    const sink = vi.fn(async () => { throw new Error('async sink down') })
+    const onDiagnostic = vi.fn()
+    await expect(
+      emitCronEvent(sink, { type: 'taskDeleted', taskId: 't1' }, onDiagnostic),
+    ).resolves.toBeUndefined()
+    expect(onDiagnostic).toHaveBeenCalledWith(expect.stringMatching(/async sink down/))
+  })
+
+  it('does not call onDiagnostic when the sink succeeds', async () => {
+    const onDiagnostic = vi.fn()
+    await emitCronEvent(noopEventSink, { type: 'taskCreated', task }, onDiagnostic)
+    expect(onDiagnostic).not.toHaveBeenCalled()
+  })
+
   it('noopEventSink accepts any event', () => {
     expect(() => noopEventSink({ type: 'taskDeleted', taskId: 't1' })).not.toThrow()
   })
