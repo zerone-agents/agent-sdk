@@ -707,6 +707,46 @@ describe('FileExecutionStore', () => {
     expect(list.filter((e) => e.cronTaskId === 't2')).toHaveLength(1)
   })
 
+  it('tail repair is byte-exact: a Unicode record survives torn-append recovery', async () => {
+    // Seed a durable record whose output contains multi-byte UTF-8, then a
+    // torn append behind it. The char-index truncate bug would cut INTO the
+    // Unicode record (char index < byte offset), upgrading a recoverable
+    // tail into permanent mid-log corruption.
+    const seed = new FileExecutionStore(dir)
+    const seeded = await seed.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(seeded.kind).toBe('claimed')
+    const done = await seed.updateStatus(seeded.execution.id, 'succeeded', {
+      output: '任务执行成功：中文输出 ✓',
+    })
+    expect(done).toMatchObject({ output: '任务执行成功：中文输出 ✓' })
+
+    appendControl.tornTask = 't2'
+    try {
+      const poisonedStore = new FileExecutionStore(dir)
+      await expect(
+        poisonedStore.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' }),
+      ).rejects.toThrow('injected torn append failure')
+    } finally {
+      appendControl.tornTask = null
+    }
+
+    // Fresh instance: replay ignores the torn tail, repair truncates at the
+    // true BYTE boundary, and a new claim appends cleanly.
+    const fresh = new FileExecutionStore(dir)
+    const after = await fresh.claim({ taskId: 't3', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(after.kind).toBe('claimed')
+
+    // Third reopen: the log replays cleanly and the Unicode durable record
+    // remains fully intact.
+    const third = new FileExecutionStore(dir)
+    const record = await third.get(seeded.execution.id)
+    expect(record).toMatchObject({ status: 'succeeded', output: '任务执行成功：中文输出 ✓' })
+    const list = await third.list()
+    expect(list.filter((e) => e.cronTaskId === 't1')).toHaveLength(1)
+    expect(list.filter((e) => e.cronTaskId === 't3')).toHaveLength(1)
+    expect(list.filter((e) => e.cronTaskId === 't2')).toHaveLength(0)
+  })
+
   it('a getter/Proxy input returning different values per read cannot bypass validation', async () => {
     const store = new FileExecutionStore(dir)
     // Hostile input: `trigger` returns manual → scheduled → manual across

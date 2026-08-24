@@ -57,25 +57,34 @@ export class ExecutionLog {
    *   append whose delimiter never landed; replay accepts it as a record):
    *   append the newline so the next record cannot concatenate onto it.
    *
+   * All boundary arithmetic is BYTE-exact: the log is read as a Buffer and
+   * fs.truncate() receives a true byte offset. A String-based index would be
+   * a UTF-16 code-unit count, which diverges from the byte offset as soon
+   * as any record contains non-ASCII text (e.g. Chinese output) — the
+   * truncation would then land INSIDE a durable record (possibly mid
+   * multi-byte character) and upgrade a recoverable tail into permanent
+   * mid-log corruption.
+   *
    * Must run before any further append; FileExecutionStore.doLoad() awaits
    * it during load, which precedes every transaction. Returns a diagnostic
    * message when a repair happened, null when the tail was already normal.
    */
   async repairTail(): Promise<string | null> {
-    let text: string
+    let bytes: Buffer
     try {
-      text = await readFile(this.filePath, 'utf8')
+      bytes = await readFile(this.filePath)
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
       throw err
     }
-    if (text === '' || text.endsWith('\n')) return null
+    if (bytes.length === 0 || bytes[bytes.length - 1] === 0x0a) return null
 
-    const lastNewline = text.lastIndexOf('\n')
-    const tail = text.slice(lastNewline + 1)
+    const lastNewline = bytes.lastIndexOf(0x0a)
+    const tailBytes = bytes.subarray(lastNewline + 1)
     let parsed: unknown
     try {
-      parsed = JSON.parse(tail)
+      // Only the tail candidate is decoded, and only for the validity check.
+      parsed = JSON.parse(tailBytes.toString('utf8'))
     } catch {
       parsed = undefined
     }
@@ -84,9 +93,10 @@ export class ExecutionLog {
       await appendFile(this.filePath, '\n', 'utf8')
       return 'repaired log tail: appended missing newline after complete record'
     }
-    // Torn tail — drop the partial bytes back to the last complete line.
+    // Torn tail — drop the partial bytes back to the last complete line,
+    // at the true byte offset.
     await truncate(this.filePath, lastNewline + 1)
-    return `repaired log tail: truncated ${text.length - lastNewline - 1} bytes of torn record`
+    return `repaired log tail: truncated ${tailBytes.length} bytes of torn record`
   }
 
   async replay(): Promise<ExecutionLogReplayResult> {
