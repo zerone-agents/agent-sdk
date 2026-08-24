@@ -5,7 +5,7 @@
  * Manages session lifecycle (create, resume, list, fork).
  */
 
-import { readFile, writeFile, mkdir, readdir } from 'fs/promises'
+import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'fs/promises'
 import { join } from 'path'
 import type { NormalizedMessageParam } from './providers/types.js'
 
@@ -87,11 +87,20 @@ export async function saveSession(
     messages: messagesWithIds,
   }
 
-  await writeFile(
-    join(dir, 'transcript.json'),
-    JSON.stringify(data, null, 2),
-    'utf-8',
-  )
+  // Atomic replacement (review #47 P1): write to a temporary sibling file,
+  // then rename over transcript.json. A crash mid-write can never leave the
+  // existing transcript truncated or partially replaced — readers see either
+  // the old file or the complete new one. Same directory guarantees the same
+  // filesystem, so rename is atomic (POSIX) / REPLACE_EXISTING (Windows).
+  const finalPath = join(dir, 'transcript.json')
+  const tmpPath = join(dir, `transcript.json.tmp-${crypto.randomUUID()}`)
+  try {
+    await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8')
+    await rename(tmpPath, finalPath)
+  } catch (err) {
+    await unlink(tmpPath).catch(() => {}) // best-effort tmp cleanup
+    throw err
+  }
 }
 
 /**

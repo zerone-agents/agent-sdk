@@ -6,6 +6,8 @@ import {
   deleteSession,
 } from './session.js'
 import type { NormalizedMessageParam } from './providers/types.js'
+import { join } from 'path'
+import { readdir } from 'fs/promises'
 
 describe('forkSession', () => {
   const sourceId = `fork-test-source-${crypto.randomUUID()}`
@@ -62,5 +64,39 @@ describe('forkSession', () => {
     for (const msg of data!.messages) {
       expect(msg).not.toHaveProperty('_snapshot')
     }
+  })
+})
+
+describe('saveSession atomic replacement (review #47 P1)', () => {
+  const sid = `atomic-test-${crypto.randomUUID()}`
+
+  afterAll(async () => {
+    await deleteSession(sid)
+  })
+
+  it('leaves no temporary files after a successful save', async () => {
+    await saveSession(sid, [{ role: 'user', content: 'hi' }], {
+      cwd: process.cwd(),
+      model: 'test',
+    })
+
+    const dir = join(
+      process.env.HOME || process.env.USERPROFILE || '/tmp',
+      '.agents', 'sessions', sid,
+    )
+    const files = await readdir(dir)
+    expect(files).toEqual(['transcript.json'])
+
+    // Repeated saves also stay clean (tmp names are unique per write)
+    await saveSession(sid, [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'ok' }], {
+      cwd: process.cwd(),
+      model: 'test',
+    })
+    const filesAfter = await readdir(dir)
+    expect(filesAfter).toEqual(['transcript.json'])
+
+    // And the final content is the complete second save
+    const data = await loadSession(sid)
+    expect(data!.messages).toHaveLength(2)
   })
 })

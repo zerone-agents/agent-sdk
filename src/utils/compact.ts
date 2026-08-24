@@ -134,6 +134,24 @@ export interface CompactResult {
   state: AutoCompactState
 }
 
+/**
+ * LOW-LEVEL in-memory compaction transform — advanced use only (issue #46).
+ *
+ * Semantics to be aware of before calling:
+ * - Summarizes EVERY message supplied to it. It does NOT preserve a recent
+ *   message tail on its own — passing a complete transcript here replaces the
+ *   whole conversation with the synthetic summary pair. To keep recent turns
+ *   verbatim, use `compactConversationWithProtectedTail()` (or the
+ *   session-level `compactSessionStream()`).
+ * - Does NOT persist anything. Callers own persistence and must write the
+ *   complete `CompactResult` — `compactedMessages`, `summary`, AND `state`
+ *   (including the reset `lastInputTokens`/`lastOutputTokens`) — as one
+ *   coherent update. Persisting messages without the token counters causes
+ *   an immediate repeated compaction on the next resume.
+ *
+ * Suited for custom-storage and in-memory callers that manage the lifecycle
+ * themselves.
+ */
 export async function* compactConversationStream(
   provider: LLMProvider,
   model: string,
@@ -293,21 +311,15 @@ export async function* compactConversationWithProtectedTail(
   const headMsgs = historyMsgs.slice(0, cutoffIndex)
   const tailMsgs = historyMsgs.slice(cutoffIndex)
 
-  const stream = compactConversationStream(
+  // `yield*` delegation (review #47 round 2): cancellation from the public
+  // stream propagates through to compactConversationStream and onward to the
+  // provider's createMessageStream generator (its finally blocks run).
+  const result: CompactResult = yield* compactConversationStream(
     provider,
     model,
     headMsgs as any[],
     state,
   )
-  let result: CompactResult
-  while (true) {
-    const next = await stream.next()
-    if (next.done) {
-      result = next.value
-      break
-    }
-    yield next.value
-  }
 
   return {
     messages: [

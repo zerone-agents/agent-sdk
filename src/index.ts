@@ -302,6 +302,9 @@ export {
 } from './utils/compact.js'
 export type { AutoCompactState } from './utils/compact.js'
 
+export { compactSessionStream, compactSession } from './compact-session.js'
+export type { CompactSessionOptions, CompactSessionResult } from './compact-session.js'
+
 // --------------------------------------------------------------------------
 // Request Body Size Management
 // --------------------------------------------------------------------------
