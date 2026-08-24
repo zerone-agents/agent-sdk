@@ -41,6 +41,8 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | `createHookRegistry(config)`          | Create a hook registry for lifecycle events                    |
 | `listSessions()`                      | List persisted sessions                                        |
 | `forkSession(id)`                     | Fork a session for branching                                   |
+| `compactSessionStream(opts)`          | Compact a persisted session by `sessionId` (no Agent needed); streams `compact` events, persists messages + summary + token counters atomically. **Host owns cross-request session locking.** |
+| `compactSession(opts)`                | Non-streaming wrapper for `compactSessionStream`                |
 
 ### Agent methods
 
@@ -48,7 +50,9 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | ------------------------------- | ----------------------------------------------------- |
 | `agent.query(prompt)`           | Streaming query, returns `AsyncGenerator<SDKMessage>` |
 | `agent.prompt(text)`            | Blocking query, returns `Promise<QueryResult>`        |
-| `agent.getMessageLog()`         | Append-only audit log of all emitted messages         |
+| `agent.getMessageLog()`         | Append-only audit log of all emitted messages                  |
+| `agent.compactStream()`          | Manually compact current history (protected tail), streams `compact` events, persists session |
+| `agent.compact()`                | Non-streaming wrapper for `compactStream()`                    |
 | `agent.getMessageHistory()`     | Engine's persistent history (post-compaction view)    |
 | `agent.clear()`                 | Reset session                                         |
 | `agent.interrupt()`             | Abort current query                                   |

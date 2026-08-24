@@ -816,22 +816,18 @@ export class Agent {
         lastInputTokens: this.lastInputTokens,
         lastOutputTokens: this.lastOutputTokens,
       }
-      const gen = compactConversationWithProtectedTail(
+      // Direct `yield*` delegation: same event-forwarding and cancellation
+      // semantics as compactSessionStream() (cancellation reaches the
+      // provider generator's finally).
+      const result = yield* compactConversationWithProtectedTail(
         this.provider,
         this.modelId,
         this.history,
         state,
       )
-      while (true) {
-        const next = await gen.next()
-        if (next.done) {
-          this.history = next.value.messages
-          this.lastInputTokens = next.value.state.lastInputTokens
-          this.lastOutputTokens = next.value.state.lastOutputTokens
-          break
-        }
-        yield next.value
-      }
+      this.history = result.messages
+      this.lastInputTokens = result.state.lastInputTokens
+      this.lastOutputTokens = result.state.lastOutputTokens
       await this.executeHooks('PostCompact')
     } catch {
       // Leave history unchanged on failure; skip PostCompact
