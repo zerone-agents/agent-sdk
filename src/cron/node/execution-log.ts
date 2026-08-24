@@ -1,4 +1,4 @@
-import { appendFile, readFile } from 'node:fs/promises'
+import { appendFile, readFile, truncate } from 'node:fs/promises'
 
 import { CRON_EXECUTION_STATUSES, type CronExecution } from '../types.js'
 
@@ -42,6 +42,51 @@ export class ExecutionLog {
   async append(seq: number, execution: CronExecution): Promise<void> {
     const record: ExecutionLogRecord = { seq, execution }
     await appendFile(this.filePath, `${JSON.stringify(record)}\n`, 'utf8')
+  }
+
+  /**
+   * Physically normalizes the log tail so a later append cannot corrupt the
+   * file. Replay repairs only the in-memory view — without this, the next
+   * append would concatenate onto the bad bytes and the NEXT replay would
+   * see an unrecoverable mid-log line. Two tail states are repaired
+   * (mirroring replay's decisions exactly):
+   * - torn tail (partial bytes, no trailing newline, not a valid record):
+   *   truncate back to the end of the last complete line — those bytes were
+   *   never a durable record;
+   * - complete valid record missing the trailing newline (an uncertain
+   *   append whose delimiter never landed; replay accepts it as a record):
+   *   append the newline so the next record cannot concatenate onto it.
+   *
+   * Must run before any further append; FileExecutionStore.doLoad() awaits
+   * it during load, which precedes every transaction. Returns a diagnostic
+   * message when a repair happened, null when the tail was already normal.
+   */
+  async repairTail(): Promise<string | null> {
+    let text: string
+    try {
+      text = await readFile(this.filePath, 'utf8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw err
+    }
+    if (text === '' || text.endsWith('\n')) return null
+
+    const lastNewline = text.lastIndexOf('\n')
+    const tail = text.slice(lastNewline + 1)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(tail)
+    } catch {
+      parsed = undefined
+    }
+    if (isExecutionLogRecord(parsed)) {
+      // Complete record missing its delimiter — complete it.
+      await appendFile(this.filePath, '\n', 'utf8')
+      return 'repaired log tail: appended missing newline after complete record'
+    }
+    // Torn tail — drop the partial bytes back to the last complete line.
+    await truncate(this.filePath, lastNewline + 1)
+    return `repaired log tail: truncated ${text.length - lastNewline - 1} bytes of torn record`
   }
 
   async replay(): Promise<ExecutionLogReplayResult> {

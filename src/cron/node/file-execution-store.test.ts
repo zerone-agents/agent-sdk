@@ -664,5 +664,73 @@ describe('FileExecutionStore', () => {
     expect(
       onDiagnostic.mock.calls.some((c) => /incomplete trailing record/.test(String(c[0]))),
     ).toBe(true)
+
+    // Full recovery chain: the fresh instance's append must not have
+    // concatenated onto the torn bytes — a THIRD instance still replays
+    // cleanly and sees exactly the durable records.
+    const third = new FileExecutionStore(dir)
+    const again = await third.claim({ taskId: 't4', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(again.kind).toBe('claimed')
+    const records = await third.list()
+    expect(records.filter((e) => e.cronTaskId === 't3')).toHaveLength(1)
+    expect(records.filter((e) => e.cronTaskId === 't4')).toHaveLength(1)
+    expect(records.filter((e) => e.cronTaskId === 't2')).toHaveLength(0)
+  })
+
+  it('completes a delimiter-less complete tail record so the next append cannot concatenate', async () => {
+    // Simulate an uncertain commit: a fully-written valid record whose
+    // trailing newline never landed. Replay accepts it as a record — so the
+    // physical tail must be completed BEFORE the next append, or that append
+    // would form `{old}{new}\n` and corrupt the next replay.
+    const { writeFile } = await import('node:fs/promises')
+    const logPath = path.join(dir, 'executions.jsonl')
+    const record = JSON.stringify({
+      seq: 1,
+      execution: {
+        id: 'e-no-newline',
+        cronTaskId: 't1',
+        scheduledFireTime: 60_000,
+        trigger: 'scheduled',
+        status: 'pending',
+      },
+    })
+    await writeFile(logPath, record, 'utf8') // note: no trailing newline
+
+    const store = new FileExecutionStore(dir)
+    const claimed = await store.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(claimed.kind).toBe('claimed')
+
+    // A fresh replay must see BOTH records as separate intact lines.
+    const third = new FileExecutionStore(dir)
+    const list = await third.list()
+    expect(list.filter((e) => e.id === 'e-no-newline')).toHaveLength(1)
+    expect(list.filter((e) => e.cronTaskId === 't2')).toHaveLength(1)
+  })
+
+  it('a getter/Proxy input returning different values per read cannot bypass validation', async () => {
+    const store = new FileExecutionStore(dir)
+    // Hostile input: `trigger` returns manual → scheduled → manual across
+    // successive reads (old code read it three times: once in validation,
+    // once in the key branch, once in the snapshot ternary); `dedupKey`
+    // always reads undefined. The interleaving lets the OLD code pass the
+    // manual trigger check, skip the scheduled key check, and enqueue a
+    // manual claim with NO dedupKey — violating the identity contract.
+    let triggerReads = 0
+    const hostile = new Proxy(
+      { taskId: 't1', scheduledFireTime: 60_000 },
+      {
+        get(target, prop, receiver) {
+          if (prop === 'trigger') {
+            triggerReads += 1
+            return triggerReads === 1 ? 'manual' : triggerReads === 2 ? 'scheduled' : 'manual'
+          }
+          if (prop === 'dedupKey') return undefined
+          return Reflect.get(target, prop, receiver)
+        },
+      },
+    )
+    await expect(store.claim(hostile as never)).rejects.toThrow(/dedupKey/)
+    // Nothing was persisted or indexed by the refused claim.
+    expect(await store.list()).toEqual([])
   })
 })

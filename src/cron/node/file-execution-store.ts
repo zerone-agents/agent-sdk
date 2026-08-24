@@ -90,45 +90,49 @@ export class FileExecutionStore implements ExecutionStore {
   async claim(input: ExecutionClaimInput): Promise<ExecutionClaimResult> {
     this.assertHealthy()
     await this.ensureLoaded()
+    // Read EVERY caller-owned field exactly ONCE into SDK-owned locals. The
+    // input may be a getter/Proxy whose properties return different values
+    // on successive reads — re-reading after validation would let a hostile
+    // object pass one shape through validation and enqueue another. Below
+    // this block, the caller object is never touched again.
+    const rawTrigger: unknown = (input as { trigger?: unknown }).trigger
+    const rawDedupKey: unknown = (input as { dedupKey?: unknown }).dedupKey
+    const rawTaskId: unknown = (input as { taskId?: unknown }).taskId
+    const rawFireTime: unknown = (input as { scheduledFireTime?: unknown }).scheduledFireTime
     // Full runtime validation for JS/host callers bypassing the compile-time
     // union. Trigger must be an exact known value: anything else must not fall
     // through to the scheduled path (it would create an illegal CronExecution,
     // register in byFire now, yet replay only rebuilds byFire for exact
     // 'scheduled' — silently changing permanent dedup across a restart).
-    const trigger = (input as { trigger?: unknown }).trigger
-    if (trigger !== 'manual' && trigger !== 'scheduled') {
-      throw new TypeError(`unknown cron execution trigger: ${String(trigger)}`)
+    if (rawTrigger !== 'manual' && rawTrigger !== 'scheduled') {
+      throw new TypeError(`unknown cron execution trigger: ${String(rawTrigger)}`)
     }
+    if (typeof rawTaskId !== 'string' || typeof rawFireTime !== 'number') {
+      throw new TypeError('claim input requires taskId (string) and scheduledFireTime (number)')
+    }
+    // Canonical snapshot built from the locals only: nested branches so
+    // control-flow analysis narrows rawDedupKey to string for manual claims.
     // A manual claim with a missing/null/empty key would either fall back to
     // the DEFAULT identity (silently breaking cross-restart dedup) or collapse
     // every submission onto one key; a scheduled claim carrying a key violates
     // the DEFAULT-identity contract. Refuse loudly instead.
-    if (input.trigger === 'manual') {
-      const key = (input as { dedupKey?: unknown }).dedupKey
-      if (typeof key !== 'string' || key.length === 0) {
+    let request: ExecutionClaimInput
+    if (rawTrigger === 'manual') {
+      if (typeof rawDedupKey !== 'string' || rawDedupKey.length === 0) {
         throw new TypeError('manual claim requires a non-empty string dedupKey (custom identity)')
       }
-    } else if ((input as { dedupKey?: unknown }).dedupKey !== undefined) {
-      throw new TypeError('scheduled claim must not carry a dedupKey')
+      request = {
+        taskId: rawTaskId,
+        scheduledFireTime: rawFireTime,
+        trigger: 'manual',
+        dedupKey: rawDedupKey,
+      }
+    } else {
+      if (rawDedupKey !== undefined) {
+        throw new TypeError('scheduled claim must not carry a dedupKey')
+      }
+      request = { taskId: rawTaskId, scheduledFireTime: rawFireTime, trigger: 'scheduled' }
     }
-    // Canonical snapshot: the caller-owned input is untrusted mutable state.
-    // The transaction callback runs LATER (possibly behind queued work), and
-    // re-reading `input` there would let a JS/host caller mutate fields after
-    // validation (TOCTOU). Everything below the queue boundary uses only
-    // this SDK-owned copy.
-    const request: ExecutionClaimInput =
-      input.trigger === 'manual'
-        ? {
-            taskId: input.taskId,
-            scheduledFireTime: input.scheduledFireTime,
-            trigger: 'manual',
-            dedupKey: input.dedupKey,
-          }
-        : {
-            taskId: input.taskId,
-            scheduledFireTime: input.scheduledFireTime,
-            trigger: 'scheduled',
-          }
     // Identities are namespaced per kind: scheduled claims consult `byFire`
     // (the DEFAULT `${taskId}:${scheduledFireTime}` identity), manual claims
     // consult `byDedup` (the custom identity). A custom key whose text happens
@@ -242,6 +246,13 @@ export class FileExecutionStore implements ExecutionStore {
     this.seq = seq
     this.rebuildDerivedIndexes()
     this.loaded = true
+    // Physically normalize the tail BEFORE any transaction can append:
+    // replay repaired only the in-memory view, and a subsequent append onto
+    // torn bytes (or onto a delimiter-less complete record) would corrupt
+    // the NEXT replay. doLoad precedes every transaction, so the repair is
+    // inherently serialized with all later appends.
+    const repair = await this.log.repairTail()
+    if (repair !== null) reportCronDiagnostic(this.onDiagnostic, repair)
     await this.persistIndexBestEffort()
   }
 
