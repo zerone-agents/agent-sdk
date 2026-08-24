@@ -13,6 +13,15 @@ export interface ExecutionLogReplayResult {
   diagnostics: string[]
 }
 
+/**
+ * Strict (fatal) UTF-8 decoder shared by replay() and repairTail() so the two
+ * paths can never diverge on decoding semantics. Buffer#toString('utf8')
+ * silently replaces invalid bytes with U+FFFD — a structurally complete
+ * record containing invalid bytes would then pass validation and be
+ * solidified as durable history. Invalid UTF-8 is corruption, not data.
+ */
+const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true })
+
 function isExecutionLogRecord(value: unknown): value is ExecutionLogRecord {
   if (typeof value !== 'object' || value === null) return false
   const v = value as { seq?: unknown; execution?: unknown }
@@ -84,7 +93,11 @@ export class ExecutionLog {
     let parsed: unknown
     try {
       // Only the tail candidate is decoded, and only for the validity check.
-      parsed = JSON.parse(tailBytes.toString('utf8'))
+      // STRICT decoding: a structurally complete record containing invalid
+      // UTF-8 bytes must NOT pass as "complete valid record" — the decode
+      // throws, the tail is treated as torn/invalid, and the corrupt bytes
+      // are truncated away instead of being solidified with a newline.
+      parsed = JSON.parse(strictUtf8Decoder.decode(tailBytes))
     } catch {
       parsed = undefined
     }
@@ -100,9 +113,9 @@ export class ExecutionLog {
   }
 
   async replay(): Promise<ExecutionLogReplayResult> {
-    let text: string
+    let bytes: Buffer
     try {
-      text = await readFile(this.filePath, 'utf8')
+      bytes = await readFile(this.filePath)
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         return { executions: new Map(), seq: 0, diagnostics: [] }
@@ -110,12 +123,24 @@ export class ExecutionLog {
       throw err
     }
 
+    // Byte-exact line splitting (consistent with repairTail), so the two
+    // paths share both the boundaries AND the strict decoding rule: each
+    // line is decoded with the fatal UTF-8 decoder, and a decode failure is
+    // corruption — never silently-replaced U+FFFD data.
     // A torn append leaves no trailing newline; a complete line always does.
     // Only then may the last line be treated as an incomplete tail.
-    const hasTrailingNewline = text.endsWith('\n')
-    const lines = text.split('\n')
-    // A complete file ends with \n; drop the empty trailing element.
-    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+    const hasTrailingNewline = bytes.length > 0 && bytes[bytes.length - 1] === 0x0a
+    const lines: Buffer[] = []
+    let start = 0
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] === 0x0a) {
+        lines.push(bytes.subarray(start, i))
+        start = i + 1
+      }
+    }
+    // The segment after the last newline is the (possibly incomplete) tail;
+    // empty when the file ends with a newline — no phantom empty line.
+    if (start < bytes.length) lines.push(bytes.subarray(start))
 
     const executions = new Map<string, CronExecution>()
     const diagnostics: string[] = []
@@ -124,7 +149,7 @@ export class ExecutionLog {
       const raw = lines[i]!
       let parsed: unknown
       try {
-        parsed = JSON.parse(raw)
+        parsed = JSON.parse(strictUtf8Decoder.decode(raw))
       } catch {
         parsed = undefined
       }

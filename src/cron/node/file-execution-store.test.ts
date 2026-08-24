@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -772,5 +772,55 @@ describe('FileExecutionStore', () => {
     await expect(store.claim(hostile as never)).rejects.toThrow(/dedupKey/)
     // Nothing was persisted or indexed by the refused claim.
     expect(await store.list()).toEqual([])
+  })
+
+  it('a structurally complete tail containing invalid UTF-8 is truncated, not solidified', async () => {
+    // A no-newline tail whose JSON structure is complete but whose output
+    // string contains an invalid 0xff byte. Non-strict decoding silently
+    // replaces it with U+FFFD, letting the record pass validation — repair
+    // would then append the newline and SOLIDIFY corruption as a durable
+    // record. Strict decoding must reject it: truncate + diagnose.
+    const logPath = path.join(dir, 'executions.jsonl')
+    const record = Buffer.concat([
+      Buffer.from(
+        '{"seq":1,"execution":{"id":"e-bad","cronTaskId":"t1","scheduledFireTime":60000,"trigger":"scheduled","status":"succeeded","output":"ok',
+        'utf8',
+      ),
+      Buffer.from([0xff]),
+      Buffer.from('"}}', 'utf8'),
+    ])
+    await writeFile(logPath, record)
+
+    const onDiagnostic = vi.fn()
+    const store = new FileExecutionStore(dir, { onDiagnostic })
+    const claimed = await store.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(claimed.kind).toBe('claimed')
+    expect(onDiagnostic.mock.calls.some((c) => /truncated/.test(String(c[0])))).toBe(true)
+
+    // The corrupt record must NOT be durable: a fresh replay sees only the
+    // clean claim — the bad bytes never entered history.
+    const third = new FileExecutionStore(dir)
+    const list = await third.list()
+    expect(list.filter((e) => e.id === 'e-bad')).toHaveLength(0)
+    expect(list.filter((e) => e.cronTaskId === 't2')).toHaveLength(1)
+  })
+
+  it('replay refuses a newline-terminated record containing invalid UTF-8', async () => {
+    // The same corrupt record, but newline-terminated (a bad byte inside an
+    // otherwise complete line). Replay must refuse to start — silently
+    // accepting it as U+FFFD would change durable history.
+    const logPath = path.join(dir, 'executions.jsonl')
+    const record = Buffer.concat([
+      Buffer.from(
+        '{"seq":1,"execution":{"id":"e-bad","cronTaskId":"t1","scheduledFireTime":60000,"trigger":"scheduled","status":"succeeded","output":"ok',
+        'utf8',
+      ),
+      Buffer.from([0xff]),
+      Buffer.from('"}}\n', 'utf8'),
+    ])
+    await writeFile(logPath, record)
+
+    const store = new FileExecutionStore(dir)
+    await expect(store.list()).rejects.toThrow(/corrupted/i)
   })
 })
