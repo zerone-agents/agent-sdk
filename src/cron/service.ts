@@ -118,7 +118,15 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
         // 30-minute timeout would stall every other task's schedule). Per-task
         // serialization is already the ExecutionStore's job (claim / skipped /
         // duplicate). runNow still awaits submit() for its final status.
-        void coordinator.submit(task, scheduledFireTime, 'scheduled').catch(() => {})
+        void coordinator
+          .submit(task, scheduledFireTime, 'scheduled')
+          .catch((err) => {
+            onDiagnostic(
+              `scheduled submit failed for ${task.id}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            )
+          })
       },
     },
     jitterConfig: options.jitterConfig,

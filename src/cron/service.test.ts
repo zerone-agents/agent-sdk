@@ -401,6 +401,40 @@ describe('createCronService', () => {
     expect(aAfter.some((e) => e.status === 'interrupted')).toBe(true)
   })
 
+  it('reports scheduled submit failures via onDiagnostic and keeps scheduling', async () => {
+    const onDiagnostic = vi.fn()
+    const h = makeService({ onDiagnostic })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    // Make the FIRST scheduled fire fail inside submit: executionStore.claim
+    // rejects once (a genuine scheduled-path rejection, not a sink failure).
+    let failNextClaim = true
+    const originalClaim = h.executionStore.claim.bind(h.executionStore)
+    h.executionStore.claim = async (input) => {
+      if (failNextClaim && input.trigger === 'scheduled') {
+        failNextClaim = false
+        throw new Error('claim failed')
+      }
+      return originalClaim(input)
+    }
+
+    await h.timer.advance(60_000 + 6_000) // crosses slot 1 -> submit rejects
+    await vi.waitFor(() => {
+      expect(onDiagnostic).toHaveBeenCalledWith(
+        expect.stringMatching(new RegExp(`scheduled submit failed for ${task.id}: claim failed`)),
+      )
+    })
+
+    // The scheduler is unaffected: the next slot (minute boundary + full
+    // jitter window) still fires and succeeds.
+    await h.timer.advance(60_000 + 66_000)
+    await vi.waitFor(async () => {
+      const executions = await h.service.listExecutions({ cronTaskId: task.id })
+      expect(executions.some((e) => e.status === 'succeeded' && e.trigger === 'scheduled')).toBe(true)
+    })
+  })
+
   it('catches up the most recent missed slot after a full restart', async () => {
     const h = makeService({})
     await h.service.start()
