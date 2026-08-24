@@ -16,6 +16,12 @@
 import type { ToolDefinition } from '../types.js'
 import type { WebSearchConfig } from './web-search.js'
 import type { WebFetchConfig } from './web-fetch-providers.js'
+import type { CronService } from '../cron/service.js'
+import { DefaultToolServices } from './default-services.js'
+
+// NOTE (import-cycle safety): default-services.ts imports ONLY types from
+// services.js (type-only imports, erased at compile time), so this runtime
+// value import does not create a load-time cycle.
 
 // ============================================================================
 // Service Types
@@ -75,6 +81,8 @@ export interface ToolServices {
   webSearch?: WebSearchConfig
   /** Optional WebFetch provider configuration; absent = anonymous Jina → local default. */
   webFetch?: WebFetchConfig
+  /** Cron service shared by the CronCreate/CronDelete/CronList tools; null = not initialized. */
+  cron: CronService | null
 }
 
 // ============================================================================
@@ -94,5 +102,27 @@ export function createEmptyServices(): ToolServices {
       activatedTools: new Set<string>(),
     },
     config: new Map<string, unknown>(),
+    cron: null,
   }
+}
+
+// ============================================================================
+// Per-Agent combinator
+// ============================================================================
+
+/**
+ * Per-Agent ToolServices resolution (ADR 0005).
+ *
+ * A caller-provided ToolServices object is COMBINED into a fresh copy when a
+ * cronService override applies — the caller's object is never mutated, so
+ * Agents sharing one container keep independent cron bindings. Without an
+ * override the caller's object is used as-is (caller-controlled sharing).
+ */
+export function resolveToolServices(
+  toolServices: ToolServices | undefined,
+  cronService: CronService | null | undefined,
+): ToolServices {
+  if (!cronService) return toolServices ?? new DefaultToolServices()
+  if (toolServices) return { ...toolServices, cron: cronService }
+  return Object.assign(new DefaultToolServices(), { cron: cronService })
 }

@@ -331,9 +331,9 @@ AskUserQuestion：向用户提问并等待回复。
 
 **当前状态**：
 - Cron 已升级为完整 Runtime（issue #42）：`CronService` 单一入口 + Scheduler/Coordinator/Runtime 内核 + 文件适配器（子路径导出 `@zerone-agent/agent-sdk/cron/node`）
-- `initCronTools(service: CronService)` 接受 Service；旧 `initCronTools(storage)` 签名已删除，无兼容层（`src/cron/type-contracts.ts` 在类型层面防回归）
+- 工具经 `AgentOptions.cronService` 逐 Agent 绑定（ADR 0005，按 Agent 实例作用域存入 `ToolServices.cron`，工具读取 `ctx.services.cron`）；`initCronTools` 已删除，无兼容层（`src/cron/type-contracts.ts` 在类型层面防回归）
 - `AgentOptions.cronStorage` / `cronJitterConfig` 已移除（原本就未被消费）
-- 所有 Cron 工具（Create/Delete/List）返回 `"Cron storage is not initialized."`
+- 未绑定 `cronService` 时，所有 Cron 工具（Create/Delete/List）返回 `"Cron storage is not initialized."`
 
 **缺失环节**：
 1. 无本地 `CronStorage` 实现（需使用侧自行实现）
@@ -351,7 +351,7 @@ AskUserQuestion：向用户提问并等待回复。
 | FindTool | 无调用方为 deferredTools 喂数据 | 在 Agent.setup() 中调用 `setDeferredTools()` |
 | ~~ListMcpResources~~ | ~~无调用方注入 MCP connections~~ | **已在 #3 删除** |
 | ~~ReadMcpResource~~ | ~~同上~~ | **已在 #3 删除** |
-| CronCreate/Delete/List | （已修复）工具直接操作 Storage，绕过 Runtime | （issue #42）`initCronTools(service: CronService)`，SDK Tool 与宿主 API 共用同一 Service |
+| CronCreate/Delete/List | （已修复）工具直接操作 Storage，绕过 Runtime | （issue #42）`AgentOptions.cronService` 注入 `CronService`（ADR 0005 per-Agent 作用域），SDK 工具与宿主 API 共用同一 Service |
 
 > 注：`RemoteTrigger` 在源代码中处于注释状态（`src/tools/cron.ts:238-266`），未注册到 `ALL_TOOLS`，因此不计入空壳工具（既非内置工具也非可调用工具）。
 

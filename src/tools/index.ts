@@ -30,7 +30,7 @@ import { AskUserQuestionTool } from './ask-user.js'
 import { FindToolTool } from './find-tool.js'
 
 // Scheduling
-import { CronCreateTool, CronDeleteTool, CronListTool, initCronTools } from './cron.js'
+import { CronCreateTool, CronDeleteTool, CronListTool } from './cron.js'
 
 // Config
 import { ConfigTool } from './config.js'
@@ -155,7 +155,6 @@ export {
   CronCreateTool,
   CronDeleteTool,
   CronListTool,
-  initCronTools,
   // Config
   ConfigTool,
   // Todo

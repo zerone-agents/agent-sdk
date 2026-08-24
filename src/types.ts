@@ -697,8 +697,19 @@ export interface AgentOptions {
   strictMcpConfig?: boolean
   /** Maximum request body size in bytes. Defaults to 6MB (6291456). Images are stripped from oldest messages when exceeded. */
   maxRequestBodyBytes?: number
-  /** Per-agent tool services for state isolation. Defaults to a fresh DefaultToolServices. */
+  /** Per-agent tool services for state isolation. Defaults to a fresh DefaultToolServices.
+   * Note: a caller-provided ToolServices object shared across Agents intentionally shares
+   * its non-cron slots (findTool registry, config) — sharing is caller-controlled; per-Agent
+   * isolation of the cron binding is preserved via the copy-on-override combinator. */
   toolServices?: ToolServices
+  /**
+   * Cron service for the CronCreate/CronDelete/CronList tools (ADR 0005 per-Agent state).
+   * When combined with a caller-provided `toolServices`, the Agent builds a per-Agent
+   * copy of that object and binds `cron` on the copy — the caller's ToolServices object
+   * is never mutated. Null/undefined = cron tools report
+   * "Cron service is not initialized."
+   */
+  cronService?: import('./cron/service.js').CronService
 
   // ===========================================================================
   // === SessionConfig === (9 fields)

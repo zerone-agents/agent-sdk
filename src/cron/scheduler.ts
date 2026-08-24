@@ -27,7 +27,8 @@ function taskFingerprint(task: CronTask): string {
  * Schedules task fires. Knows nothing about executions or persistence of
  * run state: it computes jittered slots, diffs task snapshots by content
  * fingerprint, submits due slots to the host, and catches up at most the
- * most recent missed slot per task after downtime.
+ * most recent missed slot per task after downtime (binary search — no
+ * walk cap, so no stale catch-ups regardless of downtime length).
  */
 export class CronScheduler {
   private entries = new Map<string, SchedulerEntry>()
@@ -49,6 +50,63 @@ export class CronScheduler {
     this.started = true
     this.suspended = false
     await this.refresh()
+    await this.catchUpAfterRestart()
+  }
+
+  /**
+   * After a process restart (entries rebuilt from storage), each task's
+   * missed-most-recent slot since its persisted anchor is submitted once.
+   * The ExecutionStore's permanent (taskId, fireTime) dedup absorbs slots
+   * that already executed before the downtime, so submitting is safe.
+   */
+  private async catchUpAfterRestart(): Promise<void> {
+    const now = this.deps.clock.now()
+    for (const entry of this.entries.values()) {
+      const slot = this.mostRecentSlotAtOrBefore(
+        entry.task,
+        now,
+        entry.task.lastFiredAt ?? entry.task.createdAt,
+      )
+      if (slot === null) continue
+      try {
+        await this.deps.host.onFire(entry.task, slot)
+      } catch {
+        // Host (coordinator) errors never break the scheduling loop.
+      }
+      entry.nextRunAt = this.nextSlotAfter(entry.task, slot)
+    }
+    // refresh() already armed the timer before catch-up ran; re-arm so the
+    // earliest recomputed nextRunAt wins (mirrors resume(), avoiding a
+    // stale-wake window until the next tick self-heals).
+    this.armTimer()
+  }
+
+  /**
+   * Most recent jittered slot <= now and strictly after `after`, computed by
+   * binary search over the monotonic nextSlotAfter: O(log(now - after))
+   * regardless of how many periods were missed — no walk cap, no stale slots.
+   * Returns null when no slot lies in (after, now].
+   *
+   * Correctness: f is non-decreasing and f(t) > t. The loop maintains
+   * f(lo) <= now < f(hi); it terminates with hi = lo + 1, so f(lo) is a slot
+   * <= now, and no later slot is <= now because f(f(lo)) >= f(lo + 1) > now.
+   * `mid` is clamped into (lo, hi) because jittered slot times are fractional
+   * milliseconds — floor((lo + hi) / 2) can round below `lo` and stall the
+   * loop; clamping guarantees the interval shrinks every iteration.
+   */
+  private mostRecentSlotAtOrBefore(task: CronTask, now: number, after: number): number | null {
+    const first = this.nextSlotAfter(task, after)
+    if (first === null || first > now) return null
+    let lo = after
+    let hi = now
+    while (hi - lo > 1) {
+      let mid = Math.floor((lo + hi) / 2)
+      if (mid <= lo) mid = lo + 1
+      const slot = this.nextSlotAfter(task, mid)
+      if (slot !== null && slot <= now) lo = mid
+      else hi = mid
+    }
+    return this.nextSlotAfter(task, lo)
   }
 
   stop(): void {
@@ -172,16 +230,16 @@ export class CronScheduler {
    * When several periods were missed (suspension, downtime, late timer),
    * the most recent missed slot wins — one catch-up fire per task. Older
    * slots stay missed; the ExecutionStore dedups any resubmission.
+   * `nextRunAt` itself is a due slot and must remain a candidate: due to
+   * jitter, f(nextRunAt - 1) skips to the slot AFTER nextRunAt, so the
+   * binary search over (nextRunAt, now] is combined with a nextRunAt
+   * fallback — exactly the old walk's result (start at nextRunAt, advance
+   * while the next slot is still <= now).
    */
   private mostRecentMissedSlot(entry: SchedulerEntry, now: number): number | null {
-    let slot = entry.nextRunAt
-    if (slot === null || slot > now) return null
-    let next = this.nextSlotAfter(entry.task, slot)
-    while (next !== null && next <= now) {
-      slot = next
-      next = this.nextSlotAfter(entry.task, slot)
-    }
-    return slot
+    const { nextRunAt } = entry
+    if (nextRunAt === null || nextRunAt > now) return null
+    return this.mostRecentSlotAtOrBefore(entry.task, now, nextRunAt) ?? nextRunAt
   }
 
   private clearTimer(): void {

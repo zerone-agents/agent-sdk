@@ -51,7 +51,7 @@ import type { NormalizedMessageParam } from './providers/types.js'
 import { DEFAULT_MAX_TOKENS } from './engine.js'
 import { compactConversationWithProtectedTail, type AutoCompactState } from './utils/compact.js'
 import { resolveSubprocessEnv } from './utils/subprocess-env.js'
-import { DefaultToolServices } from './tools/default-services.js'
+import { resolveToolServices } from './tools/services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
 export type QueryOverrides = Partial<AgentOptions> &
@@ -145,6 +145,7 @@ interface MiscConfig {
     timeout?: number
   }>>
   maxSessionTurns?: number
+  cronService?: import('./cron/service.js').CronService
 }
 
 // --------------------------------------------------------------------------
@@ -370,6 +371,7 @@ export class Agent {
       extraArgs: opts.extraArgs,
       hooks: opts.hooks,
       maxSessionTurns: opts.maxSessionTurns,
+      cronService: opts.cronService,
     }
   }
 
@@ -384,6 +386,13 @@ export class Agent {
     const skillConfig = this.extractSkillConfig(opts)
     const miscConfig = this.extractMiscConfig(opts)
 
+    // Per-agent tool services (ADR 0005). Precedence: an explicit `cronService`
+    // option wins and is combined into a fresh per-Agent COPY — the caller's
+    // ToolServices object is never mutated, so Agents sharing one container
+    // keep independent cron bindings. Without an override the caller's object
+    // (or a fresh default) is used as-is.
+    const toolServices = resolveToolServices(opts.toolServices, miscConfig.cronService)
+
     // Construct AgentEnvironment from the most relevant groups
     return {
       provider,
@@ -394,7 +403,7 @@ export class Agent {
       mcpTools: this.toolPool,
       settingSources: skillConfig.settingSources,
       skillRegistry: this.skillRegistry,
-      toolServices: opts.toolServices ?? new DefaultToolServices(),
+      toolServices,
       subprocessEnv: resolveSubprocessEnv({
         toolEnv: envConfig.toolEnv,
         toolEnvInherit: envConfig.toolEnvInherit,

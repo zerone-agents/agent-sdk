@@ -45,6 +45,21 @@ describe('DefaultToolServices', () => {
       expect(services2.findTool.deferredTools).toHaveLength(0)
     })
 
+    it('creates separate cron slot per instance', () => {
+      const services1 = new DefaultToolServices()
+      const services2 = new DefaultToolServices()
+
+      // Both start null (cron service not initialized)
+      expect(services1.cron).toBeNull()
+      expect(services2.cron).toBeNull()
+
+      // Assign a cron service on instance 1
+      services1.cron = {} as never
+
+      // Instance 2 should still be null
+      expect(services2.cron).toBeNull()
+    })
+
     it('creates separate config storage per instance', () => {
       const services1 = new DefaultToolServices()
       const services2 = new DefaultToolServices()

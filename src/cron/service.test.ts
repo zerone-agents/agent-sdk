@@ -32,12 +32,14 @@ class MemoryCronStorage implements CronStorage {
 
 class MemoryExecutionStore implements ExecutionStore {
   executions: CronExecution[] = []
+  /** dedup key -> execution id; honors input.dedupKey like FileExecutionStore. */
+  private byFire = new Map<string, string>()
   private nextId = 1
   async recoverInterrupted() { return 0 }
   async claim(input) {
-    const dup = this.executions.find(
-      (e) => e.cronTaskId === input.taskId && e.scheduledFireTime === input.scheduledFireTime,
-    )
+    const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
+    const dupId = this.byFire.get(key)
+    const dup = dupId !== undefined ? this.executions.find((e) => e.id === dupId) : undefined
     if (dup) return { kind: 'duplicate' as const, execution: dup }
     const active = this.executions.find(
       (e) => e.cronTaskId === input.taskId && (e.status === 'pending' || e.status === 'running'),
@@ -50,6 +52,7 @@ class MemoryExecutionStore implements ExecutionStore {
       status: active ? 'skipped' : 'pending',
     }
     this.executions.push(created)
+    this.byFire.set(key, created.id)
     return { kind: active ? ('skipped' as const) : ('claimed' as const), execution: created }
   }
   async get(id) { return this.executions.find((e) => e.id === id) ?? null }
@@ -72,13 +75,16 @@ function makeService(opts: {
   executor?: CronExecutor
   maxTasks?: number
   events?: CronEvent[]
+  eventSink?: CronEventSink
+  onDiagnostic?: (message: string) => void
   lock?: { acquire: () => Promise<void>; release: () => Promise<void> }
 }) {
   const taskStorage = new MemoryCronStorage()
   const executionStore = new MemoryExecutionStore()
   const clock = new FakeClock(0)
   const timer = new ManualTimer(clock)
-  const sink: CronEventSink | undefined = opts.events ? (e) => { opts.events!.push(e) } : undefined
+  const sink: CronEventSink | undefined =
+    opts.eventSink ?? (opts.events ? (e) => { opts.events!.push(e) } : undefined)
   const executor: CronExecutor = opts.executor ?? (async () => ({ output: 'ok' }))
   const service = createCronService({
     taskStorage,
@@ -88,6 +94,7 @@ function makeService(opts: {
     clock,
     timer,
     maxTasks: opts.maxTasks,
+    onDiagnostic: opts.onDiagnostic,
     lock: opts.lock,
   })
   return { service, taskStorage, executionStore, clock, timer }
@@ -96,6 +103,87 @@ function makeService(opts: {
 const everyMinute = { cron: '* * * * *', prompt: 'run report' }
 
 describe('createCronService', () => {
+  it('a throwing events sink does not affect execution state; failures are reported via onDiagnostic', async () => {
+    const onDiagnostic = vi.fn()
+    const h = makeService({
+      eventSink: () => { throw new Error('sink exploded') },
+      onDiagnostic,
+    })
+    await h.service.start()
+
+    const task = await h.service.create(everyMinute)
+    const execution = await h.service.runNow(task.id)
+
+    // Diagnostics were reported for every failed emit.
+    expect(onDiagnostic).toHaveBeenCalled()
+    for (const call of onDiagnostic.mock.calls) {
+      expect(call[0]).toMatch(/cron event sink failed/)
+    }
+    // State is unaffected: the execution still succeeded.
+    expect(execution.status).toBe('succeeded')
+    expect(await h.executionStore.get(execution.id)).toMatchObject({ status: 'succeeded' })
+  })
+
+  it('a throwing onDiagnostic does not affect runNow execution state', async () => {
+    const h = makeService({
+      eventSink: () => { throw new Error('sink exploded') },
+      onDiagnostic: () => { throw new Error('diagnostics exploded') },
+    })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    // Both channels are broken; the execution must still succeed.
+    const execution = await h.service.runNow(task.id)
+    expect(execution.status).toBe('succeeded')
+    expect(await h.executionStore.get(execution.id)).toMatchObject({ status: 'succeeded' })
+  })
+
+  it('a throwing onDiagnostic during a failed scheduled submit causes no unhandled rejection and keeps scheduling', async () => {
+    // Deterministic unhandled-rejection recorder: if the detached submit
+    // handler's diagnostics path were to throw, Node would surface it here.
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => { unhandled.push(err) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const h = makeService({ onDiagnostic: () => { throw new Error('diagnostics exploded') } })
+      await h.service.start()
+      const task = await h.service.create(everyMinute)
+
+      let failNextClaim = true
+      const originalClaim = h.executionStore.claim.bind(h.executionStore)
+      h.executionStore.claim = async (input) => {
+        if (failNextClaim && input.trigger === 'scheduled') {
+          failNextClaim = false
+          throw new Error('claim failed')
+        }
+        return originalClaim(input)
+      }
+
+      await h.timer.advance(60_000 + 6_000) // crosses slot 1 -> submit rejects
+      // Flush microtasks/immediates so a rejection (if any) would surface.
+      await new Promise((r) => setImmediate(r))
+
+      // The scheduler is unaffected: the next slot still fires and succeeds.
+      await h.timer.advance(60_000 + 66_000)
+      await vi.waitFor(async () => {
+        const executions = await h.service.listExecutions({ cronTaskId: task.id })
+        expect(executions.some((e) => e.status === 'succeeded' && e.trigger === 'scheduled')).toBe(true)
+      })
+      await new Promise((r) => setImmediate(r))
+
+      expect(unhandled).toEqual([])
+
+      // The leak documented in round-2 review is fixed: claimAndRun now
+      // cleans up (clearTimeout + pending.delete) when claim rejects, so
+      // stop() cannot abort a leaked submission's unhandled abortPromise.
+      await h.service.stop()
+      await new Promise((r) => setImmediate(r))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
   it('create() validates, persists, refreshes the schedule, and emits events', async () => {
     const events: CronEvent[] = []
     const h = makeService({ events })
@@ -168,6 +256,27 @@ describe('createCronService', () => {
     await expect(h.service.update('missing', { name: 'x' })).resolves.toBeNull()
   })
 
+  it('a failed start leaves the service not accepting runNow and the lock released', async () => {
+    const lock = { acquire: vi.fn(async () => {}), release: vi.fn(async () => {}) }
+    const h = makeService({ lock })
+    // Make scheduler startup fail: storage.load rejects until flipped back.
+    let failLoad = false
+    const originalLoad = h.taskStorage.load.bind(h.taskStorage)
+    h.taskStorage.load = async () => {
+      if (failLoad) throw new Error('tasks.json unreadable')
+      return originalLoad()
+    }
+    failLoad = true
+    await expect(h.service.start()).rejects.toThrow('tasks.json unreadable')
+    expect(lock.release).toHaveBeenCalled()
+
+    // With storage healthy again, mutations work, but runNow must be
+    // rejected: the coordinator was rolled back and is not accepting work.
+    failLoad = false
+    const task = await h.service.create(everyMinute)
+    await expect(h.service.runNow(task.id)).rejects.toThrow(/not accepting submissions/)
+  })
+
   it('runNow() executes manually through the same coordinator', async () => {
     const h = makeService({})
     await h.service.start()
@@ -197,6 +306,42 @@ describe('createCronService', () => {
     expect(second.status).toBe('skipped')
     release()
     expect(await first).toMatchObject({ status: 'succeeded' })
+  })
+
+  it('concurrent runNow calls in the same millisecond yield execute + skipped, not a duplicate', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => { release = r })
+    const h = makeService({ executor: async () => { await gate; return {} } })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    // Launch both concurrently (fire keys are captured synchronously at
+    // invocation, i.e. within the same frozen-clock millisecond), then
+    // release the gate so the succeeded execution can settle.
+    const pending = [h.service.runNow(task.id), h.service.runNow(task.id)]
+    release()
+    const [a, b] = await Promise.all(pending)
+
+    const statuses = [a.status, b.status].sort()
+    expect(statuses).toEqual(['skipped', 'succeeded']) // NOT duplicate/pending
+    expect(a.id).not.toBe(b.id)
+    release() // gate already consumed by the succeeded one; safe no-op otherwise
+  })
+
+  it('sequential runNow calls on a frozen clock are distinct executions', async () => {
+    const h = makeService({})
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    const first = await h.service.runNow(task.id)
+    const second = await h.service.runNow(task.id)
+
+    expect(first.id).not.toBe(second.id)
+    expect(second.status).toBe('succeeded')
+    // No drift: identity comes from a unique dedup key, not synthetic fire
+    // times — both executions report the REAL (frozen) clock time.
+    expect(first.scheduledFireTime).toBe(h.clock.now())
+    expect(second.scheduledFireTime).toBe(h.clock.now())
   })
 
   it('get/listExecutions/getExecution delegate to the stores', async () => {
@@ -320,5 +465,70 @@ describe('createCronService', () => {
     await h.service.stop({ drainMs: 0 })
     const aAfter = await h.service.listExecutions({ cronTaskId: taskA.id })
     expect(aAfter.some((e) => e.status === 'interrupted')).toBe(true)
+  })
+
+  it('reports scheduled submit failures via onDiagnostic and keeps scheduling', async () => {
+    const onDiagnostic = vi.fn()
+    const h = makeService({ onDiagnostic })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    // Make the FIRST scheduled fire fail inside submit: executionStore.claim
+    // rejects once (a genuine scheduled-path rejection, not a sink failure).
+    let failNextClaim = true
+    const originalClaim = h.executionStore.claim.bind(h.executionStore)
+    h.executionStore.claim = async (input) => {
+      if (failNextClaim && input.trigger === 'scheduled') {
+        failNextClaim = false
+        throw new Error('claim failed')
+      }
+      return originalClaim(input)
+    }
+
+    await h.timer.advance(60_000 + 6_000) // crosses slot 1 -> submit rejects
+    await vi.waitFor(() => {
+      expect(onDiagnostic).toHaveBeenCalledWith(
+        expect.stringMatching(new RegExp(`scheduled submit failed for ${task.id}: claim failed`)),
+      )
+    })
+
+    // The scheduler is unaffected: the next slot (minute boundary + full
+    // jitter window) still fires and succeeds.
+    await h.timer.advance(60_000 + 66_000)
+    await vi.waitFor(async () => {
+      const executions = await h.service.listExecutions({ cronTaskId: task.id })
+      expect(executions.some((e) => e.status === 'succeeded' && e.trigger === 'scheduled')).toBe(true)
+    })
+  })
+
+  it('catches up the most recent missed slot after a full restart', async () => {
+    const h = makeService({})
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    await h.timer.advance(60_000 + 6_000) // fires slot 1; markFired stamps lastFiredAt
+    await vi.waitFor(async () => {
+      const execs = await h.service.listExecutions({ cronTaskId: task.id })
+      expect(execs).toHaveLength(1)
+      expect(execs[0]!.status).toBe('succeeded')
+    })
+    // Flush the fire-and-forget chain (active-run bookkeeping) before stop()
+    // so the drain loop has nothing in flight under the manual timer.
+    await new Promise((r) => setTimeout(r, 0))
+    await h.service.stop()
+
+    h.clock.set(h.clock.now() + 5 * 60_000) // downtime, no timers ran
+
+    await h.service.start()
+
+    // Scheduled fires are fire-and-forget; poll for the catch-up execution.
+    await vi.waitFor(async () => {
+      expect(await h.service.listExecutions({ cronTaskId: task.id })).toHaveLength(2)
+    })
+    const executions = await h.service.listExecutions({ cronTaskId: task.id })
+    expect(executions[0]!.status).toBe('succeeded')
+    // Newest first: the catch-up fire is the most recent missed slot.
+    expect(executions[0]!.scheduledFireTime).toBeGreaterThan(executions[1]!.scheduledFireTime)
+    expect(executions[0]!.scheduledFireTime).toBeLessThanOrEqual(h.clock.now())
   })
 })

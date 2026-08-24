@@ -1,7 +1,14 @@
 import { computeNextCronRun, parseCronExpression } from './cron.js'
 import { systemClock, systemTimer, type CronClock, type CronTimer } from './clock.js'
 import { CronExecutionCoordinator } from './coordinator.js'
-import { emitCronEvent, noopEventSink, type CronEventSink } from './events.js'
+import {
+  consoleDiagnosticSink,
+  emitCronEvent,
+  noopEventSink,
+  reportCronDiagnostic,
+  type CronDiagnosticSink,
+  type CronEventSink,
+} from './events.js'
 import type { ExecutionStore } from './execution-store.js'
 import type { CronExecutor } from './executor.js'
 import { CronRuntime } from './runtime.js'
@@ -51,6 +58,8 @@ export interface CreateCronServiceOptions {
   executionStore: ExecutionStore
   executor: CronExecutor
   events?: CronEventSink
+  /** Diagnostics channel: sink/replay failures reported here, never thrown. */
+  onDiagnostic?: CronDiagnosticSink
   executionTimeoutMs?: number
   maxTasks?: number
   clock?: CronClock
@@ -83,6 +92,12 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     events = noopEventSink,
     maxTasks = DEFAULT_MAX_CRON_TASKS,
   } = options
+  const onDiagnostic = options.onDiagnostic ?? consoleDiagnosticSink
+
+  // Wrap the sink once so EVERY emit — the coordinator's and the service's
+  // own — reports sink failures through the diagnostics channel instead of
+  // swallowing them silently. Diagnostics never reject or alter state.
+  const safeEvents: CronEventSink = (event) => emitCronEvent(events, event, onDiagnostic)
 
   const coordinator = new CronExecutionCoordinator({
     executionStore,
@@ -90,7 +105,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     storage: taskStorage,
     clock,
     timer,
-    events,
+    events: safeEvents,
     executionTimeoutMs,
   })
   const scheduler = new CronScheduler({
@@ -104,7 +119,18 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
         // 30-minute timeout would stall every other task's schedule). Per-task
         // serialization is already the ExecutionStore's job (claim / skipped /
         // duplicate). runNow still awaits submit() for its final status.
-        void coordinator.submit(task, scheduledFireTime, 'scheduled').catch(() => {})
+        void coordinator
+          .submit(task, scheduledFireTime, 'scheduled')
+          .catch((err) => {
+            // Best-effort: a throwing diagnostics sink must not turn this
+            // detached handler into an unhandled rejection.
+            reportCronDiagnostic(
+              onDiagnostic,
+              `scheduled submit failed for ${task.id}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            )
+          })
       },
     },
     jitterConfig: options.jitterConfig,
@@ -112,7 +138,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
   const runtime = new CronRuntime({ scheduler, coordinator })
 
   const emitSchedule = () =>
-    emitCronEvent(events, { type: 'scheduleUpdated', snapshots: scheduler.snapshot() })
+    emitCronEvent(events, { type: 'scheduleUpdated', snapshots: scheduler.snapshot() }, onDiagnostic)
 
   return {
     async start(): Promise<void> {
@@ -153,7 +179,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
         ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
       })
       await scheduler.refresh()
-      await emitCronEvent(events, { type: 'taskCreated', task })
+      await emitCronEvent(events, { type: 'taskCreated', task }, onDiagnostic)
       await emitSchedule()
       return task
     },
@@ -166,7 +192,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
       const updated = await taskStorage.update(taskId, changes)
       if (!updated) return null
       await scheduler.refresh()
-      await emitCronEvent(events, { type: 'taskUpdated', task: updated })
+      await emitCronEvent(events, { type: 'taskUpdated', task: updated }, onDiagnostic)
       await emitSchedule()
       return updated
     },
@@ -176,17 +202,25 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
       if (!existing) throw new Error(`Cron task not found: ${taskId}`)
       await taskStorage.remove([taskId])
       await scheduler.refresh()
-      await emitCronEvent(events, { type: 'taskDeleted', taskId })
+      await emitCronEvent(events, { type: 'taskDeleted', taskId }, onDiagnostic)
       await emitSchedule()
     },
 
     async runNow(taskId: string): Promise<CronExecution> {
-      // Capture the manual fire time eagerly (at invocation), so a task
-      // invoked twice gets two distinct fire times rather than a duplicate.
-      const fireTime = clock.now()
       const task = await taskStorage.get(taskId)
       if (!task) throw new Error(`Cron task not found: ${taskId}`)
-      return coordinator.submit(task, fireTime, 'manual')
+      // Identity is a unique dedup key, NOT a synthetic fire time: the real
+      // clock timestamp stays accurate (no drift on frozen/rapid calls), and
+      // a uuid guarantees distinct executions even within the same
+      // millisecond (concurrent triggers record `skipped`, not `duplicate`).
+      // `globalThis.crypto` is the WebCrypto global (Node >= 19) — no
+      // `node:` import so the kernel stays portable.
+      return coordinator.submit(
+        task,
+        clock.now(),
+        'manual',
+        `manual:${globalThis.crypto.randomUUID()}`,
+      )
     },
 
     listExecutions: (query?: CronExecutionQuery) => executionStore.list(query),

@@ -215,6 +215,41 @@ describe('createDefaultCronService', () => {
     await service.stop()
   })
 
+  it('warns on store replay diagnostics via the console sink when no onDiagnostic is given', async () => {
+    const { clock, log } = makeContext()
+    const warnSpy = vi.spyOn(console, 'warn')
+    try {
+      // Seed a torn-tail record directly (crash mid-append), reusing the
+      // corruption pattern from file-execution-store.test.ts.
+      const { mkdir, appendFile } = await import('node:fs/promises')
+      const cronDir = path.join(dataDir, 'cron')
+      await mkdir(cronDir, { recursive: true })
+      await appendFile(
+        path.join(cronDir, 'executions.jsonl'),
+        '{"seq":2,"execution":{"id":"e2","cronTaskId":"t1","sched',
+        'utf8',
+      )
+
+      // No onDiagnostic: the default composition must still surface store
+      // replay diagnostics (here: the torn tail) through the console sink.
+      const service = createDefaultCronService({
+        dataDir,
+        resolveAgent: async () => ({}),
+        createAgentFn: makeFakeAgent(log),
+        clock,
+        timer: new ManualTimer(clock),
+      })
+      await service.start() // triggers recoverInterrupted -> ensureLoaded -> replay
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/ignored incomplete trailing record/),
+      )
+      await service.stop()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
   it('resolves the agent fresh on every fire', async () => {
     const { clock, log } = makeContext()
     const resolveAgent = vi.fn(async () => ({}))

@@ -1,16 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
+import type { ToolContext } from '../types.js'
 import type { CronService } from './service.js'
 import type { CronTask } from './types.js'
-import {
-  CronCreateTool,
-  CronDeleteTool,
-  CronListTool,
-  DEFAULT_CRON_CREATE_DESCRIPTION,
-  initCronTools,
-} from '../tools/cron.js'
+import { CronCreateTool, CronDeleteTool, CronListTool } from '../tools/cron.js'
+import { createEmptyServices } from '../tools/services.js'
 
-const toolContext = { cwd: process.cwd() }
+/** Build a ToolContext whose services carry the given cron service mock. */
+function contextWith(mock: CronService | null, agentId?: string): ToolContext {
+  return {
+    cwd: process.cwd(),
+    ...(agentId ? { agentId } : {}),
+    services: { ...createEmptyServices(), cron: mock },
+  } as ToolContext
+}
 
 function createMockService() {
   return {
@@ -53,25 +56,20 @@ function cronTask(overrides: Partial<CronTask> = {}): CronTask {
 }
 
 describe('CronCreateTool', () => {
-  let service: MockService
-
-  beforeEach(() => {
-    service = createMockService()
-    initCronTools(asService(service))
-  })
-
   it('requires cron and prompt fields before touching the service', async () => {
-    const result = await CronCreateTool.call({ prompt: 'x' }, toolContext)
+    const service = createMockService()
+    const result = await CronCreateTool.call({ prompt: 'x' }, contextWith(asService(service)))
 
     expect(result.is_error).toBe(true)
-    expect((result.content as string)).toContain('requires cron and prompt')
+    expect(result.content as string).toContain('requires cron and prompt')
     expect(service.create).not.toHaveBeenCalled()
   })
 
   it('delegates to service.create and reports id + next run', async () => {
+    const service = createMockService()
     const result = await CronCreateTool.call(
       { cron: '*/5 * * * *', prompt: 'Run the report', agent: 'finance' },
-      toolContext,
+      contextWith(asService(service)),
     )
 
     expect(service.create).toHaveBeenCalledWith({
@@ -84,9 +82,10 @@ describe('CronCreateTool', () => {
   })
 
   it('falls back to context.agentId when the agent field is omitted', async () => {
+    const service = createMockService()
     await CronCreateTool.call(
       { cron: '*/5 * * * *', prompt: 'Run the report' },
-      { cwd: process.cwd(), agentId: 'default-agent' },
+      contextWith(asService(service), 'default-agent'),
     )
 
     expect(service.create).toHaveBeenCalledWith(
@@ -95,6 +94,7 @@ describe('CronCreateTool', () => {
   })
 
   it('forwards an optional name', async () => {
+    const service = createMockService()
     service.create.mockResolvedValue({
       id: 'task-1',
       name: 'report',
@@ -105,7 +105,7 @@ describe('CronCreateTool', () => {
 
     await CronCreateTool.call(
       { cron: '*/5 * * * *', prompt: 'Run the report', name: 'report' },
-      toolContext,
+      contextWith(asService(service)),
     )
 
     expect(service.create).toHaveBeenCalledWith(
@@ -114,47 +114,53 @@ describe('CronCreateTool', () => {
   })
 
   it('surfaces service validation errors as is_error results', async () => {
+    const service = createMockService()
     service.create.mockRejectedValue(
       new Error('Invalid cron expression: "nope". Must be a valid 5-field cron (e.g. "0 16 * * *").'),
     )
 
-    const result = await CronCreateTool.call({ cron: 'nope', prompt: 'x' }, toolContext)
+    const result = await CronCreateTool.call(
+      { cron: 'nope', prompt: 'x' },
+      contextWith(asService(service)),
+    )
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('Invalid cron expression')
   })
 
   it('surfaces the task limit error from the service', async () => {
+    const service = createMockService()
     service.create.mockRejectedValue(new Error('Cron task limit reached: maximum 50 tasks.'))
 
-    const result = await CronCreateTool.call({ cron: '*/5 * * * *', prompt: 'x' }, toolContext)
+    const result = await CronCreateTool.call(
+      { cron: '*/5 * * * *', prompt: 'x' },
+      contextWith(asService(service)),
+    )
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('Cron task limit reached')
   })
 
-  it('resets the agent list when re-initialized without agents', () => {
-    initCronTools(asService(service), { finance: { description: 'runs finance reports' } })
-    expect(CronCreateTool.description).toContain('"finance": runs finance reports')
-    expect(CronCreateTool.description).not.toBe(DEFAULT_CRON_CREATE_DESCRIPTION)
+  it('reports NOT INITIALIZED when the cron service is null', async () => {
+    const result = await CronCreateTool.call(
+      { cron: '*/5 * * * *', prompt: 'Run the report' },
+      contextWith(null),
+    )
 
-    // A later re-init without agents must drop the stale agent list (and its
-    // contradicting "creation will fail" text), restoring the default.
-    initCronTools(asService(service))
-    expect(CronCreateTool.description).toBe(DEFAULT_CRON_CREATE_DESCRIPTION)
+    expect(result.is_error).toBe(true)
+    expect(result.content).toBe('Cron service is not initialized.')
+  })
+
+  it('keeps the static default description (no agent enumeration)', () => {
+    expect(CronCreateTool.description).toContain('Agent selection')
+    expect(CronCreateTool.description).not.toContain('Available agents:')
   })
 })
 
 describe('CronDeleteTool', () => {
-  let service: MockService
-
-  beforeEach(() => {
-    service = createMockService()
-    initCronTools(asService(service))
-  })
-
   it('requires an id field', async () => {
-    const result = await CronDeleteTool.call({}, toolContext)
+    const service = createMockService()
+    const result = await CronDeleteTool.call({}, contextWith(asService(service)))
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('requires an id field')
@@ -162,7 +168,8 @@ describe('CronDeleteTool', () => {
   })
 
   it('delegates to service.delete and confirms', async () => {
-    const result = await CronDeleteTool.call({ id: 'task-1' }, toolContext)
+    const service = createMockService()
+    const result = await CronDeleteTool.call({ id: 'task-1' }, contextWith(asService(service)))
 
     expect(service.delete).toHaveBeenCalledWith('task-1')
     expect(result).toEqual({
@@ -173,30 +180,33 @@ describe('CronDeleteTool', () => {
   })
 
   it('surfaces not-found errors from the service', async () => {
+    const service = createMockService()
     service.delete.mockRejectedValue(new Error('Cron task not found: task-1'))
 
-    const result = await CronDeleteTool.call({ id: 'task-1' }, toolContext)
+    const result = await CronDeleteTool.call({ id: 'task-1' }, contextWith(asService(service)))
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('Cron task not found: task-1')
   })
+
+  it('reports NOT INITIALIZED when the cron service is null', async () => {
+    const result = await CronDeleteTool.call({ id: 'task-1' }, contextWith(null))
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toBe('Cron service is not initialized.')
+  })
 })
 
 describe('CronListTool', () => {
-  let service: MockService
-
-  beforeEach(() => {
-    service = createMockService()
-    initCronTools(asService(service))
-  })
-
   it('reports an empty schedule', async () => {
-    const result = await CronListTool.call({}, toolContext)
+    const service = createMockService()
+    const result = await CronListTool.call({}, contextWith(asService(service)))
 
     expect(result.content).toBe('No cron tasks scheduled.')
   })
 
   it('formats tasks including optional names', async () => {
+    const service = createMockService()
     service.list.mockResolvedValue([
       cronTask({ id: 'task-1', cron: '*/5 * * * *' }),
       cronTask({
@@ -207,7 +217,7 @@ describe('CronListTool', () => {
       }),
     ])
 
-    const result = await CronListTool.call({}, toolContext)
+    const result = await CronListTool.call({}, contextWith(asService(service)))
 
     expect(result.is_error).toBeUndefined()
     expect(result.content).toBe(
@@ -216,5 +226,45 @@ describe('CronListTool', () => {
         '[task-2] "weekday check" Weekdays at 9:00 AM cron="0 9 * * 1-5" prompt="Do a weekday check"',
       ].join('\n'),
     )
+  })
+
+  it('reports NOT INITIALIZED when the cron service is null', async () => {
+    const result = await CronListTool.call({}, contextWith(null))
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toBe('Cron service is not initialized.')
+  })
+})
+
+describe('per-context isolation (ADR 0005)', () => {
+  it('two contexts with different service mocks do not cross-contaminate', async () => {
+    const serviceA = createMockService()
+    serviceA.create.mockResolvedValue({
+      id: 'task-A',
+      cron: '*/5 * * * *',
+      prompt: 'from A',
+      createdAt: 1_000,
+    })
+    const serviceB = createMockService()
+    serviceB.create.mockResolvedValue({
+      id: 'task-B',
+      cron: '*/5 * * * *',
+      prompt: 'from B',
+      createdAt: 1_000,
+    })
+
+    const resultA = await CronCreateTool.call(
+      { cron: '*/5 * * * *', prompt: 'from A' },
+      contextWith(asService(serviceA)),
+    )
+    const resultB = await CronCreateTool.call(
+      { cron: '*/5 * * * *', prompt: 'from B' },
+      contextWith(asService(serviceB)),
+    )
+
+    expect(serviceA.create).toHaveBeenCalledTimes(1)
+    expect(serviceB.create).toHaveBeenCalledTimes(1)
+    expect(resultA.content).toContain('task-A')
+    expect(resultB.content).toContain('task-B')
   })
 })

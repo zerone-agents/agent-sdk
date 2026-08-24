@@ -1,7 +1,7 @@
 import type { CronClock, CronTimer } from './clock.js'
 import { waitViaTimer } from './clock.js'
 import { emitCronEvent, type CronEventSink } from './events.js'
-import type { ExecutionStore } from './execution-store.js'
+import type { ExecutionClaimInput, ExecutionStore } from './execution-store.js'
 import type { CronExecutor } from './executor.js'
 import type { CronStorage } from './storage.js'
 import type { CronExecution, CronExecutionTrigger, CronTask } from './types.js'
@@ -48,6 +48,14 @@ interface PendingSubmission {
   abort: AbortController
 }
 
+/** Handles wired at submission time and passed through claimAndRun → run. */
+interface SubmissionHandles {
+  abort: AbortController
+  abortPromise: Promise<never>
+  timeoutHandle: unknown
+  submission: PendingSubmission
+}
+
 /**
  * Owns the execution state machine: atomic claim, dedup, per-task
  * serialization (via the store), timeout, cancel, startup recovery, and
@@ -73,10 +81,23 @@ export class CronExecutionCoordinator {
     this.draining = false
   }
 
+  // Strict overloads: an inconsistent (trigger, dedupKey) pair is
+  // UNREPRESENTABLE for TypeScript callers — scheduled submissions take no
+  // dedupKey, manual submissions require one. The broad implementation
+  // signature plus the runtime guards in claimAndRun() keep JS/host callers
+  // honest too.
+  submit(task: CronTask, scheduledFireTime: number, trigger: 'scheduled'): Promise<CronExecution>
+  submit(
+    task: CronTask,
+    scheduledFireTime: number,
+    trigger: 'manual',
+    dedupKey: string,
+  ): Promise<CronExecution>
   submit(
     task: CronTask,
     scheduledFireTime: number,
     trigger: CronExecutionTrigger,
+    dedupKey?: string,
   ): Promise<CronExecution> {
     if (!this.started || this.draining) {
       return Promise.reject(
@@ -95,7 +116,7 @@ export class CronExecutionCoordinator {
     })
     const submission: PendingSubmission = { abort, promise: null as never }
     this.pending.add(submission)
-    const promise = this.claimAndRun(task, scheduledFireTime, trigger, {
+    const promise = this.claimAndRun(task, scheduledFireTime, trigger, dedupKey, {
       abort,
       abortPromise,
       timeoutHandle,
@@ -139,18 +160,46 @@ export class CronExecutionCoordinator {
     task: CronTask,
     scheduledFireTime: number,
     trigger: CronExecutionTrigger,
-    handles: {
-      abort: AbortController
-      abortPromise: Promise<never>
-      timeoutHandle: unknown
-      submission: PendingSubmission
-    },
+    dedupKey: string | undefined,
+    handles: SubmissionHandles,
   ): Promise<CronExecution> {
-    const claim = await this.deps.executionStore.claim({
-      taskId: task.id,
-      scheduledFireTime,
-      trigger,
-    })
+    let claim: Awaited<ReturnType<ExecutionStore['claim']>>
+    try {
+      // The claim input is a discriminated union: scheduled claims use the
+      // DEFAULT time-derived identity; manual claims MUST carry a custom
+      // dedupKey. Guard the untyped boundary (JS/host callers) so an
+      // inconsistent (trigger, dedupKey) pair is refused instead of silently
+      // remapped to the wrong identity. Nested branches — not a ternary — so
+      // control-flow analysis narrows `dedupKey` to string after the throw.
+      // Unknown trigger values must not fall through to the scheduled branch.
+      if (trigger !== 'manual' && trigger !== 'scheduled') {
+        throw new TypeError(`unknown cron execution trigger: ${String(trigger)}`)
+      }
+      let claimInput: ExecutionClaimInput
+      if (trigger === 'manual') {
+        // Non-empty string, matching the store's validation: undefined/null
+        // would fall back to the DEFAULT identity, '' would collapse every
+        // submission onto one key.
+        if (typeof dedupKey !== 'string' || dedupKey.length === 0) {
+          throw new TypeError('manual submissions require a non-empty string dedupKey')
+        }
+        claimInput = { taskId: task.id, scheduledFireTime, trigger, dedupKey }
+      } else {
+        if (dedupKey !== undefined) {
+          throw new TypeError('scheduled submissions must not carry a dedupKey')
+        }
+        claimInput = { taskId: task.id, scheduledFireTime, trigger }
+      }
+      claim = await this.deps.executionStore.claim(claimInput)
+    } catch (err) {
+      // A rejected claim must not leak the submission: perform the same
+      // cleanup as the non-claimed path below, otherwise stop()/suspend()
+      // would later abort the leaked abortPromise with no handler attached
+      // (unhandled CronExecutionInterruptedError).
+      this.deps.timer.clearTimeout(handles.timeoutHandle)
+      this.pending.delete(handles.submission)
+      throw err
+    }
     if (claim.kind !== 'claimed') {
       this.deps.timer.clearTimeout(handles.timeoutHandle)
       this.pending.delete(handles.submission)
@@ -162,12 +211,7 @@ export class CronExecutionCoordinator {
   private run(
     task: CronTask,
     execution: CronExecution,
-    handles: {
-      abort: AbortController
-      abortPromise: Promise<never>
-      timeoutHandle: unknown
-      submission: PendingSubmission
-    },
+    handles: SubmissionHandles,
   ): Promise<CronExecution> {
     const { abort, abortPromise, timeoutHandle, submission } = handles
     this.pending.delete(submission)

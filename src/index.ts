@@ -111,7 +111,6 @@ export {
   CronCreateTool,
   CronDeleteTool,
   CronListTool,
-  initCronTools,
 
   // Config
   ConfigTool,
