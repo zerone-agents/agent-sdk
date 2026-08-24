@@ -69,10 +69,18 @@ export class FileExecutionStore implements ExecutionStore {
   async claim(input: ExecutionClaimInput): Promise<ExecutionClaimResult> {
     await this.ensureLoaded()
     // Full runtime validation for JS/host callers bypassing the compile-time
-    // union. A manual claim with a missing/null/empty key would either fall
-    // back to the DEFAULT identity (silently breaking cross-restart dedup) or
-    // collapse every submission onto one key; a scheduled claim carrying a key
-    // violates the DEFAULT-identity contract. Refuse loudly instead.
+    // union. Trigger must be an exact known value: anything else must not fall
+    // through to the scheduled path (it would create an illegal CronExecution,
+    // register in byFire now, yet replay only rebuilds byFire for exact
+    // 'scheduled' — silently changing permanent dedup across a restart).
+    const trigger = (input as { trigger?: unknown }).trigger
+    if (trigger !== 'manual' && trigger !== 'scheduled') {
+      throw new TypeError(`unknown cron execution trigger: ${String(trigger)}`)
+    }
+    // A manual claim with a missing/null/empty key would either fall back to
+    // the DEFAULT identity (silently breaking cross-restart dedup) or collapse
+    // every submission onto one key; a scheduled claim carrying a key violates
+    // the DEFAULT-identity contract. Refuse loudly instead.
     if (input.trigger === 'manual') {
       const key = (input as { dedupKey?: unknown }).dedupKey
       if (typeof key !== 'string' || key.length === 0) {

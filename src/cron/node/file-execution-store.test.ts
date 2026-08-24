@@ -226,6 +226,18 @@ describe('FileExecutionStore', () => {
     await expect(store.claim(legacyInput as never)).rejects.toThrow(/dedupKey/)
   })
 
+  it('rejects a claim with an unknown trigger instead of treating it as scheduled', async () => {
+    const store = new FileExecutionStore(dir)
+    // A JS/host caller passing trigger: 'bogus' would fall into the `else`
+    // (scheduled) path: the record would be registered in byFire while replay
+    // only rebuilds byFire for exact 'scheduled' — silently changing the
+    // permanent-dedup semantics across a restart. Reject at the boundary.
+    const bogus = { taskId: 't1', scheduledFireTime: 60_000, trigger: 'bogus' }
+    await expect(store.claim(bogus as never)).rejects.toThrow(/trigger/)
+    // Nothing was persisted or indexed.
+    expect(await store.list()).toEqual([])
+  })
+
   it('rejects a scheduled claim carrying a dedupKey', async () => {
     const store = new FileExecutionStore(dir)
     const input = {

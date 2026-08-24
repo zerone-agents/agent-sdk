@@ -337,4 +337,25 @@ describe('CronExecutionCoordinator', () => {
 
     await h.coordinator.stop()
   })
+
+  it('rejects an unknown trigger at the coordinator boundary and cleans up the submission', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => { unhandled.push(err) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const h = makeHarness({ executor: okExecutor })
+      await h.coordinator.start()
+
+      // A JS/host caller passing 'bogus' would previously be rewrapped as a
+      // typed scheduled claim; it must be rejected, with the same submission
+      // cleanup as any rejected claim (no leaked abort/timeout handles).
+      await expect(h.coordinator.submit(task, 60_000, 'bogus' as never)).rejects.toThrow(/trigger/)
+
+      await h.coordinator.stop()
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
 })

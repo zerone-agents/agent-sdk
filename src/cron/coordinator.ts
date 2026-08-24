@@ -171,6 +171,10 @@ export class CronExecutionCoordinator {
       // inconsistent (trigger, dedupKey) pair is refused instead of silently
       // remapped to the wrong identity. Nested branches — not a ternary — so
       // control-flow analysis narrows `dedupKey` to string after the throw.
+      // Unknown trigger values must not fall through to the scheduled branch.
+      if (trigger !== 'manual' && trigger !== 'scheduled') {
+        throw new TypeError(`unknown cron execution trigger: ${String(trigger)}`)
+      }
       let claimInput: ExecutionClaimInput
       if (trigger === 'manual') {
         // Non-empty string, matching the store's validation: undefined/null
