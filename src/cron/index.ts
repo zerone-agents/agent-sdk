@@ -34,6 +34,7 @@ export {
 // Ports
 export type { CronStorage } from './storage.js'
 export type {
+  ExecutionClaimInput,
   ExecutionClaimResult,
   ExecutionStatusPatch,
   ExecutionStore,

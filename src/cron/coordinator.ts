@@ -81,6 +81,18 @@ export class CronExecutionCoordinator {
     this.draining = false
   }
 
+  // Strict overloads: an inconsistent (trigger, dedupKey) pair is
+  // UNREPRESENTABLE for TypeScript callers — scheduled submissions take no
+  // dedupKey, manual submissions require one. The broad implementation
+  // signature plus the runtime guards in claimAndRun() keep JS/host callers
+  // honest too.
+  submit(task: CronTask, scheduledFireTime: number, trigger: 'scheduled'): Promise<CronExecution>
+  submit(
+    task: CronTask,
+    scheduledFireTime: number,
+    trigger: 'manual',
+    dedupKey: string,
+  ): Promise<CronExecution>
   submit(
     task: CronTask,
     scheduledFireTime: number,
@@ -161,8 +173,11 @@ export class CronExecutionCoordinator {
       // control-flow analysis narrows `dedupKey` to string after the throw.
       let claimInput: ExecutionClaimInput
       if (trigger === 'manual') {
-        if (dedupKey === undefined) {
-          throw new TypeError('manual submissions require a custom dedupKey')
+        // Non-empty string, matching the store's validation: undefined/null
+        // would fall back to the DEFAULT identity, '' would collapse every
+        // submission onto one key.
+        if (typeof dedupKey !== 'string' || dedupKey.length === 0) {
+          throw new TypeError('manual submissions require a non-empty string dedupKey')
         }
         claimInput = { taskId: task.id, scheduledFireTime, trigger, dedupKey }
       } else {

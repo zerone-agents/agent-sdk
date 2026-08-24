@@ -226,6 +226,68 @@ describe('FileExecutionStore', () => {
     await expect(store.claim(legacyInput as never)).rejects.toThrow(/dedupKey/)
   })
 
+  it('rejects a scheduled claim carrying a dedupKey', async () => {
+    const store = new FileExecutionStore(dir)
+    const input = {
+      taskId: 't1',
+      scheduledFireTime: 60_000,
+      trigger: 'scheduled' as const,
+      dedupKey: 'custom',
+    }
+    await expect(store.claim(input as never)).rejects.toThrow(/dedupKey/)
+  })
+
+  it('rejects a manual claim with a null dedupKey (?? must not fall back to the DEFAULT identity)', async () => {
+    const store = new FileExecutionStore(dir)
+    const input = {
+      taskId: 't1',
+      scheduledFireTime: 60_000,
+      trigger: 'manual' as const,
+      dedupKey: null,
+    }
+    await expect(store.claim(input as never)).rejects.toThrow(/dedupKey/)
+  })
+
+  it('rejects a manual claim with an empty dedupKey (submissions must not collapse onto one key)', async () => {
+    const store = new FileExecutionStore(dir)
+    await expect(
+      store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'manual', dedupKey: '' }),
+    ).rejects.toThrow(/dedupKey/)
+  })
+
+  it('a manual dedupKey textually equal to a scheduled DEFAULT key never collides', async () => {
+    const store = new FileExecutionStore(dir)
+    // Adversarial but type-legal input: the custom key text matches `t1:60000`.
+    const manual = await store.claim({
+      taskId: 't1',
+      scheduledFireTime: 60_000,
+      trigger: 'manual',
+      dedupKey: 't1:60000',
+    })
+    expect(manual.kind).toBe('claimed')
+    // Reach a terminal state so activeByTask does not mask the dedup check.
+    await store.updateStatus(manual.execution.id, 'succeeded', {})
+
+    // The manual run must NOT occupy the scheduled DEFAULT identity.
+    const scheduled = await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(scheduled.kind).toBe('claimed')
+  })
+
+  it('a scheduled DEFAULT claim never collides with a later manual dedupKey of the same text', async () => {
+    const store = new FileExecutionStore(dir)
+    const scheduled = await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(scheduled.kind).toBe('claimed')
+
+    // Different task id so activeByTask does not mask the dedup check.
+    const manual = await store.claim({
+      taskId: 't2',
+      scheduledFireTime: 90_000,
+      trigger: 'manual',
+      dedupKey: 't1:60000',
+    })
+    expect(manual.kind).toBe('claimed')
+  })
+
   it('re-claiming the same manual dedupKey is a duplicate while in-process dedup applies', async () => {
     const store = new FileExecutionStore(dir)
     const first = await store.claim({

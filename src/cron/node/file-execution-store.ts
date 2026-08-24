@@ -31,8 +31,10 @@ export class FileExecutionStore implements ExecutionStore {
   private readonly log: ExecutionLog
   private readonly indexPath: string
   private executions = new Map<string, CronExecution>()
-  /** `${taskId}:${scheduledFireTime}` -> executionId. Permanent by design. */
+  /** Scheduled DEFAULT identity `${taskId}:${scheduledFireTime}` -> executionId. Permanent by design. */
   private byFire = new Map<string, string>()
+  /** Manual custom identity (dedupKey) -> executionId. Process-local by contract. */
+  private byDedup = new Map<string, string>()
   private activeByTask = new Map<string, string>()
   private loaded = false
   /** Shared in-flight load so concurrent callers cannot clobber memory state. */
@@ -66,20 +68,29 @@ export class FileExecutionStore implements ExecutionStore {
 
   async claim(input: ExecutionClaimInput): Promise<ExecutionClaimResult> {
     await this.ensureLoaded()
-    // Runtime guard for JS/host callers bypassing the compile-time union: a
-    // manual claim keyed by time would occupy the DEFAULT identity in-process
-    // while replay derives none for manual records — cross-restart dedup would
-    // silently diverge. Refuse loudly instead.
-    if (input.trigger === 'manual' && (input as { dedupKey?: string }).dedupKey === undefined) {
-      throw new TypeError('manual claim requires an explicit dedupKey (custom identity)')
+    // Full runtime validation for JS/host callers bypassing the compile-time
+    // union. A manual claim with a missing/null/empty key would either fall
+    // back to the DEFAULT identity (silently breaking cross-restart dedup) or
+    // collapse every submission onto one key; a scheduled claim carrying a key
+    // violates the DEFAULT-identity contract. Refuse loudly instead.
+    if (input.trigger === 'manual') {
+      const key = (input as { dedupKey?: unknown }).dedupKey
+      if (typeof key !== 'string' || key.length === 0) {
+        throw new TypeError('manual claim requires a non-empty string dedupKey (custom identity)')
+      }
+    } else if ((input as { dedupKey?: unknown }).dedupKey !== undefined) {
+      throw new TypeError('scheduled claim must not carry a dedupKey')
     }
     // Memory maps are read AND written synchronously below (commit mutates
     // memory before its first await), so concurrent claims cannot race.
-    // An explicit dedupKey (manual triggers) decouples identity from time;
-    // without one the default `${taskId}:${scheduledFireTime}` applies,
-    // keeping scheduled restart-dedup byte-identical.
-    const key = input.dedupKey ?? this.fireKey(input.taskId, input.scheduledFireTime)
-    const existingId = this.byFire.get(key)
+    // Identities are namespaced per kind: scheduled claims consult `byFire`
+    // (the DEFAULT `${taskId}:${scheduledFireTime}` identity), manual claims
+    // consult `byDedup` (the custom identity). A custom key whose text happens
+    // to equal a DEFAULT key can therefore never occupy a scheduled slot.
+    const existingId =
+      input.trigger === 'manual'
+        ? this.byDedup.get(input.dedupKey)
+        : this.byFire.get(this.fireKey(input.taskId, input.scheduledFireTime))
     if (existingId) {
       const existing = this.executions.get(existingId)
       if (existing) return { kind: 'duplicate', execution: { ...existing } }
@@ -92,7 +103,7 @@ export class FileExecutionStore implements ExecutionStore {
       trigger: input.trigger,
       status: activeId ? 'skipped' : 'pending',
     }
-    await this.commit(created, key)
+    await this.commit(created, input)
     return { kind: activeId ? 'skipped' : 'claimed', execution: { ...created } }
   }
 
@@ -157,6 +168,9 @@ export class FileExecutionStore implements ExecutionStore {
 
   private rebuildDerivedIndexes(): void {
     this.byFire = new Map()
+    // Custom identities are process-local by contract: replay derives none,
+    // so the map starts empty. Cleared explicitly for symmetry with byFire.
+    this.byDedup = new Map()
     this.activeByTask = new Map()
     for (const ex of this.executions.values()) {
       // The DEFAULT identity is derived ONLY for scheduled records: manual
@@ -174,13 +188,23 @@ export class FileExecutionStore implements ExecutionStore {
     }
   }
 
-  private async commit(execution: CronExecution, key?: string): Promise<void> {
+  private async commit(execution: CronExecution, claimInput?: ExecutionClaimInput): Promise<void> {
     this.executions.set(execution.id, execution)
     // The dedup identity is registered ONLY at claim time: updateStatus and
-    // recoverInterrupted pass no key, so they must not touch `byFire`. A
-    // manual record claimed under `manual:<uuid>` therefore never also
-    // occupies the default `${taskId}:${scheduledFireTime}` slot.
-    if (key !== undefined) this.byFire.set(key, execution.id)
+    // recoverInterrupted pass no claim input, so they must not touch the
+    // identity maps. Registration is namespaced per kind — a manual record
+    // claimed under `manual:<uuid>` lives in `byDedup` and never occupies the
+    // scheduled DEFAULT slot in `byFire`, whatever the key text looks like.
+    if (claimInput !== undefined) {
+      if (claimInput.trigger === 'manual') {
+        this.byDedup.set(claimInput.dedupKey, execution.id)
+      } else {
+        this.byFire.set(
+          this.fireKey(claimInput.taskId, claimInput.scheduledFireTime),
+          execution.id,
+        )
+      }
+    }
     if (isActive(execution)) {
       this.activeByTask.set(execution.cronTaskId, execution.id)
     } else if (this.activeByTask.get(execution.cronTaskId) === execution.id) {

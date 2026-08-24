@@ -60,10 +60,13 @@ export type ExecutionClaimInput =
  * - custom `dedupKey` identities must be unique per submission; in-process
  *   dedup must hold, but persistence across process restarts is NOT required
  *   (manual triggers are never replayed). A manual record never occupies the
- *   DEFAULT identity `${taskId}:${scheduledFireTime}`. The FileExecutionStore
- *   behaves exactly this way: its `byFire` map registers the custom key at
- *   claim time, while rebuild-from-log derives DEFAULT keys only for
- *   scheduled records.
+ *   DEFAULT identity `${taskId}:${scheduledFireTime}`. Implementations must
+ *   keep custom and DEFAULT identities in structurally separate namespaces
+ *   (not string-prefix conventions): a custom key whose text happens to equal
+ *   a DEFAULT key must never collide. The FileExecutionStore behaves exactly
+ *   this way: scheduled claims register `byFire`, manual claims register a
+ *   separate `byDedup` map, and rebuild-from-log derives DEFAULT keys only
+ *   for scheduled records.
  * - at most one active (pending/running) execution per task; a new claim for
  *   an active task records a `skipped` execution. The active set is
  *   trigger-agnostic and must survive restarts for EVERY trigger — replay

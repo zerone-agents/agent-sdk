@@ -327,4 +327,14 @@ describe('CronExecutionCoordinator', () => {
 
     await h.coordinator.stop()
   })
+
+  it('rejects a manual submission with an empty dedupKey at the coordinator boundary', async () => {
+    const h = makeHarness({ executor: okExecutor })
+    await h.coordinator.start()
+
+    // An empty string would collapse every manual submission onto one identity.
+    await expect(h.coordinator.submit(task, 60_000, 'manual', '')).rejects.toThrow(/dedupKey/)
+
+    await h.coordinator.stop()
+  })
 })

@@ -4,8 +4,13 @@
  * for the precedent). `npm run typecheck` enforces these.
  */
 import type { AgentOptions } from '../types.js'
+import type { CronExecutionCoordinator } from './coordinator.js'
 import type { ExecutionStore } from './execution-store.js'
+// Public-entry contract: ExecutionClaimInput must be importable from the cron
+// entry point (SDK consumers reference this first-class port contract).
+import type { ExecutionClaimInput } from './index.js'
 import type { CronService } from './service.js'
+import type { CronTask } from './types.js'
 
 // Positive contract: AgentOptions accepts a per-Agent cronService, which the
 // Agent injects into toolServices.cron (ADR 0005 — no module-level globals).
@@ -32,3 +37,25 @@ void store.claim({ taskId: 't', scheduledFireTime: 1, trigger: 'manual', dedupKe
 void store.claim({ taskId: 't', scheduledFireTime: 1, trigger: 'manual' })
 // @ts-expect-error a scheduled claim must not carry a custom dedupKey
 void store.claim({ taskId: 't', scheduledFireTime: 1, trigger: 'scheduled', dedupKey: 'x' })
+
+// The same contract holds at the coordinator boundary via strict overloads
+// (issue #42, round-6 review).
+const coordinator: CronExecutionCoordinator = null as unknown as CronExecutionCoordinator
+const cronTask = null as unknown as CronTask
+// OK: scheduled submission, no dedupKey.
+void coordinator.submit(cronTask, 1, 'scheduled')
+// OK: manual submission with its custom identity.
+void coordinator.submit(cronTask, 1, 'manual', 'manual:x')
+// @ts-expect-error a manual submission without a dedupKey is unrepresentable
+void coordinator.submit(cronTask, 1, 'manual')
+// @ts-expect-error a scheduled submission must not carry a dedupKey
+void coordinator.submit(cronTask, 1, 'scheduled', 'x')
+
+// ExecutionClaimInput must be usable by SDK consumers (round-6 export fix).
+const claimInput: ExecutionClaimInput = {
+  taskId: 't',
+  scheduledFireTime: 1,
+  trigger: 'manual',
+  dedupKey: 'manual:x',
+}
+void claimInput
