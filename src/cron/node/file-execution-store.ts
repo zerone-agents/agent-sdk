@@ -157,6 +157,10 @@ export class FileExecutionStore implements ExecutionStore {
     this.byFire = new Map()
     this.activeByTask = new Map()
     for (const ex of this.executions.values()) {
+      // Manual records claim a unique custom dedupKey at claim time; that
+      // identity is process-local by contract, so replay derives no DEFAULT
+      // entry for them — a manual run must never occupy a scheduled slot.
+      if (ex.trigger === 'manual') continue
       this.byFire.set(this.fireKey(ex.cronTaskId, ex.scheduledFireTime), ex.id)
       if (isActive(ex)) this.activeByTask.set(ex.cronTaskId, ex.id)
     }
@@ -164,13 +168,11 @@ export class FileExecutionStore implements ExecutionStore {
 
   private async commit(execution: CronExecution, key?: string): Promise<void> {
     this.executions.set(execution.id, execution)
-    // When `key` is undefined (updateStatus / recoverInterrupted paths), the
-    // default fire key is derived as before. For manual records claimed under
-    // a unique dedup key this adds a harmless SECONDARY default-key entry
-    // alongside the unique one — both point to the same executionId, and
-    // manual triggers are never replayed across restarts, so cross-restart
-    // semantics do not rely on either entry.
-    this.byFire.set(key ?? this.fireKey(execution.cronTaskId, execution.scheduledFireTime), execution.id)
+    // The dedup identity is registered ONLY at claim time: updateStatus and
+    // recoverInterrupted pass no key, so they must not touch `byFire`. A
+    // manual record claimed under `manual:<uuid>` therefore never also
+    // occupies the default `${taskId}:${scheduledFireTime}` slot.
+    if (key !== undefined) this.byFire.set(key, execution.id)
     if (isActive(execution)) {
       this.activeByTask.set(execution.cronTaskId, execution.id)
     } else if (this.activeByTask.get(execution.cronTaskId) === execution.id) {

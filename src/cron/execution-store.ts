@@ -32,9 +32,11 @@ export type ExecutionClaimResult =
  *   (scheduled catch-up / post-downtime dedup depends on this).
  * - custom `dedupKey` identities must be unique per submission; in-process
  *   dedup must hold, but persistence across process restarts is NOT required
- *   (manual triggers are never replayed). The FileExecutionStore behaves
- *   exactly this way: its `byFire` map registers the custom key at claim
- *   time, while rebuild-from-log derives only DEFAULT keys.
+ *   (manual triggers are never replayed). A manual record never occupies the
+ *   DEFAULT identity `${taskId}:${scheduledFireTime}`. The FileExecutionStore
+ *   behaves exactly this way: its `byFire` map registers the custom key at
+ *   claim time, while rebuild-from-log derives DEFAULT keys only for
+ *   scheduled records.
  * - at most one active (pending/running) execution per task; a new claim for
  *   an active task records a `skipped` execution.
  * - recoverInterrupted() moves startup-time pending/running records to

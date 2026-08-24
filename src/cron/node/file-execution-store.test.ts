@@ -110,6 +110,85 @@ describe('FileExecutionStore', () => {
     expect(again.kind).toBe('duplicate')
   })
 
+  it('a completed manual claim does not block a scheduled claim at the same fire time', async () => {
+    const store = new FileExecutionStore(dir)
+    const time = 60_000
+    const manual = await store.claim({
+      taskId: 't1',
+      scheduledFireTime: time,
+      trigger: 'manual',
+      dedupKey: 'manual:xxx',
+    })
+    expect(manual.kind).toBe('claimed')
+    await store.updateStatus(manual.execution.id, 'succeeded', {})
+
+    // updateStatus must not register the manual record under the DEFAULT
+    // (taskId:fireTime) identity — the scheduled slot at the same time is free.
+    const scheduled = await store.claim({ taskId: 't1', scheduledFireTime: time, trigger: 'scheduled' })
+    expect(scheduled.kind).toBe('claimed')
+  })
+
+  it('a completed manual claim does not block a scheduled claim at the same fire time after restart', async () => {
+    const a = new FileExecutionStore(dir)
+    const time = 60_000
+    const manual = await a.claim({
+      taskId: 't1',
+      scheduledFireTime: time,
+      trigger: 'manual',
+      dedupKey: 'manual:xxx',
+    })
+    expect(manual.kind).toBe('claimed')
+    await a.updateStatus(manual.execution.id, 'succeeded', {})
+
+    // Replay must derive no DEFAULT identity for manual records.
+    const b = new FileExecutionStore(dir)
+    const scheduled = await b.claim({ taskId: 't1', scheduledFireTime: time, trigger: 'scheduled' })
+    expect(scheduled.kind).toBe('claimed')
+  })
+
+  it('a manual claim is still skipped while the task has an active manual execution at the same fire time', async () => {
+    const store = new FileExecutionStore(dir)
+    const time = 60_000
+    const first = await store.claim({
+      taskId: 't1',
+      scheduledFireTime: time,
+      trigger: 'manual',
+      dedupKey: 'manual:a',
+    })
+    expect(first.kind).toBe('claimed')
+
+    const second = await store.claim({
+      taskId: 't1',
+      scheduledFireTime: time,
+      trigger: 'manual',
+      dedupKey: 'manual:b',
+    })
+    expect(second.kind).toBe('skipped')
+  })
+
+  it('re-claiming the same manual dedupKey is a duplicate while in-process dedup applies', async () => {
+    const store = new FileExecutionStore(dir)
+    const first = await store.claim({
+      taskId: 't1',
+      scheduledFireTime: 60_000,
+      trigger: 'manual',
+      dedupKey: 'manual:same',
+    })
+    expect(first.kind).toBe('claimed')
+    await store.updateStatus(first.execution.id, 'succeeded', {})
+
+    // The custom identity is registered at claim time; its dedup survives
+    // the manual record reaching a terminal state within this process.
+    const again = await store.claim({
+      taskId: 't1',
+      scheduledFireTime: 60_000,
+      trigger: 'manual',
+      dedupKey: 'manual:same',
+    })
+    expect(again.kind).toBe('duplicate')
+    if (again.kind === 'duplicate') expect(again.execution.id).toBe(first.execution.id)
+  })
+
   it('reports torn-tail replay diagnostics via onDiagnostic and still functions', async () => {
     const a = new FileExecutionStore(dir)
     const first = await a.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
