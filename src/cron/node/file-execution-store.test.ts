@@ -1,9 +1,30 @@
-import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { CronExecution } from '../types.js'
 import { FileExecutionStore } from './file-execution-store.js'
+
+/**
+ * Per-record append failure injection for the phantom-index race test: the
+ * mock delegates to the real ExecutionLog except when `failForTask` matches
+ * the record's task id, in which case append rejects. Transparent by default,
+ * so no other test in this file is affected.
+ */
+const appendControl = vi.hoisted(() => ({ failForTask: null as string | null }))
+vi.mock('./execution-log.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./execution-log.js')>()
+  class ControlledExecutionLog extends mod.ExecutionLog {
+    async append(seq: number, execution: CronExecution): Promise<void> {
+      if (appendControl.failForTask === execution.cronTaskId) {
+        throw new Error('injected append failure')
+      }
+      return super.append(seq, execution)
+    }
+  }
+  return { ...mod, ExecutionLog: ControlledExecutionLog }
+})
 
 let dir: string
 
@@ -447,5 +468,97 @@ describe('FileExecutionStore', () => {
 
     const messages = onDiagnostic.mock.calls.map((c) => String(c[0]))
     expect(messages.some((m) => /execution-index\.json/.test(m))).toBe(true)
+  })
+
+  it('a concurrent claim never observes speculative state from a claim whose append later fails', async () => {
+    const store = new FileExecutionStore(dir)
+    await store.claim({ taskId: 't0', scheduledFireTime: 1, trigger: 'scheduled' })
+
+    // Break the log AFTER priming so both concurrent claims fail at append.
+    const logPath = path.join(dir, 'executions.jsonl')
+    await rm(logPath)
+    await mkdir(logPath)
+
+    // Same DEFAULT identity, issued concurrently: if B could observe A's
+    // speculative registration it would return a phantom `duplicate` pointing
+    // at an execution that is never persisted.
+    const pA = store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    const pB = store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    await expect(pA).rejects.toThrow()
+    await expect(pB).rejects.toThrow()
+
+    // After rollback, the identity is free again and exactly one record exists.
+    await rm(logPath, { recursive: true })
+    const retried = await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(retried.kind).toBe('claimed')
+    expect((await store.list()).filter((e) => e.cronTaskId === 't1')).toHaveLength(1)
+  })
+
+  it('a failed terminal updateStatus does not free the active slot for a concurrent claim', async () => {
+    const store = new FileExecutionStore(dir)
+    const a = await store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+    expect(a.kind).toBe('claimed')
+
+    const logPath = path.join(dir, 'executions.jsonl')
+    await rm(logPath)
+    await mkdir(logPath)
+
+    // The terminal update fails to persist; the concurrent claim must not be
+    // decided against the speculative deletion of the active slot.
+    const pUpdate = store.updateStatus(a.execution.id, 'succeeded', {})
+    const pClaim = store.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
+    await expect(pUpdate).rejects.toThrow()
+    await expect(pClaim).rejects.toThrow()
+
+    await rm(logPath, { recursive: true })
+    // The original execution is still pending (not phantom-succeeded) and the
+    // active slot is still held, so the follow-up claim is skipped.
+    expect(await store.get(a.execution.id)).toMatchObject({ status: 'pending' })
+    const after = await store.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
+    expect(after.kind).toBe('skipped')
+  })
+
+  it('a failed recoverInterrupted does not free the active slot for a concurrent claim', async () => {
+    const seed = new FileExecutionStore(dir)
+    const seeded = await seed.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+
+    const store = new FileExecutionStore(dir)
+    await store.list() // force the replay before breaking the log
+    const logPath = path.join(dir, 'executions.jsonl')
+    await rm(logPath)
+    await mkdir(logPath)
+
+    const pRecover = store.recoverInterrupted()
+    const pClaim = store.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
+    await expect(pRecover).rejects.toThrow()
+    await expect(pClaim).rejects.toThrow()
+
+    await rm(logPath, { recursive: true })
+    // Recovery never persisted: the record must still be pending (not
+    // phantom-interrupted) and still holds the active slot.
+    expect(await store.get(seeded.execution.id)).toMatchObject({ status: 'pending' })
+    const after = await store.claim({ taskId: 't1', scheduledFireTime: 120_000, trigger: 'scheduled' })
+    expect(after.kind).toBe('skipped')
+  })
+
+  it('execution-index.json never contains records from a rolled-back claim', async () => {
+    const store = new FileExecutionStore(dir)
+    appendControl.failForTask = 't2'
+    try {
+      // A commits (and writes the index) while B is queued behind it; B's
+      // append then fails and rolls back. The index snapshot must only ever
+      // contain durable state — never B's speculative record.
+      const pA = store.claim({ taskId: 't1', scheduledFireTime: 60_000, trigger: 'scheduled' })
+      const pB = store.claim({ taskId: 't2', scheduledFireTime: 60_000, trigger: 'scheduled' })
+      await expect(pB).rejects.toThrow('injected append failure')
+      await expect(pA).resolves.toMatchObject({ kind: 'claimed' })
+    } finally {
+      appendControl.failForTask = null
+    }
+
+    const index = JSON.parse(await readFile(path.join(dir, 'execution-index.json'), 'utf8')) as {
+      executions: Array<{ cronTaskId: string }>
+    }
+    expect(index.executions.map((e) => e.cronTaskId)).toEqual(['t1'])
   })
 })

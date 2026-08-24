@@ -23,9 +23,15 @@ function isActive(execution: CronExecution): boolean {
 /**
  * Filesystem ExecutionStore backed by the append-only JSONL log (source of
  * truth) plus a write-through `execution-index.json` snapshot (observability;
- * always rebuildable from the log). Claim/dedup bookkeeping lives in
- * in-memory maps that are updated synchronously before persistence, which
- * makes concurrent claims safe within the single-process contract.
+ * always rebuildable from the log).
+ *
+ * Concurrency model (atomic claim, issue #42): EVERY public operation runs
+ * its read → decide → mutate → append sequence inside the single serialized
+ * transaction chain. Memory therefore never exposes speculative
+ * (not-yet-durable) state to another operation: a transaction's mutations are
+ * either durable (append succeeded) or fully rolled back before the next
+ * queued operation runs. Index snapshots taken inside the chain only ever
+ * contain durable records.
  */
 export class FileExecutionStore implements ExecutionStore {
   private readonly log: ExecutionLog
@@ -52,18 +58,23 @@ export class FileExecutionStore implements ExecutionStore {
 
   async recoverInterrupted(): Promise<number> {
     await this.ensureLoaded()
-    let count = 0
-    for (const ex of [...this.executions.values()]) {
-      if (!isActive(ex)) continue
-      await this.commit({
-        ...ex,
-        status: 'interrupted',
-        completedAt: Date.now(),
-        error: 'recovered as interrupted at startup',
-      })
-      count++
-    }
-    return count
+    // One transaction for the whole sweep: concurrent claims must not observe
+    // the speculative transition of any record, and a mid-loop append failure
+    // rolls back only its own record (earlier ones are already durable).
+    return this.serialize(async () => {
+      let count = 0
+      for (const ex of [...this.executions.values()]) {
+        if (!isActive(ex)) continue
+        await this.commit({
+          ...ex,
+          status: 'interrupted',
+          completedAt: Date.now(),
+          error: 'recovered as interrupted at startup',
+        })
+        count++
+      }
+      return count
+    })
   }
 
   async claim(input: ExecutionClaimInput): Promise<ExecutionClaimResult> {
@@ -89,49 +100,60 @@ export class FileExecutionStore implements ExecutionStore {
     } else if ((input as { dedupKey?: unknown }).dedupKey !== undefined) {
       throw new TypeError('scheduled claim must not carry a dedupKey')
     }
-    // Memory maps are read AND written synchronously below (commit mutates
-    // memory before its first await), so concurrent claims cannot race.
     // Identities are namespaced per kind: scheduled claims consult `byFire`
     // (the DEFAULT `${taskId}:${scheduledFireTime}` identity), manual claims
     // consult `byDedup` (the custom identity). A custom key whose text happens
     // to equal a DEFAULT key can therefore never occupy a scheduled slot.
-    const existingId =
-      input.trigger === 'manual'
-        ? this.byDedup.get(input.dedupKey)
-        : this.byFire.get(this.fireKey(input.taskId, input.scheduledFireTime))
-    if (existingId) {
-      const existing = this.executions.get(existingId)
-      if (existing) return { kind: 'duplicate', execution: { ...existing } }
-    }
-    const activeId = this.activeByTask.get(input.taskId)
-    const created: CronExecution = {
-      id: randomUUID(),
-      cronTaskId: input.taskId,
-      scheduledFireTime: input.scheduledFireTime,
-      trigger: input.trigger,
-      status: activeId ? 'skipped' : 'pending',
-    }
-    await this.commit(created, input)
-    return { kind: activeId ? 'skipped' : 'claimed', execution: { ...created } }
+    //
+    // The ENTIRE check → decide → mutate → append sequence runs inside the
+    // serialized transaction: no concurrent operation can observe the
+    // speculative state staged by this claim, and a failed append rolls back
+    // before the next queued operation runs.
+    return this.serialize(async () => {
+      const existingId =
+        input.trigger === 'manual'
+          ? this.byDedup.get(input.dedupKey)
+          : this.byFire.get(this.fireKey(input.taskId, input.scheduledFireTime))
+      if (existingId) {
+        const existing = this.executions.get(existingId)
+        if (existing) return { kind: 'duplicate', execution: { ...existing } }
+      }
+      const activeId = this.activeByTask.get(input.taskId)
+      const created: CronExecution = {
+        id: randomUUID(),
+        cronTaskId: input.taskId,
+        scheduledFireTime: input.scheduledFireTime,
+        trigger: input.trigger,
+        status: activeId ? 'skipped' : 'pending',
+      }
+      await this.commit(created, input)
+      return { kind: activeId ? 'skipped' : 'claimed', execution: { ...created } }
+    })
   }
 
   async get(executionId: string): Promise<CronExecution | null> {
     await this.ensureLoaded()
-    const ex = this.executions.get(executionId)
-    return ex ? { ...ex } : null
+    // Reads also run inside the transaction chain: a read must never observe
+    // speculative (not-yet-durable) state staged by an in-flight write.
+    return this.serialize(async () => {
+      const ex = this.executions.get(executionId)
+      return ex ? { ...ex } : null
+    })
   }
 
   async list(query?: CronExecutionQuery): Promise<CronExecution[]> {
     await this.ensureLoaded()
-    let out = [...this.executions.values()].sort(
-      (a, b) => b.scheduledFireTime - a.scheduledFireTime || (a.id < b.id ? -1 : 1),
-    )
-    if (query?.cronTaskId) out = out.filter((e) => e.cronTaskId === query.cronTaskId)
-    if (query?.status) out = out.filter((e) => e.status === query.status)
-    const offset = query?.offset ?? 0
-    const limit = query?.limit
-    out = out.slice(offset, limit !== undefined ? offset + limit : undefined)
-    return out.map((e) => ({ ...e }))
+    return this.serialize(async () => {
+      let out = [...this.executions.values()].sort(
+        (a, b) => b.scheduledFireTime - a.scheduledFireTime || (a.id < b.id ? -1 : 1),
+      )
+      if (query?.cronTaskId) out = out.filter((e) => e.cronTaskId === query.cronTaskId)
+      if (query?.status) out = out.filter((e) => e.status === query.status)
+      const offset = query?.offset ?? 0
+      const limit = query?.limit
+      out = out.slice(offset, limit !== undefined ? offset + limit : undefined)
+      return out.map((e) => ({ ...e }))
+    })
   }
 
   async updateStatus(
@@ -140,11 +162,13 @@ export class FileExecutionStore implements ExecutionStore {
     patch?: ExecutionStatusPatch,
   ): Promise<CronExecution | null> {
     await this.ensureLoaded()
-    const existing = this.executions.get(executionId)
-    if (!existing) return null
-    const updated: CronExecution = { ...existing, status, ...(patch ?? {}) }
-    await this.commit(updated)
-    return { ...updated }
+    return this.serialize(async () => {
+      const existing = this.executions.get(executionId)
+      if (!existing) return null
+      const updated: CronExecution = { ...existing, status, ...(patch ?? {}) }
+      await this.commit(updated)
+      return { ...updated }
+    })
   }
 
   private fireKey(taskId: string, fireTime: number): string {
@@ -196,12 +220,22 @@ export class FileExecutionStore implements ExecutionStore {
     }
   }
 
+  /**
+   * Mutate memory + persist durably. MUST be called from inside a serialize()
+   * transaction (every public method wraps its body); commit() itself never
+   * re-enters the chain.
+   *
+   * If the source-of-truth append fails, the in-memory changes are rolled
+   * back before the chain proceeds to the next operation — a failed commit
+   * leaves no phantom record, identity, or active slot, so a later operation
+   * cannot observe a phantom duplicate/skipped or a silently freed active
+   * slot. Restores are unconditional snapshot reverts: safe because the
+   * transaction chain guarantees nothing interleaves between the mutation and
+   * the rollback. `seq` is intentionally NOT decremented: a monotonic gap is
+   * harmless, and a possibly-torn append must never be renumbered onto by a
+   * later record.
+   */
   private async commit(execution: CronExecution, claimInput?: ExecutionClaimInput): Promise<void> {
-    // Memory is mutated synchronously BEFORE the durable write so concurrent
-    // claims see a consistent view (single-process atomicity). If the
-    // source-of-truth append then fails, the in-memory changes are rolled
-    // back — a failed claim must leave no phantom record, identity, or active
-    // slot, so a retry cannot observe a phantom duplicate/skipped.
     const prevExecution = this.executions.get(execution.id)
     let fireIdentity: { key: string; prev: string | undefined } | undefined
     let dedupIdentity: { key: string; prev: string | undefined } | undefined
@@ -231,38 +265,22 @@ export class FileExecutionStore implements ExecutionStore {
     }
 
     try {
-      await this.serialize(async () => {
-        this.seq += 1
-        await this.log.append(this.seq, execution)
-        await this.persistIndexBestEffort()
-      })
+      this.seq += 1
+      await this.log.append(this.seq, execution)
+      await this.persistIndexBestEffort()
     } catch (err) {
-      // Roll back memory: the commit failed, so nothing it staged may remain
-      // observable. Restores are CONDITIONAL — each entry is reverted only
-      // while it still holds THIS commit's value (or, for the active-slot
-      // delete path, is still absent) — so an interleaved successful commit
-      // is never clobbered. `seq` is intentionally NOT decremented: a
-      // monotonic gap is harmless, and a possibly-torn append must never be
-      // renumbered onto by a later record.
-      if (this.executions.get(execution.id) === execution) {
-        if (prevExecution === undefined) this.executions.delete(execution.id)
-        else this.executions.set(execution.id, prevExecution)
-      }
-      if (fireIdentity && this.byFire.get(fireIdentity.key) === execution.id) {
+      if (prevExecution === undefined) this.executions.delete(execution.id)
+      else this.executions.set(execution.id, prevExecution)
+      if (fireIdentity) {
         if (fireIdentity.prev === undefined) this.byFire.delete(fireIdentity.key)
         else this.byFire.set(fireIdentity.key, fireIdentity.prev)
       }
-      if (dedupIdentity && this.byDedup.get(dedupIdentity.key) === execution.id) {
+      if (dedupIdentity) {
         if (dedupIdentity.prev === undefined) this.byDedup.delete(dedupIdentity.key)
         else this.byDedup.set(dedupIdentity.key, dedupIdentity.prev)
       }
-      // Active-slot revert condition differs per branch: we either SET our id
-      // (active execution) or DELETED our id (terminal transition).
-      const currentActive = this.activeByTask.get(execution.cronTaskId)
-      if (isActive(execution) ? currentActive === execution.id : currentActive === undefined) {
-        if (prevActive === undefined) this.activeByTask.delete(execution.cronTaskId)
-        else this.activeByTask.set(execution.cronTaskId, prevActive)
-      }
+      if (prevActive === undefined) this.activeByTask.delete(execution.cronTaskId)
+      else this.activeByTask.set(execution.cronTaskId, prevActive)
       throw err
     }
   }
