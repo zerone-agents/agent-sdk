@@ -83,6 +83,17 @@ export interface SubmittedExecution {
  * even when the executor attaches its own abort listener afterwards (an
  * `abort` listener attached to an already-aborted signal never fires).
  */
+/**
+ * Module-private key for the SDK-internal submission split (issue #51).
+ * A unique-symbol computed member keeps the seam OFF the public class
+ * surface (consumers cannot name or import the symbol; the module is
+ * unreachable through the package exports map) while preserving a
+ * compiler-checked association: the dispatchCronSubmission helper indexes
+ * this exact symbol against the REAL member type, so renames or signature
+ * changes fail typecheck instead of drifting to runtime errors.
+ */
+const dispatchSubmissionKey = Symbol('cron.dispatchSubmission')
+
 export class CronExecutionCoordinator {
   private active = new Map<string, ActiveRun>()
   private pending = new Set<PendingSubmission>()
@@ -116,18 +127,19 @@ export class CronExecutionCoordinator {
     trigger: CronExecutionTrigger,
     dedupKey?: string,
   ): Promise<CronExecution> {
-    return this.dispatchSubmission(task, scheduledFireTime, trigger, dedupKey).completion
+    return this[dispatchSubmissionKey](task, scheduledFireTime, trigger, dedupKey).completion
   }
 
   /**
    * The single submission pipeline, split at the claim boundary (issue #51).
-   * Private + broad-signature so the overloaded entry points (submit, and
-   * the module-level dispatchCronSubmission friend) can delegate without
-   * fighting overload resolution. Deliberately NOT a public method: the
-   * public CronExecutionCoordinator surface keeps only submit() — the split
-   * is reached exclusively through the internal friend below.
+   * Broad-signature so the overloaded entry points (submit, and the
+   * module-level dispatchCronSubmission helper) can delegate without
+   * fighting overload resolution. Keyed by the module-private unique symbol
+   * (see dispatchSubmissionKey): unreachable as a named public method, yet
+   * the helper's calls stay compiler-checked against this real signature —
+   * renames or signature changes fail typecheck instead of drifting.
    */
-  private dispatchSubmission(
+  [dispatchSubmissionKey](
     task: CronTask,
     scheduledFireTime: number,
     trigger: CronExecutionTrigger,
@@ -390,16 +402,8 @@ export function dispatchCronSubmission(
   trigger: CronExecutionTrigger,
   dedupKey?: string,
 ): SubmittedExecution {
-  // The cast is the module's privilege: dispatchSubmission is private to the
-  // class, and only this in-module friend may reach through to it.
-  return (
-    coordinator as unknown as {
-      dispatchSubmission(
-        task: CronTask,
-        scheduledFireTime: number,
-        trigger: CronExecutionTrigger,
-        dedupKey?: string,
-      ): SubmittedExecution
-    }
-  ).dispatchSubmission(task, scheduledFireTime, trigger, dedupKey)
+  // Direct symbol indexing — NO assertion bypass: this call is checked
+  // against the real member type, so renames or signature changes fail
+  // typecheck here instead of drifting to runtime errors.
+  return coordinator[dispatchSubmissionKey](task, scheduledFireTime, trigger, dedupKey)
 }
