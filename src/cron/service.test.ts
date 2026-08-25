@@ -40,6 +40,10 @@ class MemoryExecutionStore implements ExecutionStore {
     const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
     const dupId = this.byFire.get(key)
     const dup = dupId !== undefined ? this.executions.find((e) => e.id === dupId) : undefined
+    // In-place semantics on purpose (review: the initial-record contract must
+    // not depend on the store adapter): the stored object is returned by
+    // reference and mutated in updateStatus — the coordinator's claim-boundary
+    // snapshot must guarantee the caller's `pending` record regardless.
     if (dup) return { kind: 'duplicate' as const, execution: dup }
     const active = this.executions.find(
       (e) => e.cronTaskId === input.taskId && (e.status === 'pending' || e.status === 'running'),
@@ -530,5 +534,191 @@ describe('createCronService', () => {
     // Newest first: the catch-up fire is the most recent missed slot.
     expect(executions[0]!.scheduledFireTime).toBeGreaterThan(executions[1]!.scheduledFireTime)
     expect(executions[0]!.scheduledFireTime).toBeLessThanOrEqual(h.clock.now())
+  })
+})
+
+describe('enqueueNow (issue #51)', () => {
+  function makeGatedExecutor(): {
+    executor: CronExecutor
+    release: () => void
+    calls: () => number
+  } {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let calls = 0
+    const executor: CronExecutor = async () => {
+      calls += 1
+      await gate
+      return { output: 'gated' }
+    }
+    return { executor, release, calls: () => calls }
+  }
+
+  it('returns the durable pending record; the execution completes in the background; runNow still awaits terminal', async () => {
+    const gated = makeGatedExecutor()
+    const h = makeService({ executor: gated.executor })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    const execution = await h.service.enqueueNow(task.id)
+    expect(execution.status).toBe('pending')
+    expect(execution.trigger).toBe('manual')
+
+    // Durable immediately: observable via getExecution while the executor
+    // is still gated. The live record may already show `running` depending
+    // on scheduling — what matters is retrievability under the same id.
+    const observed = await h.service.getExecution(execution.id)
+    expect(observed).toMatchObject({ id: execution.id, trigger: 'manual' })
+    expect(['pending', 'running']).toContain(observed?.status)
+
+    gated.release()
+    await vi.waitFor(async () => {
+      expect(await h.service.getExecution(execution.id)).toMatchObject({ status: 'succeeded' })
+    })
+
+    // Contrast: runNow continues to await the terminal state.
+    const viaRunNow = await h.service.runNow(task.id)
+    expect(viaRunNow.status).toBe('succeeded')
+  })
+
+  it('an active same-task execution yields a persisted skipped record without starting another agent', async () => {
+    const gated = makeGatedExecutor()
+    const h = makeService({ executor: gated.executor })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    const first = await h.service.enqueueNow(task.id)
+    expect(first.status).toBe('pending')
+
+    const second = await h.service.enqueueNow(task.id)
+    expect(second.status).toBe('skipped')
+    expect(second.id).not.toBe(first.id)
+    // The skipped record is durable.
+    expect(await h.service.getExecution(second.id)).toMatchObject({ status: 'skipped' })
+
+    gated.release()
+    await vi.waitFor(async () => {
+      expect(await h.service.getExecution(first.id)).toMatchObject({ status: 'succeeded' })
+    })
+    expect(gated.calls()).toBe(1)
+  })
+
+  it('a claim persistence failure rejects enqueueNow with no phantom execution and no detached rejection', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => {
+      unhandled.push(err)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const h = makeService({})
+      await h.service.start()
+      const task = await h.service.create(everyMinute)
+
+      const originalClaim = h.executionStore.claim.bind(h.executionStore)
+      h.executionStore.claim = async (input) => {
+        if (input.trigger === 'manual') throw new Error('claim persistence failed')
+        return originalClaim(input)
+      }
+
+      await expect(h.service.enqueueNow(task.id)).rejects.toThrow('claim persistence failed')
+
+      await new Promise((r) => setImmediate(r))
+      expect(unhandled).toEqual([])
+      // No phantom record was created for the refused submission.
+      expect(await h.service.listExecutions({ cronTaskId: task.id })).toEqual([])
+
+      await h.service.stop()
+      await new Promise((r) => setImmediate(r))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('an executor failure after enqueueNow resolves becomes failed with no unhandled rejection', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => {
+      unhandled.push(err)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const executor: CronExecutor = async () => {
+        throw new Error('agent exploded')
+      }
+      const h = makeService({ executor })
+      await h.service.start()
+      const task = await h.service.create(everyMinute)
+
+      const execution = await h.service.enqueueNow(task.id)
+      expect(execution.status).toBe('pending')
+
+      await vi.waitFor(async () => {
+        expect(await h.service.getExecution(execution.id)).toMatchObject({
+          status: 'failed',
+          error: 'agent exploded',
+        })
+      })
+      await new Promise((r) => setImmediate(r))
+      expect(unhandled).toEqual([])
+
+      await h.service.stop()
+      await new Promise((r) => setImmediate(r))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('stop() drains/interrupts an enqueued execution still running', async () => {
+    const gated = makeGatedExecutor()
+    const h = makeService({ executor: gated.executor })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    const execution = await h.service.enqueueNow(task.id)
+    expect(execution.status).toBe('pending')
+
+    // drainMs: 0 skips the drain polling (which parks on the manual timer)
+    // and interrupts the still-gated execution immediately.
+    await h.service.stop({ drainMs: 0 })
+
+    expect(await h.service.getExecution(execution.id)).toMatchObject({ status: 'interrupted' })
+    gated.release()
+  })
+
+  it('suspend() interrupts an enqueued execution', async () => {
+    const gated = makeGatedExecutor()
+    const h = makeService({ executor: gated.executor })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    const execution = await h.service.enqueueNow(task.id)
+    await h.service.suspend()
+
+    expect(await h.service.getExecution(execution.id)).toMatchObject({ status: 'interrupted' })
+    gated.release()
+    await h.service.stop()
+  })
+
+  it('concurrent enqueueNow calls preserve one-active semantics with distinct identities', async () => {
+    const gated = makeGatedExecutor()
+    const h = makeService({ executor: gated.executor })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    const [a, b] = await Promise.all([h.service.enqueueNow(task.id), h.service.enqueueNow(task.id)])
+    const statuses = [a.status, b.status].sort()
+    expect(statuses).toEqual(['pending', 'skipped'])
+    expect(a.id).not.toBe(b.id)
+
+    gated.release()
+    await vi.waitFor(async () => {
+      const execs = await h.service.listExecutions({ cronTaskId: task.id })
+      expect(execs.some((e) => e.status === 'succeeded')).toBe(true)
+    })
+    expect(gated.calls()).toBe(1)
+    await h.service.stop()
   })
 })

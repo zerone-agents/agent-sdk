@@ -4,6 +4,7 @@ import { FakeClock, ManualTimer } from './clock.js'
 import {
   CronExecutionCoordinator,
   CronExecutionInterruptedError,
+  dispatchCronSubmission,
 } from './coordinator.js'
 import type { CronEvent, CronEventSink } from './events.js'
 import type { ExecutionStore } from './execution-store.js'
@@ -59,6 +60,10 @@ function createStore(seeded: CronExecution[] = []) {
       claims.push({ ...input })
       const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
       const existingId = byFire.get(key)
+      // In-place semantics on purpose (review: the initial-record contract
+      // must not depend on the store adapter): stored objects are returned by
+      // reference and mutated in updateStatus — the coordinator's
+      // claim-boundary snapshot must guarantee the caller's `pending` record.
       if (existingId) {
         return { kind: 'duplicate', execution: executions.get(existingId)! }
       }
@@ -357,5 +362,88 @@ describe('CronExecutionCoordinator', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled)
     }
+  })
+
+  it('dispatch separates the durable claim from the terminal completion (issue #51)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const executor: CronExecutor = async () => {
+      await gate
+      return { output: 'gated' }
+    }
+    const h = makeHarness({ executor })
+    await h.coordinator.start()
+
+    const submitted = dispatchCronSubmission(h.coordinator, task, 60_000, 'manual', 'manual:split-1')
+    const claimed = await submitted.claimed
+    // The claim is durable while the executor is still gated. This double
+    // mutates records in place (a fully compliant ExecutionStore — the
+    // interface does not require detached snapshots), and its live record
+    // has already progressed to `running` by the time the caller observes
+    // the claim: the coordinator's claim-boundary snapshot is what
+    // guarantees the initial `pending` record (review finding on #53).
+    expect(claimed.status).toBe('pending')
+    expect(h.executions.get(claimed.id)?.status).toBe('running')
+
+    release()
+    const final = await submitted.completion
+    expect(final.id).toBe(claimed.id)
+    expect(final.status).toBe('succeeded')
+    expect(final.output).toBe('gated')
+
+    await h.coordinator.stop()
+  })
+
+  it('consuming only claimed never leaves completion unhandled (review finding on #53)', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => {
+      unhandled.push(err)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const h = makeHarness({ executor: okExecutor, claimError: new Error('claim failed') })
+      await h.coordinator.start()
+
+      // Consume ONLY the claimed twin — completion is deliberately ignored,
+      // exactly the consumption pattern the reviewer used to reproduce the
+      // unhandled rejection before the twin observer was installed.
+      const submitted = dispatchCronSubmission(h.coordinator, task, 60_000, 'manual', 'manual:only-claimed')
+      await expect(submitted.claimed).rejects.toThrow('claim failed')
+
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+
+      await h.coordinator.stop()
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('dispatch with a duplicate identity resolves both phases with the existing execution', async () => {
+    const h = makeHarness({ executor: okExecutor })
+    await h.coordinator.start()
+
+    const first = dispatchCronSubmission(h.coordinator, task, 60_000, 'manual', 'manual:same')
+    const firstFinal = await first.completion
+    expect(firstFinal.status).toBe('succeeded')
+
+    // Re-submitting the SAME custom identity is a duplicate: both the claim
+    // phase and the completion resolve with the existing execution — no new
+    // record, no second run.
+    const second = dispatchCronSubmission(h.coordinator, task, 60_000, 'manual', 'manual:same')
+    await expect(second.claimed).resolves.toMatchObject({
+      id: firstFinal.id,
+      status: 'succeeded',
+    })
+    await expect(second.completion).resolves.toMatchObject({
+      id: firstFinal.id,
+      status: 'succeeded',
+    })
+
+    await h.coordinator.stop()
   })
 })

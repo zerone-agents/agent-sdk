@@ -4,6 +4,7 @@
  * for the precedent). `npm run typecheck` enforces these.
  */
 import type { AgentOptions } from '../types.js'
+import { dispatchCronSubmission } from './coordinator.js'
 import type { CronExecutionCoordinator } from './coordinator.js'
 import type { ExecutionStore } from './execution-store.js'
 // Public-entry contract: ExecutionClaimInput must be importable from the cron
@@ -51,6 +52,19 @@ void coordinator.submit(cronTask, 1, 'manual')
 // @ts-expect-error a scheduled submission must not carry a dedupKey
 void coordinator.submit(cronTask, 1, 'scheduled', 'x')
 
+// Consumer guard (review on #53): the claim/completion split is NOT reachable
+// on the exported coordinator class — the public surface keeps only submit().
+// The split lives in the SDK-internal dispatchCronSubmission friend, whose
+// module is unreachable through the package exports map.
+// @ts-expect-error .dispatch does not exist on the exported class
+void coordinator.dispatch
+void dispatchCronSubmission(coordinator, cronTask, 1, 'scheduled')
+void dispatchCronSubmission(coordinator, cronTask, 1, 'manual', 'manual:x')
+// @ts-expect-error a manual dispatch without a dedupKey is unrepresentable
+void dispatchCronSubmission(coordinator, cronTask, 1, 'manual')
+// @ts-expect-error a scheduled dispatch must not carry a dedupKey
+void dispatchCronSubmission(coordinator, cronTask, 1, 'scheduled', 'x')
+
 // ExecutionClaimInput must be usable by SDK consumers (round-6 export fix).
 const claimInput: ExecutionClaimInput = {
   taskId: 't',
@@ -59,3 +73,10 @@ const claimInput: ExecutionClaimInput = {
   dedupKey: 'manual:x',
 }
 void claimInput
+
+// enqueueNow is a CronService HOST API (issue #51): present on the interface
+// (property access fails typecheck if it is ever dropped). It is NOT an
+// Agent Tool — the cron tool set stays exactly Create/Delete/List (locked by
+// a runtime test in tools.test.ts).
+const svc: CronService = null as unknown as CronService
+void svc.enqueueNow

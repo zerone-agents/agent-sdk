@@ -1,6 +1,9 @@
 import { computeNextCronRun, parseCronExpression } from './cron.js'
 import { systemClock, systemTimer, type CronClock, type CronTimer } from './clock.js'
-import { CronExecutionCoordinator } from './coordinator.js'
+import {
+  CronExecutionCoordinator,
+  dispatchCronSubmission,
+} from './coordinator.js'
 import {
   consoleDiagnosticSink,
   emitCronEvent,
@@ -42,6 +45,15 @@ export interface CronService {
   update(taskId: string, changes: CronTaskChanges): Promise<CronTask | null>
   delete(taskId: string): Promise<void>
   runNow(taskId: string): Promise<CronExecution>
+  /**
+   * Submit a manual execution and return after its claim is durable
+   * (issue #51): the initial `pending` record, the persisted `skipped`
+   * record when the task already has an active execution, or the existing
+   * record for a duplicate. The execution continues in the background under
+   * the same coordinator and state machine as scheduled runs and `runNow`.
+   * Host API — not an Agent Tool.
+   */
+  enqueueNow(taskId: string): Promise<CronExecution>
 
   listExecutions(query?: CronExecutionQuery): Promise<CronExecution[]>
   getExecution(executionId: string): Promise<CronExecution | null>
@@ -221,6 +233,35 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
         'manual',
         `manual:${globalThis.crypto.randomUUID()}`,
       )
+    },
+
+    async enqueueNow(taskId: string): Promise<CronExecution> {
+      const task = await taskStorage.get(taskId)
+      if (!task) throw new Error(`Cron task not found: ${taskId}`)
+      // Claim-returning manual trigger (issue #51): same identity rules as
+      // runNow(); resolves once the claim is durable while the coordinator
+      // continues the execution in the background. Reached through the
+      // SDK-internal split — the public coordinator surface keeps only
+      // submit().
+      const submitted = dispatchCronSubmission(
+        coordinator,
+        task,
+        clock.now(),
+        'manual',
+        `manual:${globalThis.crypto.randomUUID()}`,
+      )
+      // Observe the detached completion through the diagnostics policy —
+      // never an unhandled rejection (same contract as the scheduler's
+      // fire-and-forget submissions).
+      submitted.completion.catch((err) => {
+        reportCronDiagnostic(
+          onDiagnostic,
+          `enqueued execution failed for ${task.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      })
+      return submitted.claimed
     },
 
     listExecutions: (query?: CronExecutionQuery) => executionStore.list(query),

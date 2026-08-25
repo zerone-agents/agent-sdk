@@ -268,3 +268,12 @@ describe('per-context isolation (ADR 0005)', () => {
     expect(resultB.content).toContain('task-B')
   })
 })
+
+describe('cron tool surface (issue #51)', () => {
+  it('enqueueNow stays a host API: the cron tool set is exactly Create/Delete/List', () => {
+    // A new tool (e.g. a CronRunTool exposing enqueueNow to the model) must
+    // be a deliberate decision — this lock makes accidental additions fail.
+    const names = [CronCreateTool.name, CronDeleteTool.name, CronListTool.name].sort()
+    expect(names).toEqual(['CronCreate', 'CronDelete', 'CronList'])
+  })
+})
