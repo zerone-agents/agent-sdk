@@ -135,22 +135,23 @@ export interface CompactResult {
 }
 
 /**
- * LOW-LEVEL in-memory compaction transform — advanced use only (issue #46).
+ * INTERNAL all-input compaction primitive.
  *
  * Semantics to be aware of before calling:
  * - Summarizes EVERY message supplied to it. It does NOT preserve a recent
  *   message tail on its own — passing a complete transcript here replaces the
  *   whole conversation with the synthetic summary pair. To keep recent turns
- *   verbatim, use `compactConversationWithProtectedTail()` (or the
- *   session-level `compactSessionStream()`).
+ *   verbatim, route it through the protected-tail wrapper. Public callers use
+ *   `compactMessagesStream()` or the session-level `compactSessionStream()`.
  * - Does NOT persist anything. Callers own persistence and must write the
  *   complete `CompactResult` — `compactedMessages`, `summary`, AND `state`
  *   (including the reset `lastInputTokens`/`lastOutputTokens`) — as one
  *   coherent update. Persisting messages without the token counters causes
  *   an immediate repeated compaction on the next resume.
  *
- * Suited for custom-storage and in-memory callers that manage the lifecycle
- * themselves.
+ * This function is intentionally not exported from the package root. Public
+ * callers should use `compactMessagesStream()` for custom storage or
+ * `compactSessionStream()` for SDK-managed sessions.
  */
 export async function* compactConversationStream(
   provider: LLMProvider,

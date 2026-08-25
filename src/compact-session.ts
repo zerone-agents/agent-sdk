@@ -1,11 +1,9 @@
 /**
  * Session-level compact-and-persist API (issue #46).
  *
- * Bridges the gap between `Agent.compactStream()` (needs a live Agent) and
- * the low-level `compactConversationStream()` (pure in-memory transform that
- * summarizes EVERY message supplied and persists nothing). Hosts that hold
- * only a persisted `sessionId` can compact safely without re-implementing
- * the lifecycle — this module owns load → protected-tail compact → persist.
+ * Hosts that hold only a persisted `sessionId` can compact safely without
+ * re-implementing the lifecycle — this module owns load → protected-tail
+ * compact → persist.
  *
  * Semantics (identical to `Agent.compactStream()`):
  * - summarizes older history while preserving the most recent turns verbatim
@@ -25,11 +23,8 @@
 import type { LLMProvider, NormalizedMessageParam } from './providers/types.js'
 import type { SDKCompactMessage } from './types.js'
 import { loadSession, saveSession } from './session.js'
-import {
-  compactConversationWithProtectedTail,
-  PRUNE_PROTECTED_TURNS,
-  type AutoCompactState,
-} from './utils/compact.js'
+import { compactMessagesStream } from './compact-messages.js'
+import { PRUNE_PROTECTED_TURNS, type AutoCompactState } from './utils/compact.js'
 
 /** Options for {@link compactSessionStream}. */
 export interface CompactSessionOptions {
@@ -100,21 +95,21 @@ export async function* compactSessionStream(
 
   // Direct `yield*` delegation: events flow out one-for-one, and cancellation
   // (.return() on the public stream) propagates through
-  // compactConversationWithProtectedTail → compactConversationStream → the
-  // provider generator (its finally cleanup runs) before persistence — the
+  // compactMessagesStream → the provider generator (its finally cleanup
+  // runs) before persistence — the
   // persisted session is never touched in that path.
-  const result = yield* compactConversationWithProtectedTail(
+  const result = yield* compactMessagesStream({
     provider,
     model,
-    session.messages,
+    messages: session.messages,
     state,
     protectedTurns,
-  )
+  })
 
   // Unsuccessful compaction (provider failure surfaced by the underlying
   // generator as an empty summary): leave the persisted transcript and usage
   // metadata unchanged.
-  if (result.summary.length === 0) {
+  if (!result.compacted) {
     return {
       summary: '',
       compacted: false,

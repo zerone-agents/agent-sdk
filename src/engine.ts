@@ -39,12 +39,12 @@ import { countSessionTurns, truncateToLastNTurns } from './utils/session-turns.j
 import {
   shouldAutoCompact,
   compactConversation,
-  compactConversationWithProtectedTail,
   microCompactMessages,
   pruneMessages,
   createAutoCompactState,
   type AutoCompactState,
 } from './utils/compact.js'
+import { compactMessagesStream } from './compact-messages.js'
 import {
   withRetry,
   isPromptTooLongError,
@@ -722,13 +722,13 @@ export class QueryEngine {
   async *compactStream(protectedTurns?: number): AsyncGenerator<SDKCompactMessage> {
     await this.executeHooks('PreCompact')
     try {
-      const gen = compactConversationWithProtectedTail(
-        this.provider,
-        this.config.env.model,
-        this.messages,
-        this.compactState,
+      const gen = compactMessagesStream({
+        provider: this.provider,
+        model: this.config.env.model,
+        messages: this.messages,
+        state: this.compactState,
         protectedTurns,
-      )
+      })
       while (true) {
         const next = await gen.next()
         if (next.done) {
