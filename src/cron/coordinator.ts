@@ -119,7 +119,10 @@ export class CronExecutionCoordinator {
     return this.dispatchSubmission(task, scheduledFireTime, trigger, dedupKey).completion
   }
 
-  // Same strict-overload contract as submit().
+  // Same strict-overload contract as submit(). SDK-INTERNAL: the only caller
+  // is createCronService() (for CronService.enqueueNow) — hosts use
+  // CronService.enqueueNow; this split is deliberately not re-exported from
+  // the cron entry (issue #51: keep the public surface the small method).
   dispatch(
     task: CronTask,
     scheduledFireTime: number,
@@ -218,10 +221,18 @@ export class CronExecutionCoordinator {
       throw err
     })
 
-    const claimed: Promise<CronExecution> = claimSettled.then((c) => c.execution)
-    // The submit() convenience consumes only completion; keep the claim-phase
-    // projection from ever surfacing as an unhandled rejection when a caller
-    // of dispatch() ignores it.
+    // Snapshot at the claim boundary — the initial-record contract must NOT
+    // depend on the store adapter (review finding): ExecutionStore does not
+    // require claim() to return a detached copy, and a compliant store may
+    // hand back the very object it mutates in updateStatus(). The completion
+    // reaction below enters run() (→ `running`) BEFORE the caller's `await
+    // claimed` continuation runs, so without this copy enqueueNow() could
+    // return `running` instead of the promised initial `pending` record.
+    // All CronExecution fields are scalars — a shallow copy is faithful.
+    const claimed: Promise<CronExecution> = claimSettled.then((c) => ({ ...c.execution }))
+    // Twin-safety (claimed side): the submit() convenience consumes only
+    // completion; the no-op observer keeps this projection from ever
+    // surfacing as an unhandled rejection when the other twin is consumed.
     claimed.catch(() => {})
 
     const completion: Promise<CronExecution> = claimSettled.then((claim) => {
@@ -234,6 +245,12 @@ export class CronExecutionCoordinator {
       }
       return this.run(task, claim.execution, handles)
     })
+    // Twin-safety (completion side): a caller that consumes only `claimed`
+    // must not leave this twin's rejection — a claim failure, or a
+    // pre-executor updateStatus/emit failure inside run() — unobserved. The
+    // no-op observer never changes what an explicit await/catch on
+    // completion sees (multiple observers on the same settlement).
+    completion.catch(() => {})
 
     submission.promise = completion
     return { claimed, completion }

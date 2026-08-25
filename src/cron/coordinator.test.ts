@@ -59,10 +59,12 @@ function createStore(seeded: CronExecution[] = []) {
       claims.push({ ...input })
       const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
       const existingId = byFire.get(key)
-      // Snapshot copies at the boundary, mirroring FileExecutionStore: the
-      // caller's record must not mutate under it when the run progresses.
+      // In-place semantics on purpose (review: the initial-record contract
+      // must not depend on the store adapter): stored objects are returned by
+      // reference and mutated in updateStatus — the coordinator's
+      // claim-boundary snapshot must guarantee the caller's `pending` record.
       if (existingId) {
-        return { kind: 'duplicate', execution: { ...executions.get(existingId)! } }
+        return { kind: 'duplicate', execution: executions.get(existingId)! }
       }
       const activeId = activeByTask.get(input.taskId)
       const created = execution({
@@ -75,7 +77,7 @@ function createStore(seeded: CronExecution[] = []) {
       executions.set(created.id, created)
       byFire.set(key, created.id)
       if (!activeId) activeByTask.set(input.taskId, created.id)
-      return { kind: activeId ? 'skipped' : 'claimed', execution: { ...created } }
+      return { kind: activeId ? 'skipped' : 'claimed', execution: created }
     },
     async get(id) { return executions.get(id) ?? null },
     async list() { return [...executions.values()] },
@@ -375,12 +377,14 @@ describe('CronExecutionCoordinator', () => {
 
     const submitted = h.coordinator.dispatch(task, 60_000, 'manual', 'manual:split-1')
     const claimed = await submitted.claimed
-    // The claim is durable while the executor is still gated: a record exists
-    // in the store under the same id, and the returned snapshot is the
-    // initial pending record (the live store entry may already show `running`
-    // depending on scheduling — the caller's copy never mutates).
+    // The claim is durable while the executor is still gated. This double
+    // mutates records in place (a fully compliant ExecutionStore — the
+    // interface does not require detached snapshots), and its live record
+    // has already progressed to `running` by the time the caller observes
+    // the claim: the coordinator's claim-boundary snapshot is what
+    // guarantees the initial `pending` record (review finding on #53).
     expect(claimed.status).toBe('pending')
-    expect(h.executions.has(claimed.id)).toBe(true)
+    expect(h.executions.get(claimed.id)?.status).toBe('running')
 
     release()
     const final = await submitted.completion
@@ -389,6 +393,33 @@ describe('CronExecutionCoordinator', () => {
     expect(final.output).toBe('gated')
 
     await h.coordinator.stop()
+  })
+
+  it('consuming only claimed never leaves completion unhandled (review finding on #53)', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => {
+      unhandled.push(err)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const h = makeHarness({ executor: okExecutor, claimError: new Error('claim failed') })
+      await h.coordinator.start()
+
+      // Consume ONLY the claimed twin — completion is deliberately ignored,
+      // exactly the consumption pattern the reviewer used to reproduce the
+      // unhandled rejection before the twin observer was installed.
+      const submitted = h.coordinator.dispatch(task, 60_000, 'manual', 'manual:only-claimed')
+      await expect(submitted.claimed).rejects.toThrow('claim failed')
+
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+
+      await h.coordinator.stop()
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 
   it('dispatch with a duplicate identity resolves both phases with the existing execution', async () => {

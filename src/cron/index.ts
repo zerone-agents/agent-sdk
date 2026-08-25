@@ -54,7 +54,6 @@ export {
 } from './coordinator.js'
 export type {
   CronExecutionCoordinatorDeps,
-  SubmittedExecution,
 } from './coordinator.js'
 export { CronRuntime } from './runtime.js'
 export type { CronRuntimeState } from './runtime.js'

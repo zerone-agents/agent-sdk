@@ -40,9 +40,11 @@ class MemoryExecutionStore implements ExecutionStore {
     const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
     const dupId = this.byFire.get(key)
     const dup = dupId !== undefined ? this.executions.find((e) => e.id === dupId) : undefined
-    // Snapshot copies at the boundary, mirroring FileExecutionStore: the
-    // caller's record must not mutate under it when the run progresses.
-    if (dup) return { kind: 'duplicate' as const, execution: { ...dup } }
+    // In-place semantics on purpose (review: the initial-record contract must
+    // not depend on the store adapter): the stored object is returned by
+    // reference and mutated in updateStatus — the coordinator's claim-boundary
+    // snapshot must guarantee the caller's `pending` record regardless.
+    if (dup) return { kind: 'duplicate' as const, execution: dup }
     const active = this.executions.find(
       (e) => e.cronTaskId === input.taskId && (e.status === 'pending' || e.status === 'running'),
     )
@@ -55,7 +57,7 @@ class MemoryExecutionStore implements ExecutionStore {
     }
     this.executions.push(created)
     this.byFire.set(key, created.id)
-    return { kind: active ? ('skipped' as const) : ('claimed' as const), execution: { ...created } }
+    return { kind: active ? ('skipped' as const) : ('claimed' as const), execution: created }
   }
   async get(id) { return this.executions.find((e) => e.id === id) ?? null }
   async list(query) {
