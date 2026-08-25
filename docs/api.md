@@ -41,8 +41,23 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 | `createHookRegistry(config)`          | Create a hook registry for lifecycle events                    |
 | `listSessions()`                      | List persisted sessions                                        |
 | `forkSession(id)`                     | Fork a session for branching                                   |
+| `compactMessagesStream(opts)`         | Compact in-memory messages with protected-tail semantics; streams `compact` events and returns messages + state for coherent custom persistence |
+| `compactMessages(opts)`               | Non-streaming wrapper for `compactMessagesStream`               |
 | `compactSessionStream(opts)`          | Compact a persisted session by `sessionId` (no Agent needed); streams `compact` events, persists messages + summary + token counters atomically. **Host owns cross-request session locking.** |
 | `compactSession(opts)`                | Non-streaming wrapper for `compactSessionStream`                |
+
+#### Compaction storage ownership
+
+Use `compactSessionStream()` or `compactSession()` when the SDK owns the
+persisted session. Use `compactMessagesStream()` or `compactMessages()` when a
+host owns custom storage, then persist the returned `messages` and `state`
+together. Both interfaces preserve recent turns verbatim by default.
+
+The raw all-input helpers `compactConversationStream()`,
+`compactConversation()`, and `compactConversationWithProtectedTail()` are no
+longer exported from the package root. Migrate custom-storage integrations to
+`compactMessagesStream()` or `compactMessages()`; migrate session-backed
+integrations to `compactSessionStream()` or `compactSession()`.
 
 ### Agent methods
 

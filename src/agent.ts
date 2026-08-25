@@ -49,7 +49,8 @@ import type { SkillDefinition } from './skills/types.js'
 import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
 import { DEFAULT_MAX_TOKENS } from './engine.js'
-import { compactConversationWithProtectedTail, type AutoCompactState } from './utils/compact.js'
+import { type AutoCompactState } from './utils/compact.js'
+import { compactMessagesStream } from './compact-messages.js'
 import { resolveSubprocessEnv } from './utils/subprocess-env.js'
 import { resolveToolServices } from './tools/services.js'
 
@@ -828,12 +829,12 @@ export class Agent {
       // Direct `yield*` delegation: same event-forwarding and cancellation
       // semantics as compactSessionStream() (cancellation reaches the
       // provider generator's finally).
-      const result = yield* compactConversationWithProtectedTail(
-        this.provider,
-        this.modelId,
-        this.history,
+      const result = yield* compactMessagesStream({
+        provider: this.provider,
+        model: this.modelId,
+        messages: this.history,
         state,
-      )
+      })
       this.history = result.messages
       this.lastInputTokens = result.state.lastInputTokens
       this.lastOutputTokens = result.state.lastOutputTokens

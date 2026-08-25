@@ -289,9 +289,6 @@ export {
 
 export {
   shouldAutoCompact,
-  compactConversation,
-  compactConversationStream,
-  compactConversationWithProtectedTail,
   microCompactMessages,
   pruneMessages,
   createAutoCompactState,
@@ -300,6 +297,9 @@ export {
   PROTECTED_TOOL_NAMES,
 } from './utils/compact.js'
 export type { AutoCompactState } from './utils/compact.js'
+
+export { compactMessagesStream, compactMessages } from './compact-messages.js'
+export type { CompactMessagesOptions, CompactMessagesResult } from './compact-messages.js'
 
 export { compactSessionStream, compactSession } from './compact-session.js'
 export type { CompactSessionOptions, CompactSessionResult } from './compact-session.js'
