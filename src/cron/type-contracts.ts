@@ -4,7 +4,7 @@
  * for the precedent). `npm run typecheck` enforces these.
  */
 import type { AgentOptions } from '../types.js'
-import type { CronExecutionCoordinator } from './coordinator.js'
+import type { CronExecutionCoordinator, SubmittedExecution } from './coordinator.js'
 import type { ExecutionStore } from './execution-store.js'
 // Public-entry contract: ExecutionClaimInput must be importable from the cron
 // entry point (SDK consumers reference this first-class port contract).
@@ -59,3 +59,23 @@ const claimInput: ExecutionClaimInput = {
   dedupKey: 'manual:x',
 }
 void claimInput
+
+// enqueueNow is a CronService HOST API (issue #51): present on the interface
+// (property access fails typecheck if it is ever dropped). It is NOT an
+// Agent Tool — the cron tool set stays exactly Create/Delete/List (locked by
+// a runtime test in tools.test.ts).
+const svc: CronService = null as unknown as CronService
+void svc.enqueueNow
+
+// The dispatch() claim/completion split is available at the coordinator
+// boundary with the same strict-overload contract as submit() (issue #51);
+// SubmittedExecution is importable from the cron entry.
+void coordinator.dispatch(cronTask, 1, 'scheduled')
+void coordinator.dispatch(cronTask, 1, 'manual', 'manual:x')
+// @ts-expect-error a manual dispatch without a dedupKey is unrepresentable
+void coordinator.dispatch(cronTask, 1, 'manual')
+// @ts-expect-error a scheduled dispatch must not carry a dedupKey
+void coordinator.dispatch(cronTask, 1, 'scheduled', 'x')
+const submitted: SubmittedExecution = null as unknown as SubmittedExecution
+void submitted.claimed
+void submitted.completion

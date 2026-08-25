@@ -59,8 +59,10 @@ function createStore(seeded: CronExecution[] = []) {
       claims.push({ ...input })
       const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
       const existingId = byFire.get(key)
+      // Snapshot copies at the boundary, mirroring FileExecutionStore: the
+      // caller's record must not mutate under it when the run progresses.
       if (existingId) {
-        return { kind: 'duplicate', execution: executions.get(existingId)! }
+        return { kind: 'duplicate', execution: { ...executions.get(existingId)! } }
       }
       const activeId = activeByTask.get(input.taskId)
       const created = execution({
@@ -73,7 +75,7 @@ function createStore(seeded: CronExecution[] = []) {
       executions.set(created.id, created)
       byFire.set(key, created.id)
       if (!activeId) activeByTask.set(input.taskId, created.id)
-      return { kind: activeId ? 'skipped' : 'claimed', execution: created }
+      return { kind: activeId ? 'skipped' : 'claimed', execution: { ...created } }
     },
     async get(id) { return executions.get(id) ?? null },
     async list() { return [...executions.values()] },
@@ -357,5 +359,59 @@ describe('CronExecutionCoordinator', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled)
     }
+  })
+
+  it('dispatch separates the durable claim from the terminal completion (issue #51)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const executor: CronExecutor = async () => {
+      await gate
+      return { output: 'gated' }
+    }
+    const h = makeHarness({ executor })
+    await h.coordinator.start()
+
+    const submitted = h.coordinator.dispatch(task, 60_000, 'manual', 'manual:split-1')
+    const claimed = await submitted.claimed
+    // The claim is durable while the executor is still gated: a record exists
+    // in the store under the same id, and the returned snapshot is the
+    // initial pending record (the live store entry may already show `running`
+    // depending on scheduling — the caller's copy never mutates).
+    expect(claimed.status).toBe('pending')
+    expect(h.executions.has(claimed.id)).toBe(true)
+
+    release()
+    const final = await submitted.completion
+    expect(final.id).toBe(claimed.id)
+    expect(final.status).toBe('succeeded')
+    expect(final.output).toBe('gated')
+
+    await h.coordinator.stop()
+  })
+
+  it('dispatch with a duplicate identity resolves both phases with the existing execution', async () => {
+    const h = makeHarness({ executor: okExecutor })
+    await h.coordinator.start()
+
+    const first = h.coordinator.dispatch(task, 60_000, 'manual', 'manual:same')
+    const firstFinal = await first.completion
+    expect(firstFinal.status).toBe('succeeded')
+
+    // Re-submitting the SAME custom identity is a duplicate: both the claim
+    // phase and the completion resolve with the existing execution — no new
+    // record, no second run.
+    const second = h.coordinator.dispatch(task, 60_000, 'manual', 'manual:same')
+    await expect(second.claimed).resolves.toMatchObject({
+      id: firstFinal.id,
+      status: 'succeeded',
+    })
+    await expect(second.completion).resolves.toMatchObject({
+      id: firstFinal.id,
+      status: 'succeeded',
+    })
+
+    await h.coordinator.stop()
   })
 })
