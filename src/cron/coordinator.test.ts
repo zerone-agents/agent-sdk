@@ -4,6 +4,7 @@ import { FakeClock, ManualTimer } from './clock.js'
 import {
   CronExecutionCoordinator,
   CronExecutionInterruptedError,
+  dispatchCronSubmission,
 } from './coordinator.js'
 import type { CronEvent, CronEventSink } from './events.js'
 import type { ExecutionStore } from './execution-store.js'
@@ -375,7 +376,7 @@ describe('CronExecutionCoordinator', () => {
     const h = makeHarness({ executor })
     await h.coordinator.start()
 
-    const submitted = h.coordinator.dispatch(task, 60_000, 'manual', 'manual:split-1')
+    const submitted = dispatchCronSubmission(h.coordinator, task, 60_000, 'manual', 'manual:split-1')
     const claimed = await submitted.claimed
     // The claim is durable while the executor is still gated. This double
     // mutates records in place (a fully compliant ExecutionStore — the
@@ -408,7 +409,7 @@ describe('CronExecutionCoordinator', () => {
       // Consume ONLY the claimed twin — completion is deliberately ignored,
       // exactly the consumption pattern the reviewer used to reproduce the
       // unhandled rejection before the twin observer was installed.
-      const submitted = h.coordinator.dispatch(task, 60_000, 'manual', 'manual:only-claimed')
+      const submitted = dispatchCronSubmission(h.coordinator, task, 60_000, 'manual', 'manual:only-claimed')
       await expect(submitted.claimed).rejects.toThrow('claim failed')
 
       await new Promise<void>((resolve) => setImmediate(resolve))
@@ -426,14 +427,14 @@ describe('CronExecutionCoordinator', () => {
     const h = makeHarness({ executor: okExecutor })
     await h.coordinator.start()
 
-    const first = h.coordinator.dispatch(task, 60_000, 'manual', 'manual:same')
+    const first = dispatchCronSubmission(h.coordinator, task, 60_000, 'manual', 'manual:same')
     const firstFinal = await first.completion
     expect(firstFinal.status).toBe('succeeded')
 
     // Re-submitting the SAME custom identity is a duplicate: both the claim
     // phase and the completion resolve with the existing execution — no new
     // record, no second run.
-    const second = h.coordinator.dispatch(task, 60_000, 'manual', 'manual:same')
+    const second = dispatchCronSubmission(h.coordinator, task, 60_000, 'manual', 'manual:same')
     await expect(second.claimed).resolves.toMatchObject({
       id: firstFinal.id,
       status: 'succeeded',

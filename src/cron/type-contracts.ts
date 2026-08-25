@@ -4,6 +4,7 @@
  * for the precedent). `npm run typecheck` enforces these.
  */
 import type { AgentOptions } from '../types.js'
+import { dispatchCronSubmission } from './coordinator.js'
 import type { CronExecutionCoordinator } from './coordinator.js'
 import type { ExecutionStore } from './execution-store.js'
 // Public-entry contract: ExecutionClaimInput must be importable from the cron
@@ -39,10 +40,7 @@ void store.claim({ taskId: 't', scheduledFireTime: 1, trigger: 'manual' })
 void store.claim({ taskId: 't', scheduledFireTime: 1, trigger: 'scheduled', dedupKey: 'x' })
 
 // The same contract holds at the coordinator boundary via strict overloads
-// (issue #42, round-6 review). The dispatch() claim/completion split (issue
-// #51) carries the SAME strict-overload contract — SDK-internal (called only
-// by createCronService for enqueueNow; SubmittedExecution is deliberately
-// not re-exported from the cron entry per #51's public-surface constraint).
+// (issue #42, round-6 review).
 const coordinator: CronExecutionCoordinator = null as unknown as CronExecutionCoordinator
 const cronTask = null as unknown as CronTask
 // OK: scheduled submission, no dedupKey.
@@ -53,12 +51,19 @@ void coordinator.submit(cronTask, 1, 'manual', 'manual:x')
 void coordinator.submit(cronTask, 1, 'manual')
 // @ts-expect-error a scheduled submission must not carry a dedupKey
 void coordinator.submit(cronTask, 1, 'scheduled', 'x')
-void coordinator.dispatch(cronTask, 1, 'scheduled')
-void coordinator.dispatch(cronTask, 1, 'manual', 'manual:x')
+
+// Consumer guard (review on #53): the claim/completion split is NOT reachable
+// on the exported coordinator class — the public surface keeps only submit().
+// The split lives in the SDK-internal dispatchCronSubmission friend, whose
+// module is unreachable through the package exports map.
+// @ts-expect-error .dispatch does not exist on the exported class
+void coordinator.dispatch
+void dispatchCronSubmission(coordinator, cronTask, 1, 'scheduled')
+void dispatchCronSubmission(coordinator, cronTask, 1, 'manual', 'manual:x')
 // @ts-expect-error a manual dispatch without a dedupKey is unrepresentable
-void coordinator.dispatch(cronTask, 1, 'manual')
+void dispatchCronSubmission(coordinator, cronTask, 1, 'manual')
 // @ts-expect-error a scheduled dispatch must not carry a dedupKey
-void coordinator.dispatch(cronTask, 1, 'scheduled', 'x')
+void dispatchCronSubmission(coordinator, cronTask, 1, 'scheduled', 'x')
 
 // ExecutionClaimInput must be usable by SDK consumers (round-6 export fix).
 const claimInput: ExecutionClaimInput = {

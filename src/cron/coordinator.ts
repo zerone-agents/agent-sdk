@@ -119,34 +119,13 @@ export class CronExecutionCoordinator {
     return this.dispatchSubmission(task, scheduledFireTime, trigger, dedupKey).completion
   }
 
-  // Same strict-overload contract as submit(). SDK-INTERNAL: the only caller
-  // is createCronService() (for CronService.enqueueNow) — hosts use
-  // CronService.enqueueNow; this split is deliberately not re-exported from
-  // the cron entry (issue #51: keep the public surface the small method).
-  dispatch(
-    task: CronTask,
-    scheduledFireTime: number,
-    trigger: 'scheduled',
-  ): SubmittedExecution
-  dispatch(
-    task: CronTask,
-    scheduledFireTime: number,
-    trigger: 'manual',
-    dedupKey: string,
-  ): SubmittedExecution
-  dispatch(
-    task: CronTask,
-    scheduledFireTime: number,
-    trigger: CronExecutionTrigger,
-    dedupKey?: string,
-  ): SubmittedExecution {
-    return this.dispatchSubmission(task, scheduledFireTime, trigger, dedupKey)
-  }
-
   /**
    * The single submission pipeline, split at the claim boundary (issue #51).
-   * Private + broad-signature so both overloaded entry points (submit,
-   * dispatch) can delegate without fighting overload resolution.
+   * Private + broad-signature so the overloaded entry points (submit, and
+   * the module-level dispatchCronSubmission friend) can delegate without
+   * fighting overload resolution. Deliberately NOT a public method: the
+   * public CronExecutionCoordinator surface keeps only submit() — the split
+   * is reached exclusively through the internal friend below.
    */
   private dispatchSubmission(
     task: CronTask,
@@ -380,4 +359,47 @@ export class CronExecutionCoordinator {
     for (const submission of [...this.pending]) submission.abort.abort(reason)
     await this.idle()
   }
+}
+
+/**
+ * SDK-INTERNAL friend of CronExecutionCoordinator (issue #51): exposes the
+ * claim/completion split to createCronService() (CronService.enqueueNow)
+ * WITHOUT putting it on the exported class — the public coordinator surface
+ * keeps only submit(). This module is unreachable through the package
+ * exports map (only '.' and './cron/node' are exposed), so consumers cannot
+ * import it; the type-contract file locks that `.dispatch` is not reachable
+ * on the class. Strict overloads mirror submit()'s contract.
+ */
+export function dispatchCronSubmission(
+  coordinator: CronExecutionCoordinator,
+  task: CronTask,
+  scheduledFireTime: number,
+  trigger: 'scheduled',
+): SubmittedExecution
+export function dispatchCronSubmission(
+  coordinator: CronExecutionCoordinator,
+  task: CronTask,
+  scheduledFireTime: number,
+  trigger: 'manual',
+  dedupKey: string,
+): SubmittedExecution
+export function dispatchCronSubmission(
+  coordinator: CronExecutionCoordinator,
+  task: CronTask,
+  scheduledFireTime: number,
+  trigger: CronExecutionTrigger,
+  dedupKey?: string,
+): SubmittedExecution {
+  // The cast is the module's privilege: dispatchSubmission is private to the
+  // class, and only this in-module friend may reach through to it.
+  return (
+    coordinator as unknown as {
+      dispatchSubmission(
+        task: CronTask,
+        scheduledFireTime: number,
+        trigger: CronExecutionTrigger,
+        dedupKey?: string,
+      ): SubmittedExecution
+    }
+  ).dispatchSubmission(task, scheduledFireTime, trigger, dedupKey)
 }
