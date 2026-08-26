@@ -126,3 +126,54 @@ describe('buildCompactionPrompt content rules', () => {
     expect(getPrompt()).toContain('/a/b.ts')
   })
 })
+
+describe('compaction timestamps (issue #54)', () => {
+  function stampedTurns(n: number): NormalizedMessageParam[] {
+    const out: NormalizedMessageParam[] = []
+    for (let i = 1; i <= n; i++) {
+      out.push(
+        { role: 'user', content: `turn${i}`, id: `u${i}`, timestamp: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString() },
+        { role: 'assistant', content: `resp${i}`, id: `a${i}`, timestamp: new Date(Date.UTC(2026, 0, 1, 0, i, 30)).toISOString() },
+      )
+    }
+    return out
+  }
+
+  it('summary pair shares one timestamp and both messages have ids', async () => {
+    const result = await drain(compactConversationWithProtectedTail(
+      summaryProvider(), 'm', stampedTurns(8), createAutoCompactState(),
+    ))
+    const [summaryUser, summaryAssistant] = result.messages
+    expect(summaryUser.id).toBeTruthy()
+    expect(summaryAssistant.id).toBeTruthy()
+    expect(summaryUser.timestamp).toBe(summaryAssistant.timestamp)
+    expect(Date.parse(summaryUser.timestamp!)).not.toBeNaN()
+  })
+
+  it('protected tail timestamps are preserved verbatim', async () => {
+    const turns = stampedTurns(8)
+    const result = await drain(compactConversationWithProtectedTail(
+      summaryProvider(), 'm', turns, createAutoCompactState(),
+    ))
+    const kept = result.messages.slice(2)
+    // [.. pair, ...tailMsgs, lastMsg] is a contiguous suffix of `turns`
+    const originalKept = turns.slice(turns.length - kept.length)
+    expect(kept.map((m) => m.timestamp)).toEqual(originalKept.map((m) => m.timestamp))
+  })
+
+  it('failed compaction leaves the original timestamps untouched', async () => {
+    const failing: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage(): Promise<CreateMessageResponse> {
+        throw new Error('summary provider down')
+      },
+    }
+    const turns = stampedTurns(8)
+    const before = turns.map((m) => m.timestamp)
+    const result = await drain(compactConversationWithProtectedTail(
+      failing, 'm', turns, createAutoCompactState(),
+    ))
+    expect(result.summary).toBe('')
+    expect(result.messages.map((m) => m.timestamp)).toEqual(before)
+  })
+})

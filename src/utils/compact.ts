@@ -116,13 +116,20 @@ const COMPACT_SYSTEM_PROMPT = `You are a conversation summarizer. When construct
 The summary should allow the conversation to continue seamlessly.`
 
 function buildCompactedMessages(summary: string): NormalizedMessageParam[] {
+  // Both halves of the synthetic summary pair share ONE compaction timestamp
+  // (issue #54): they represent a single logical event — the compaction.
+  const compactedAt = new Date().toISOString()
   return [
     {
       role: 'user',
+      id: crypto.randomUUID(),
+      timestamp: compactedAt,
       content: `[Previous conversation summary]\n\n${summary}\n\n[End of summary - conversation continues below]`,
     },
     {
       role: 'assistant',
+      id: crypto.randomUUID(),
+      timestamp: compactedAt,
       content: 'I understand the context from the previous conversation. I\'ll continue from where we left off.',
     },
   ]
