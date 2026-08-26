@@ -607,26 +607,27 @@ export class Agent {
 
     // Run the engine (try/finally ensures persistence even on abort)
     try {
-      // Push user prompt FIRST so the log is chronologically correct.
-      // (Previously pushed in finally after assistant events, causing user
-      // messages to appear after their own assistant responses.)
-      this.messageLog.push({
-        type: 'user',
-        message: { role: 'user', content: prompt },
-        uuid: crypto.randomUUID(),
-        timestamp: new Date().toISOString(),
-      })
-
       for await (const event of engine.submitMessage(prompt)) {
-        if (event.type === 'assistant') {
-          const timestamp = new Date().toISOString()
-          ;(event as any).session_id = this.sid
-          ;(event as any).timestamp = timestamp
+        // messageLog is a PROJECTION of engine events (issue #54): entries
+        // reuse the engine history message's uuid and timestamp. A prompt
+        // blocked by UserPromptSubmit hooks never gets a 'user' event, so
+        // it enters neither history nor messageLog. Tool results, recovery
+        // prompts, and subagent traffic never arrive as user/assistant
+        // events here (executeTools only yields tool_result events).
+        if (event.type === 'user') {
+          this.messageLog.push({
+            type: 'user',
+            message: { role: 'user', content: prompt },
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+          })
+        } else if (event.type === 'assistant') {
+          event.session_id = this.sid
           this.messageLog.push({
             type: 'assistant',
             message: event.message,
             uuid: event.uuid,
-            timestamp,
+            timestamp: event.timestamp,
           })
         }
 

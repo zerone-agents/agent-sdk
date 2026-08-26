@@ -81,3 +81,48 @@ describe('Agent message log', () => {
     expect((agent as any).getMessages).toBeUndefined()
   })
 })
+
+describe('Agent message log timestamps (issue #54)', () => {
+  it('messageLog entries reuse engine history id and timestamp', async () => {
+    const agent = makeAgent()
+    await agent.prompt('hi')
+
+    const log = agent.getMessageLog()
+    expect(log).toHaveLength(2)
+    const [userEntry, assistantEntry] = log
+
+    const history = await agent.getMessageHistory()
+    const userMsg = history.find((m) => m.role === 'user')!
+    const assistantMsg = history.find((m) => m.role === 'assistant')!
+
+    expect(userEntry.type).toBe('user')
+    expect(userEntry.uuid).toBe(userMsg.id)
+    expect(userEntry.timestamp).toBe(userMsg.timestamp)
+    expect(Date.parse(userEntry.timestamp)).not.toBeNaN()
+
+    expect(assistantEntry.type).toBe('assistant')
+    expect(assistantEntry.uuid).toBe(assistantMsg.id)
+    expect(assistantEntry.timestamp).toBe(assistantMsg.timestamp)
+    expect(Date.parse(assistantEntry.timestamp)).not.toBeNaN()
+  })
+
+  it('hook-blocked prompt enters neither history nor messageLog', async () => {
+    const agent = new Agent({
+      apiKey: 'fake-key',
+      persistSession: false,
+      permissionMode: 'bypassPermissions',
+      enableFileRevert: false,
+      hooks: {
+        UserPromptSubmit: [{ hooks: [async () => ({ block: true })] }],
+      },
+    })
+    ;(agent as any).provider = new FakeProvider()
+
+    const result = await agent.prompt('hi')
+    expect(result.is_error).toBe(true)
+    expect(result.errors?.join(' ')).toContain('Blocked by UserPromptSubmit hook')
+
+    expect(agent.getMessageLog()).toHaveLength(0)
+    expect(await agent.getMessageHistory()).toHaveLength(0)
+  })
+})
