@@ -39,6 +39,13 @@ export interface NormalizedMessageParam {
   rawUsage?: any
   /** Stable identifier for this message in session transcripts. */
   id?: string
+  /**
+   * ISO-8601 UTC timestamp recording when this message entered engine
+   * history. Minted at creation by the SDK; saveSession/loadSession pass it
+   * through unchanged and never backfill it. Older transcripts may lack
+   * this field (undefined) — the original event time is unknowable (#54).
+   */
+  timestamp?: string
   /** Snapshot metadata for revert support (user messages only). */
   _snapshot?: {
     beforeHash: string

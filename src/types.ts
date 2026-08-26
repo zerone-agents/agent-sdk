@@ -75,6 +75,8 @@ export interface SDKUserMessage {
   type: 'user'
   /** UUID of the user message just added to the conversation. */
   uuid: string
+  /** When the message entered engine history — identical to the history message's timestamp. */
+  timestamp: string
 }
 
 export interface SDKAssistantMessage {
@@ -82,6 +84,12 @@ export interface SDKAssistantMessage {
   /** UUID of the assistant message just generated. */
   uuid: string
   session_id?: string
+  /**
+   * When the message entered engine history — identical to the history
+   * message's timestamp. Optional until the engine shares the history
+   * timestamp on assistant events (issue #54); user events already carry it.
+   */
+  timestamp?: string
   message: {
     role: 'assistant'
     content: ContentBlock[]

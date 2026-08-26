@@ -164,10 +164,11 @@ export class QueryEngine {
 
     // Add user message
     const userMessageId = crypto.randomUUID()
-    this.messages.push({ role: 'user', content: prompt as any, id: userMessageId })
+    const userTimestamp = new Date().toISOString()
+    this.messages.push({ role: 'user', content: prompt as any, id: userMessageId, timestamp: userTimestamp })
 
     // Emit the user message id so callers (e.g. host applications) can target it for revert.
-    yield { type: 'user', uuid: userMessageId } as SDKMessage
+    yield { type: 'user', uuid: userMessageId, timestamp: userTimestamp } as SDKMessage
 
     // Snapshot workspace before processing — attach to user message for revert support
     if (this.snapshotEngine) {

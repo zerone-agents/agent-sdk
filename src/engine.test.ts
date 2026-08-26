@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
-import type { QueryEngineConfig, SDKMessage, SDKResultMessage, SDKToolResultMessage, ToolDefinition } from './types.js'
+import type { QueryEngineConfig, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition } from './types.js'
 import type { LLMProvider, StreamChunk, CreateMessageParams, NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
+import { createHookRegistry } from './hooks.js'
 import { vi } from 'vitest'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -1116,5 +1117,70 @@ describe('QueryEngine per-turn tool activation', () => {
 
     expect(query2Turn1Tools).toBeDefined()
     expect(query2Turn1Tools.find((t: any) => t.name === 'CronList')).toBeDefined()
+  })
+})
+
+describe('QueryEngine message timestamps (issue #54)', () => {
+  it('user history message and user event share id and parseable ISO timestamp', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider))
+    const events = await run(engine)
+
+    const userEvent = events.find((m) => m.type === 'user') as SDKUserMessage | undefined
+    expect(userEvent).toBeDefined()
+    expect(Date.parse(userEvent!.timestamp)).not.toBeNaN()
+    expect(userEvent!.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+
+    const userMsg = engine.getMessages().find((m) => m.role === 'user')
+    expect(userMsg?.id).toBe(userEvent!.uuid)
+    expect(userMsg?.timestamp).toBe(userEvent!.timestamp)
+  })
+
+  it('hook-blocked prompt enters neither history nor events', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+    }
+    const hookRegistry = createHookRegistry()
+    hookRegistry.register('UserPromptSubmit', {
+      handler: async () => ({ block: true }),
+    })
+    const engine = new QueryEngine({ ...makeConfig(provider), hookRegistry })
+    const events = await run(engine)
+
+    expect(events.find((m) => m.type === 'user')).toBeUndefined()
+    expect(engine.getMessages().find((m) => m.role === 'user')).toBeUndefined()
+  })
+
+  it('provider failure after user acceptance keeps the timestamped user message', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        throw new FakeAPIConnectionError('Connection error.', new TypeError('fetch failed'))
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider))
+    const events = await run(engine)
+
+    const userEvent = events.find((m) => m.type === 'user') as SDKUserMessage | undefined
+    expect(userEvent).toBeDefined()
+    const userMsg = engine.getMessages().find((m) => m.role === 'user')
+    expect(userMsg?.id).toBe(userEvent?.uuid)
+    expect(userMsg?.timestamp).toBe(userEvent?.timestamp)
+    expect(Date.parse(userMsg!.timestamp!)).not.toBeNaN()
   })
 })
