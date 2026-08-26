@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
 import type { QueryEngineConfig, SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition } from './types.js'
-import type { LLMProvider, StreamChunk, CreateMessageParams, NormalizedMessageParam } from './providers/types.js'
+import type { LLMProvider, StreamChunk, CreateMessageParams, CreateMessageResponse, NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
 import { createHookRegistry } from './hooks.js'
@@ -1205,5 +1205,36 @@ describe('QueryEngine message timestamps (issue #54)', () => {
     const assistantMsg = engine.getMessages().find((m) => m.role === 'assistant')
     expect(assistantMsg?.id).toBe(assistantEvent!.uuid)
     expect(assistantMsg?.timestamp).toBe(assistantEvent!.timestamp)
+  })
+
+  it('max_tokens recovery prompt carries id and parseable ISO timestamp', async () => {
+    let calls = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage(): Promise<CreateMessageResponse> {
+        calls++
+        if (calls === 1) {
+          return {
+            content: [{ type: 'text', text: 'partial answer' }],
+            stopReason: 'max_tokens',
+            usage: { input_tokens: 1, output_tokens: 1, totalInputTokens: 1 },
+          }
+        }
+        return {
+          content: [{ type: 'text', text: 'continued' }],
+          stopReason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1, totalInputTokens: 1 },
+        }
+      },
+    }
+    const engine = new QueryEngine({ ...makeConfig(provider), includePartialMessages: false })
+    await run(engine)
+
+    const recovery = engine.getMessages().find(
+      (m) => m.role === 'user' && m.content === 'Please continue from where you left off.',
+    )
+    expect(recovery).toBeDefined()
+    expect(recovery!.id).toBeTruthy()
+    expect(Date.parse(recovery!.timestamp!)).not.toBeNaN()
   })
 })

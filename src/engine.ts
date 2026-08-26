@@ -545,6 +545,7 @@ export class QueryEngine {
           this.messages.push({
             role: 'user',
             id: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
             content: 'Please continue from where you left off.',
           })
           continue

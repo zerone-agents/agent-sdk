@@ -716,3 +716,19 @@ describe('executeSingleTool logging security', () => {
     expect(allLogged).not.toContain(SECRET)
   })
 })
+
+describe('tool-result transcript message (issue #54)', () => {
+  it('tool-result message carries id and parseable ISO timestamp', async () => {
+    const tool = makeTool({ name: 'greet' })
+    const ctx = makeCtx()
+    ctx.config.resolved.tools = [tool]
+    for await (const _ev of executeTools(ctx, [makeBlock({ id: 't1', name: 'greet' })])) {
+      // drain
+    }
+    expect(ctx.messages).toHaveLength(1)
+    const msg = ctx.messages[0]
+    expect(msg.role).toBe('user')
+    expect(msg.id).toBeTruthy()
+    expect(Date.parse(msg.timestamp!)).not.toBeNaN()
+  })
+})
