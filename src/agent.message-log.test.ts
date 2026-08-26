@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { Agent } from './agent.js'
+import { loadSession, deleteSession } from './session.js'
 import type {
   LLMProvider,
   CreateMessageParams,
@@ -124,5 +125,32 @@ describe('Agent message log timestamps (issue #54)', () => {
 
     expect(agent.getMessageLog()).toHaveLength(0)
     expect(await agent.getMessageHistory()).toHaveLength(0)
+  })
+
+  it('persistSession round-trip keeps timestamps on disk', async () => {
+    const agent = new Agent({
+      apiKey: 'fake-key',
+      persistSession: true,
+      permissionMode: 'bypassPermissions',
+      enableFileRevert: false,
+    })
+    ;(agent as any).provider = new FakeProvider()
+    const sid = (agent as any).sid as string
+    try {
+      await agent.prompt('hi')
+      const data = await loadSession(sid)
+      const msgs = data!.messages
+      expect(msgs.length).toBeGreaterThanOrEqual(2)
+      for (const m of msgs) {
+        expect(Date.parse(m.timestamp ?? '')).not.toBeNaN()
+      }
+      // Disk timestamps equal what the in-process log saw.
+      const log = agent.getMessageLog()
+      const userMsg = msgs.find((m) => m.role === 'user')!
+      expect(userMsg.id).toBe(log[0].uuid)
+      expect(userMsg.timestamp).toBe(log[0].timestamp)
+    } finally {
+      await deleteSession(sid)
+    }
   })
 })

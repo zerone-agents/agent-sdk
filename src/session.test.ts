@@ -100,3 +100,30 @@ describe('saveSession atomic replacement (review #47 P1)', () => {
     expect(data!.messages).toHaveLength(2)
   })
 })
+
+describe('session timestamps (issue #54)', () => {
+  const sid = `ts-test-${crypto.randomUUID()}`
+
+  afterAll(async () => {
+    await deleteSession(sid)
+  })
+
+  it('round-trips timestamps unchanged and never backfills missing ones', async () => {
+    const messages: NormalizedMessageParam[] = [
+      { role: 'user', content: 'old', id: 'u1' }, // old transcript: no timestamp
+      { role: 'assistant', content: 'new', id: 'a1', timestamp: '2026-08-26T00:00:00.000Z' },
+    ]
+    await saveSession(sid, messages, { cwd: process.cwd(), model: 'test' })
+
+    const loaded = await loadSession(sid)
+    expect(loaded!.messages[1].timestamp).toBe('2026-08-26T00:00:00.000Z')
+    expect(loaded!.messages[0].timestamp).toBeUndefined()
+    expect('timestamp' in loaded!.messages[0]).toBe(false) // key absent, not just undefined
+
+    // Repeated save of loaded data never rewrites or invents timestamps.
+    await saveSession(sid, loaded!.messages, loaded!.metadata)
+    const reloaded = await loadSession(sid)
+    expect(reloaded!.messages[1].timestamp).toBe('2026-08-26T00:00:00.000Z')
+    expect('timestamp' in reloaded!.messages[0]).toBe(false)
+  })
+})
