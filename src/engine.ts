@@ -510,12 +510,14 @@ export class QueryEngine {
 
       // Add assistant message to conversation (same UUID that will be yielded)
       const assistantUuid = crypto.randomUUID()
-      this.messages.push({ role: 'assistant', content: response.content as any, rawUsage: response.rawUsage, id: assistantUuid })
+      const assistantTimestamp = new Date().toISOString()
+      this.messages.push({ role: 'assistant', content: response.content as any, rawUsage: response.rawUsage, id: assistantUuid, timestamp: assistantTimestamp })
 
       // Yield assistant message
       yield {
         type: 'assistant',
         uuid: assistantUuid,
+        timestamp: assistantTimestamp,
         message: {
           role: 'assistant',
           content: response.content as any,

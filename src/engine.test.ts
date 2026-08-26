@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
-import type { QueryEngineConfig, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition } from './types.js'
+import type { QueryEngineConfig, SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition } from './types.js'
 import type { LLMProvider, StreamChunk, CreateMessageParams, NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
@@ -1182,5 +1182,28 @@ describe('QueryEngine message timestamps (issue #54)', () => {
     expect(userMsg?.id).toBe(userEvent?.uuid)
     expect(userMsg?.timestamp).toBe(userEvent?.timestamp)
     expect(Date.parse(userMsg!.timestamp!)).not.toBeNaN()
+  })
+
+  it('assistant history message and assistant event share id and parseable ISO timestamp', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider))
+    const events = await run(engine)
+
+    const assistantEvent = events.find((m) => m.type === 'assistant') as SDKAssistantMessage | undefined
+    expect(assistantEvent).toBeDefined()
+    expect(Date.parse(assistantEvent!.timestamp)).not.toBeNaN()
+
+    const assistantMsg = engine.getMessages().find((m) => m.role === 'assistant')
+    expect(assistantMsg?.id).toBe(assistantEvent!.uuid)
+    expect(assistantMsg?.timestamp).toBe(assistantEvent!.timestamp)
   })
 })
