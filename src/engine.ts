@@ -263,23 +263,29 @@ export class QueryEngine {
         }
       }
 
-      // Micro-compact: truncate large tool results
-      let apiMessages = microCompactMessages(
-        normalizeMessagesForAPI(this.messages as any[]),
-      ) as NormalizedMessageParam[]
-
-      // Enforce request body size limit: strip images from oldest messages if needed
+      // Enforce request body size limit FIRST, on the ORIGINAL history
+      // objects: enforceBodySizeLimit spreads each message ({ ...msg }) so
+      // id/timestamp/_snapshot survive the write-back to this.messages
+      // (issue #54). Normalized API copies would silently drop them.
+      // NB: the byte estimate now runs on pre-microcompact content, so this
+      // may strip an image that truncation alone would have obviated —
+      // strictly more conservative, never under the limit.
       const maxBodyBytes = this.config.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
-      const bodySizeResult = enforceBodySizeLimit(apiMessages, maxBodyBytes, systemPrompt)
-      apiMessages = bodySizeResult.messages as NormalizedMessageParam[]
+      const bodySizeResult = enforceBodySizeLimit(this.messages, maxBodyBytes, systemPrompt)
       if (bodySizeResult.strippedCount > 0) {
-        this.messages = apiMessages
+        this.messages = bodySizeResult.messages as NormalizedMessageParam[]
         yield {
           type: 'system',
           subtype: 'warning',
           message: `Request body exceeded ${maxBodyBytes} byte limit. ${bodySizeResult.strippedCount} image(s) removed from older messages.`,
         } as any
       }
+
+      // Micro-compact: truncate large tool results (API-only view — never
+      // written back to this.messages)
+      let apiMessages = microCompactMessages(
+        normalizeMessagesForAPI(this.messages as any[]),
+      ) as NormalizedMessageParam[]
 
       // Inject current todos snapshot as a system-reminder at turn boundary.
       // Best-effort: file errors are silently ignored (same policy as the <env> block).

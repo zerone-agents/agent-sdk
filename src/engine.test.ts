@@ -1237,4 +1237,43 @@ describe('QueryEngine message timestamps (issue #54)', () => {
     expect(recovery!.id).toBeTruthy()
     expect(Date.parse(recovery!.timestamp!)).not.toBeNaN()
   })
+
+  it('body-size strip preserves id/timestamp in history; provider never sees metadata', async () => {
+    const captured: any[] = []
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
+        captured.push(...params.messages)
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine({
+      ...makeConfig(provider),
+      maxRequestBodyBytes: 100, // force image stripping
+    })
+    const imagePrompt = [
+      { type: 'text', text: 'look' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(5000) } },
+    ]
+    for await (const _ev of engine.submitMessage(imagePrompt as any)) {
+      // drain
+    }
+
+    // History retains metadata after the image strip
+    const userMsg = engine.getMessages().find((m) => m.role === 'user')
+    expect(userMsg?.id).toBeTruthy()
+    expect(Date.parse(userMsg?.timestamp ?? '')).not.toBeNaN()
+
+    // Provider request never carries transcript metadata
+    expect(captured.length).toBeGreaterThan(0)
+    for (const msg of captured) {
+      expect(msg).not.toHaveProperty('id')
+      expect(msg).not.toHaveProperty('timestamp')
+      expect(msg).not.toHaveProperty('_snapshot')
+    }
+  })
 })
