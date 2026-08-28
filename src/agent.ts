@@ -639,8 +639,6 @@ export class Agent {
       this.lastInputTokens = engineState.lastInputTokens
       this.lastOutputTokens = engineState.lastOutputTokens
 
-      // (User message push removed from here — moved above the stream loop.)
-
       if (this.cfg.persistSession !== false && this.history.length > 0) {
         try {
           await saveSession(this.sid, this.history, {

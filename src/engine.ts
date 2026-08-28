@@ -264,9 +264,11 @@ export class QueryEngine {
       }
 
       // Enforce request body size limit FIRST, on the ORIGINAL history
-      // objects: enforceBodySizeLimit spreads each message ({ ...msg }) so
-      // id/timestamp/_snapshot survive the write-back to this.messages
-      // (issue #54). Normalized API copies would silently drop them.
+      // objects: enforceBodySizeLimit copies only the messages it modifies
+      // (string-content messages pass through by reference — equally
+      // metadata-safe) so id/timestamp/_snapshot survive the write-back to
+      // this.messages (issue #54). Normalized API copies would silently drop
+      // them.
       // NB: the byte estimate now runs on pre-microcompact content, so this
       // may strip an image that truncation alone would have obviated —
       // strictly more conservative, never under the limit.

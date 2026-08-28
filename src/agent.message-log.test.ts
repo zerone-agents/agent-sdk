@@ -72,8 +72,6 @@ describe('Agent message log', () => {
     expect(userIdx).toBeGreaterThanOrEqual(0)
     expect(assistantIdx).toBeGreaterThanOrEqual(0)
     // Order regression: user prompt must precede its assistant response.
-    // Fails on current code because user push happens in `finally` after
-    // all assistant events have already been pushed.
     expect(userIdx).toBeLessThan(assistantIdx)
   })
 
