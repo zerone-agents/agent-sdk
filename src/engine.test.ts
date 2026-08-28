@@ -1276,4 +1276,73 @@ describe('QueryEngine message timestamps (issue #54)', () => {
       expect(msg).not.toHaveProperty('_snapshot')
     }
   })
+
+  it('retains an image when micro-compaction brings the request under the limit (#54 review)', async () => {
+    const bigTool: ToolDefinition = {
+      name: 'bigdata',
+      description: 'returns a huge string',
+      inputSchema: { type: 'object', properties: {} },
+      async call() {
+        return { type: 'tool_result', tool_use_id: '', content: 'X'.repeat(400_000) }
+      },
+    }
+    const captured: any[][] = []
+    let pass = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
+        captured.push(params.messages)
+        if (pass++ === 0) {
+          yield { type: 'tool_use', index: 1, id: 'tu_big', name: 'bigdata', input: '{}' }
+          yield { type: 'done', index: -1 }
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' }
+          yield { type: 'done', index: -1 }
+        }
+      },
+    }
+    const engine = new QueryEngine({
+      ...makeConfig(provider, [bigTool]),
+      maxRequestBodyBytes: 200_000,
+    })
+    const imagePrompt = [
+      { type: 'text', text: 'look' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(100_000) } },
+    ]
+    for await (const _ev of engine.submitMessage(imagePrompt as any)) {
+      // drain
+    }
+
+    // The image survives in persisted history: micro-compaction truncated
+    // the 400K tool result (~50K), which alone brought the request under
+    // the 200K limit — no image needed to be stripped.
+    const userMsg = engine.getMessages().find(
+      (m) => m.role === 'user' && Array.isArray(m.content) && (m.content as any[]).some((b: any) => b.type === 'image'),
+    )
+    expect(userMsg).toBeDefined()
+    expect(userMsg!.id).toBeTruthy()
+    const imgBlock = (userMsg!.content as any[]).find((b: any) => b.type === 'image')
+    expect((imgBlock!.source as any).data).toHaveLength(100_000)
+
+    // The final provider request carries the truncated tool result, the
+    // intact image, and no transcript metadata.
+    const finalRequest = captured[captured.length - 1]
+    const toolResultMsg = (finalRequest as any[]).find(
+      (m) => Array.isArray(m.content) && m.content.some((b: any) => b.type === 'tool_result'),
+    )
+    expect(toolResultMsg).toBeDefined()
+    const toolResultBlock = (toolResultMsg!.content as any[]).find((b: any) => b.type === 'tool_result')
+    expect(toolResultBlock!.content).toHaveLength(50_019) // 2×25K halves + '\n...(truncated)...\n' (19)
+    expect((finalRequest as any[]).some(
+      (m) => Array.isArray(m.content) && m.content.some((b: any) => b.type === 'image'),
+    )).toBe(true)
+    for (const msg of finalRequest as any[]) {
+      expect(msg).not.toHaveProperty('id')
+      expect(msg).not.toHaveProperty('timestamp')
+      expect(msg).not.toHaveProperty('_snapshot')
+    }
+  })
 })

@@ -263,31 +263,46 @@ export class QueryEngine {
         }
       }
 
-      // Enforce request body size limit FIRST, on the ORIGINAL history
-      // objects: enforceBodySizeLimit copies only the messages it modifies
-      // (string-content messages pass through by reference — equally
-      // metadata-safe) so id/timestamp/_snapshot survive the write-back to
-      // this.messages (issue #54). Normalized API copies would silently drop
-      // them.
-      // NB: the byte estimate now runs on pre-microcompact content, so this
-      // may strip an image that truncation alone would have obviated —
-      // strictly more conservative, never under the limit.
+      // Micro-compact first — the original size-decision order. Truncating a
+      // bloated tool result may bring the request under the limit without
+      // removing any image, and image removal is persisted to the
+      // transcript, so it stays the last resort (#54 review).
+      let apiMessages = microCompactMessages(
+        normalizeMessagesForAPI(this.messages as any[]),
+      ) as NormalizedMessageParam[]
+
+      // Enforce request body size limit: strip images from older messages
+      // only when truncation alone cannot fit the budget.
       const maxBodyBytes = this.config.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
-      const bodySizeResult = enforceBodySizeLimit(this.messages, maxBodyBytes, systemPrompt)
+      const bodySizeResult = enforceBodySizeLimit(apiMessages, maxBodyBytes, systemPrompt)
+      apiMessages = bodySizeResult.messages as NormalizedMessageParam[]
       if (bodySizeResult.strippedCount > 0) {
-        this.messages = bodySizeResult.messages as NormalizedMessageParam[]
+        // Write stripped content back onto the ORIGINAL history objects so
+        // id/timestamp/_snapshot survive (#54). The normalized view aligns
+        // 1:1 with this.messages when normalization neither merged
+        // same-role messages nor dropped orphaned tool results (the normal
+        // case — engine history alternates roles by construction). When
+        // alignment does not hold, fall back to the wholesale replace
+        // (pre-#54 behavior) rather than write content onto the wrong
+        // message.
+        if (
+          apiMessages.length === this.messages.length &&
+          apiMessages.every((m, i) => m.role === this.messages[i].role)
+        ) {
+          for (let i = 0; i < apiMessages.length; i++) {
+            if (apiMessages[i].content !== this.messages[i].content) {
+              this.messages[i] = { ...this.messages[i], content: apiMessages[i].content }
+            }
+          }
+        } else {
+          this.messages = apiMessages
+        }
         yield {
           type: 'system',
           subtype: 'warning',
           message: `Request body exceeded ${maxBodyBytes} byte limit. ${bodySizeResult.strippedCount} image(s) removed from older messages.`,
         } as any
       }
-
-      // Micro-compact: truncate large tool results (API-only view — never
-      // written back to this.messages)
-      let apiMessages = microCompactMessages(
-        normalizeMessagesForAPI(this.messages as any[]),
-      ) as NormalizedMessageParam[]
 
       // Inject current todos snapshot as a system-reminder at turn boundary.
       // Best-effort: file errors are silently ignored (same policy as the <env> block).
