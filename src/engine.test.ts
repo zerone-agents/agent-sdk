@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
-import type { QueryEngineConfig, SDKMessage, SDKResultMessage, SDKToolResultMessage, ToolDefinition } from './types.js'
-import type { LLMProvider, StreamChunk, CreateMessageParams, NormalizedMessageParam } from './providers/types.js'
+import type { QueryEngineConfig, SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition } from './types.js'
+import type { LLMProvider, StreamChunk, CreateMessageParams, CreateMessageResponse, NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
+import { createHookRegistry } from './hooks.js'
 import { vi } from 'vitest'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -1116,5 +1117,305 @@ describe('QueryEngine per-turn tool activation', () => {
 
     expect(query2Turn1Tools).toBeDefined()
     expect(query2Turn1Tools.find((t: any) => t.name === 'CronList')).toBeDefined()
+  })
+})
+
+describe('QueryEngine message timestamps (issue #54)', () => {
+  it('user history message and user event share id and parseable ISO timestamp', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider))
+    const events = await run(engine)
+
+    const userEvent = events.find((m) => m.type === 'user') as SDKUserMessage | undefined
+    expect(userEvent).toBeDefined()
+    expect(Date.parse(userEvent!.timestamp)).not.toBeNaN()
+    expect(userEvent!.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+
+    const userMsg = engine.getMessages().find((m) => m.role === 'user')
+    expect(userMsg?.id).toBe(userEvent!.uuid)
+    expect(userMsg?.timestamp).toBe(userEvent!.timestamp)
+  })
+
+  it('hook-blocked prompt enters neither history nor events', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+    }
+    const hookRegistry = createHookRegistry()
+    hookRegistry.register('UserPromptSubmit', {
+      handler: async () => ({ block: true }),
+    })
+    const engine = new QueryEngine({ ...makeConfig(provider), hookRegistry })
+    const events = await run(engine)
+
+    expect(events.find((m) => m.type === 'user')).toBeUndefined()
+    expect(engine.getMessages().find((m) => m.role === 'user')).toBeUndefined()
+  })
+
+  it('provider failure after user acceptance keeps the timestamped user message', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        throw new FakeAPIConnectionError('Connection error.', new TypeError('fetch failed'))
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider))
+    const events = await run(engine)
+
+    const userEvent = events.find((m) => m.type === 'user') as SDKUserMessage | undefined
+    expect(userEvent).toBeDefined()
+    const userMsg = engine.getMessages().find((m) => m.role === 'user')
+    expect(userMsg?.id).toBe(userEvent?.uuid)
+    expect(userMsg?.timestamp).toBe(userEvent?.timestamp)
+    expect(Date.parse(userMsg!.timestamp!)).not.toBeNaN()
+  })
+
+  it('assistant history message and assistant event share id and parseable ISO timestamp', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider))
+    const events = await run(engine)
+
+    const assistantEvent = events.find((m) => m.type === 'assistant') as SDKAssistantMessage | undefined
+    expect(assistantEvent).toBeDefined()
+    expect(Date.parse(assistantEvent!.timestamp)).not.toBeNaN()
+
+    const assistantMsg = engine.getMessages().find((m) => m.role === 'assistant')
+    expect(assistantMsg?.id).toBe(assistantEvent!.uuid)
+    expect(assistantMsg?.timestamp).toBe(assistantEvent!.timestamp)
+  })
+
+  it('max_tokens recovery prompt carries id and parseable ISO timestamp', async () => {
+    let calls = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage(): Promise<CreateMessageResponse> {
+        calls++
+        if (calls === 1) {
+          return {
+            content: [{ type: 'text', text: 'partial answer' }],
+            stopReason: 'max_tokens',
+            usage: { input_tokens: 1, output_tokens: 1, totalInputTokens: 1 },
+          }
+        }
+        return {
+          content: [{ type: 'text', text: 'continued' }],
+          stopReason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1, totalInputTokens: 1 },
+        }
+      },
+    }
+    const engine = new QueryEngine({ ...makeConfig(provider), includePartialMessages: false })
+    await run(engine)
+
+    const recovery = engine.getMessages().find(
+      (m) => m.role === 'user' && m.content === 'Please continue from where you left off.',
+    )
+    expect(recovery).toBeDefined()
+    expect(recovery!.id).toBeTruthy()
+    expect(Date.parse(recovery!.timestamp!)).not.toBeNaN()
+  })
+
+  it('body-size strip preserves id/timestamp in history; provider never sees metadata', async () => {
+    const captured: any[] = []
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
+        captured.push(...params.messages)
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine({
+      ...makeConfig(provider),
+      maxRequestBodyBytes: 100, // force image stripping
+    })
+    const imagePrompt = [
+      { type: 'text', text: 'look' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(5000) } },
+    ]
+    for await (const _ev of engine.submitMessage(imagePrompt as any)) {
+      // drain
+    }
+
+    // History retains metadata after the image strip
+    const userMsg = engine.getMessages().find((m) => m.role === 'user')
+    expect(userMsg?.id).toBeTruthy()
+    expect(Date.parse(userMsg?.timestamp ?? '')).not.toBeNaN()
+
+    // Provider request never carries transcript metadata
+    expect(captured.length).toBeGreaterThan(0)
+    for (const msg of captured) {
+      expect(msg).not.toHaveProperty('id')
+      expect(msg).not.toHaveProperty('timestamp')
+      expect(msg).not.toHaveProperty('_snapshot')
+    }
+  })
+
+  it('retains an image when micro-compaction brings the request under the limit (#54 review)', async () => {
+    const bigTool: ToolDefinition = {
+      name: 'bigdata',
+      description: 'returns a huge string',
+      inputSchema: { type: 'object', properties: {} },
+      async call() {
+        return { type: 'tool_result', tool_use_id: '', content: 'X'.repeat(400_000) }
+      },
+    }
+    const captured: any[][] = []
+    let pass = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
+        captured.push(params.messages)
+        if (pass++ === 0) {
+          yield { type: 'tool_use', index: 1, id: 'tu_big', name: 'bigdata', input: '{}' }
+          yield { type: 'done', index: -1 }
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' }
+          yield { type: 'done', index: -1 }
+        }
+      },
+    }
+    const engine = new QueryEngine({
+      ...makeConfig(provider, [bigTool]),
+      maxRequestBodyBytes: 200_000,
+    })
+    const imagePrompt = [
+      { type: 'text', text: 'look' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(100_000) } },
+    ]
+    for await (const _ev of engine.submitMessage(imagePrompt as any)) {
+      // drain
+    }
+
+    // The image survives in persisted history: micro-compaction truncated
+    // the 400K tool result (~50K), which alone brought the request under
+    // the 200K limit — no image needed to be stripped.
+    const userMsg = engine.getMessages().find(
+      (m) => m.role === 'user' && Array.isArray(m.content) && (m.content as any[]).some((b: any) => b.type === 'image'),
+    )
+    expect(userMsg).toBeDefined()
+    expect(userMsg!.id).toBeTruthy()
+    const imgBlock = (userMsg!.content as any[]).find((b: any) => b.type === 'image')
+    expect((imgBlock!.source as any).data).toHaveLength(100_000)
+
+    // The final provider request carries the truncated tool result, the
+    // intact image, and no transcript metadata.
+    const finalRequest = captured[captured.length - 1]
+    const toolResultMsg = (finalRequest as any[]).find(
+      (m) => Array.isArray(m.content) && m.content.some((b: any) => b.type === 'tool_result'),
+    )
+    expect(toolResultMsg).toBeDefined()
+    const toolResultBlock = (toolResultMsg!.content as any[]).find((b: any) => b.type === 'tool_result')
+    expect(toolResultBlock!.content).toHaveLength(50_019) // 2×25K halves + '\n...(truncated)...\n' (19)
+    expect((finalRequest as any[]).some(
+      (m) => Array.isArray(m.content) && m.content.some((b: any) => b.type === 'image'),
+    )).toBe(true)
+    for (const msg of finalRequest as any[]) {
+      expect(msg).not.toHaveProperty('id')
+      expect(msg).not.toHaveProperty('timestamp')
+      expect(msg).not.toHaveProperty('_snapshot')
+    }
+  })
+
+  it('preserves timestamps when stripping a merged same-role history (#54 re-review)', async () => {
+    const captured: any[] = []
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
+        captured.push(...params.messages)
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine({
+      ...makeConfig(provider),
+      maxRequestBodyBytes: 500, // force image stripping
+    })
+    // Simulate a resumed/externally-appended transcript with consecutive
+    // same-role user messages (supported data): normalizeMessagesForAPI
+    // merges them, so the normalized view does NOT align 1:1 with history.
+    const appendedHistory: NormalizedMessageParam[] = [
+      {
+        role: 'user',
+        id: 'u-old',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        _snapshot: { beforeHash: 'h1' },
+        content: [
+          { type: 'text', text: 'old turn' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'B'.repeat(4000) } },
+        ],
+      },
+      {
+        role: 'user',
+        id: 'u-new',
+        timestamp: '2026-08-28T00:00:00.000Z',
+        content: [{ type: 'text', text: 'appended turn' }],
+      },
+    ]
+    ;(engine as any).messages.push(...appendedHistory)
+    for await (const _ev of engine.submitMessage('hello')) {
+      // drain
+    }
+
+    // History structure and metadata survive the strip: no wholesale
+    // replace, no merge collapse, ids/timestamps/_snapshot unchanged.
+    const history = engine.getMessages()
+    expect(history).toHaveLength(4) // two appended + the submitted prompt + the assistant reply
+    const oldMsg = history[0]
+    expect(oldMsg.id).toBe('u-old')
+    expect(oldMsg.timestamp).toBe('2026-01-01T00:00:00.000Z')
+    expect(oldMsg._snapshot).toEqual({ beforeHash: 'h1' })
+    const newMsg = history[1]
+    expect(newMsg.id).toBe('u-new')
+    expect(newMsg.timestamp).toBe('2026-08-28T00:00:00.000Z')
+    expect(newMsg.content).toEqual([{ type: 'text', text: 'appended turn' }])
+
+    // The image was replaced by a placeholder text block in place.
+    const blocks = oldMsg.content as any[]
+    expect(blocks.some((b) => b.type === 'image')).toBe(false)
+    expect(blocks.some((b) => b.type === 'text' && /removed to fit request size limit/.test(b.text))).toBe(true)
+
+    // The provider view merged the three user messages and carries no
+    // transcript metadata.
+    expect(captured.length).toBeGreaterThan(0)
+    expect(captured).toHaveLength(1) // all user messages merged into one
+    for (const msg of captured) {
+      expect(msg).not.toHaveProperty('id')
+      expect(msg).not.toHaveProperty('timestamp')
+      expect(msg).not.toHaveProperty('_snapshot')
+      expect(Object.keys(msg).sort()).toEqual(['content', 'role'])
+    }
   })
 })

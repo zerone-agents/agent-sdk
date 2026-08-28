@@ -82,6 +82,63 @@ function toProviderTool(tool: ToolDefinition): NormalizedTool {
 // QueryEngine
 // ============================================================================
 
+/**
+ * Apply an image-strip plan (from {@link enforceBodySizeLimit}) to original
+ * engine history, matched by BLOCK OBJECT IDENTITY.
+ *
+ * The API-boundary pipeline (normalizeMessagesForAPI → microCompactMessages →
+ * enforceBodySizeLimit) passes image blocks through by reference, so each
+ * stripped block in the plan is the very same object that lives in exactly
+ * one history message. Replacing it there preserves the message's
+ * id/timestamp/_snapshot/rawUsage regardless of whether normalization merged
+ * same-role messages or dropped orphaned tool results (#54 re-review).
+ *
+ * The containing message is replaced with `{ ...msg, content }` (new content
+ * array) rather than mutated in place, mirroring the write-back style used
+ * elsewhere; history length and structure never change.
+ */
+function applyImageStripPlan(
+  messages: NormalizedMessageParam[],
+  plan: Array<{ target: any; replacement: any }>,
+): void {
+  for (const { target, replacement } of plan) {
+    for (let mi = 0; mi < messages.length; mi++) {
+      const msg = messages[mi]
+      if (!Array.isArray(msg.content)) continue
+      let content = msg.content as any[]
+      let changed = false
+
+      for (let bi = 0; bi < content.length; bi++) {
+        const block = content[bi]
+        if (block === target) {
+          content = [...content.slice(0, bi), replacement, ...content.slice(bi + 1)]
+          changed = true
+          break
+        }
+        // Nested image inside a tool_result content array
+        if (block?.type === 'tool_result' && Array.isArray(block.content)) {
+          const si = block.content.indexOf(target)
+          if (si !== -1) {
+            const newBlock = {
+              ...block,
+              content: [...block.content.slice(0, si), replacement, ...block.content.slice(si + 1)],
+            }
+            content = [...content.slice(0, bi), newBlock, ...content.slice(bi + 1)]
+            changed = true
+            break
+          }
+        }
+      }
+
+      if (changed) {
+        // A block object lives in exactly one message — stop after applying.
+        messages[mi] = { ...msg, content }
+        break
+      }
+    }
+  }
+}
+
 export class QueryEngine {
   private config: QueryEngineConfig
   private provider: LLMProvider
@@ -164,10 +221,11 @@ export class QueryEngine {
 
     // Add user message
     const userMessageId = crypto.randomUUID()
-    this.messages.push({ role: 'user', content: prompt as any, id: userMessageId })
+    const userTimestamp = new Date().toISOString()
+    this.messages.push({ role: 'user', content: prompt as any, id: userMessageId, timestamp: userTimestamp })
 
     // Emit the user message id so callers (e.g. host applications) can target it for revert.
-    yield { type: 'user', uuid: userMessageId } as SDKMessage
+    yield { type: 'user', uuid: userMessageId, timestamp: userTimestamp } as SDKMessage
 
     // Snapshot workspace before processing — attach to user message for revert support
     if (this.snapshotEngine) {
@@ -262,17 +320,26 @@ export class QueryEngine {
         }
       }
 
-      // Micro-compact: truncate large tool results
+      // Micro-compact first — the original size-decision order. Truncating a
+      // bloated tool result may bring the request under the limit without
+      // removing any image, and image removal is persisted to the
+      // transcript, so it stays the last resort (#54 review).
       let apiMessages = microCompactMessages(
         normalizeMessagesForAPI(this.messages as any[]),
       ) as NormalizedMessageParam[]
 
-      // Enforce request body size limit: strip images from oldest messages if needed
+      // Enforce request body size limit: strip images from older messages
+      // only when truncation alone cannot fit the budget.
       const maxBodyBytes = this.config.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
       const bodySizeResult = enforceBodySizeLimit(apiMessages, maxBodyBytes, systemPrompt)
       apiMessages = bodySizeResult.messages as NormalizedMessageParam[]
       if (bodySizeResult.strippedCount > 0) {
-        this.messages = apiMessages
+        // Apply the strip plan to the ORIGINAL history objects, matched by
+        // block identity, so id/timestamp/_snapshot/rawUsage survive (#54).
+        // The normalized provider view never replaces history — not even
+        // when normalization merged same-role messages or dropped orphaned
+        // tool results (e.g. resumed or externally-appended transcripts).
+        applyImageStripPlan(this.messages, bodySizeResult.strippedBlocks)
         yield {
           type: 'system',
           subtype: 'warning',
@@ -509,12 +576,14 @@ export class QueryEngine {
 
       // Add assistant message to conversation (same UUID that will be yielded)
       const assistantUuid = crypto.randomUUID()
-      this.messages.push({ role: 'assistant', content: response.content as any, rawUsage: response.rawUsage, id: assistantUuid })
+      const assistantTimestamp = new Date().toISOString()
+      this.messages.push({ role: 'assistant', content: response.content as any, rawUsage: response.rawUsage, id: assistantUuid, timestamp: assistantTimestamp })
 
       // Yield assistant message
       yield {
         type: 'assistant',
         uuid: assistantUuid,
+        timestamp: assistantTimestamp,
         message: {
           role: 'assistant',
           content: response.content as any,
@@ -542,6 +611,7 @@ export class QueryEngine {
           this.messages.push({
             role: 'user',
             id: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
             content: 'Please continue from where you left off.',
           })
           continue

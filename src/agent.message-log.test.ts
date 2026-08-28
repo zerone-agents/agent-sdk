@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { Agent } from './agent.js'
+import { loadSession, deleteSession } from './session.js'
 import type {
   LLMProvider,
   CreateMessageParams,
@@ -71,13 +72,83 @@ describe('Agent message log', () => {
     expect(userIdx).toBeGreaterThanOrEqual(0)
     expect(assistantIdx).toBeGreaterThanOrEqual(0)
     // Order regression: user prompt must precede its assistant response.
-    // Fails on current code because user push happens in `finally` after
-    // all assistant events have already been pushed.
     expect(userIdx).toBeLessThan(assistantIdx)
   })
 
   it('does not expose legacy getMessages() (no silent alias)', () => {
     const agent = makeAgent()
     expect((agent as any).getMessages).toBeUndefined()
+  })
+})
+
+describe('Agent message log timestamps (issue #54)', () => {
+  it('messageLog entries reuse engine history id and timestamp', async () => {
+    const agent = makeAgent()
+    await agent.prompt('hi')
+
+    const log = agent.getMessageLog()
+    expect(log).toHaveLength(2)
+    const [userEntry, assistantEntry] = log
+
+    const history = await agent.getMessageHistory()
+    const userMsg = history.find((m) => m.role === 'user')!
+    const assistantMsg = history.find((m) => m.role === 'assistant')!
+
+    expect(userEntry.type).toBe('user')
+    expect(userEntry.uuid).toBe(userMsg.id)
+    expect(userEntry.timestamp).toBe(userMsg.timestamp)
+    expect(Date.parse(userEntry.timestamp)).not.toBeNaN()
+
+    expect(assistantEntry.type).toBe('assistant')
+    expect(assistantEntry.uuid).toBe(assistantMsg.id)
+    expect(assistantEntry.timestamp).toBe(assistantMsg.timestamp)
+    expect(Date.parse(assistantEntry.timestamp)).not.toBeNaN()
+  })
+
+  it('hook-blocked prompt enters neither history nor messageLog', async () => {
+    const agent = new Agent({
+      apiKey: 'fake-key',
+      persistSession: false,
+      permissionMode: 'bypassPermissions',
+      enableFileRevert: false,
+      hooks: {
+        UserPromptSubmit: [{ hooks: [async () => ({ block: true })] }],
+      },
+    })
+    ;(agent as any).provider = new FakeProvider()
+
+    const result = await agent.prompt('hi')
+    expect(result.is_error).toBe(true)
+    expect(result.errors?.join(' ')).toContain('Blocked by UserPromptSubmit hook')
+
+    expect(agent.getMessageLog()).toHaveLength(0)
+    expect(await agent.getMessageHistory()).toHaveLength(0)
+  })
+
+  it('persistSession round-trip keeps timestamps on disk', async () => {
+    const agent = new Agent({
+      apiKey: 'fake-key',
+      persistSession: true,
+      permissionMode: 'bypassPermissions',
+      enableFileRevert: false,
+    })
+    ;(agent as any).provider = new FakeProvider()
+    const sid = (agent as any).sid as string
+    try {
+      await agent.prompt('hi')
+      const data = await loadSession(sid)
+      const msgs = data!.messages
+      expect(msgs.length).toBeGreaterThanOrEqual(2)
+      for (const m of msgs) {
+        expect(Date.parse(m.timestamp ?? '')).not.toBeNaN()
+      }
+      // Disk timestamps equal what the in-process log saw.
+      const log = agent.getMessageLog()
+      const userMsg = msgs.find((m) => m.role === 'user')!
+      expect(userMsg.id).toBe(log[0].uuid)
+      expect(userMsg.timestamp).toBe(log[0].timestamp)
+    } finally {
+      await deleteSession(sid)
+    }
   })
 })

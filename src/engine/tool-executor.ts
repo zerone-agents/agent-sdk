@@ -245,6 +245,7 @@ export async function* executeTools(
     ctx.messages.push({
       role: 'user',
       id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
       content: results.map((r) => ({
         type: 'tool_result' as const,
         tool_use_id: r.tool_use_id,
