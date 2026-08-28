@@ -1345,4 +1345,77 @@ describe('QueryEngine message timestamps (issue #54)', () => {
       expect(msg).not.toHaveProperty('_snapshot')
     }
   })
+
+  it('preserves timestamps when stripping a merged same-role history (#54 re-review)', async () => {
+    const captured: any[] = []
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
+        captured.push(...params.messages)
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine({
+      ...makeConfig(provider),
+      maxRequestBodyBytes: 500, // force image stripping
+    })
+    // Simulate a resumed/externally-appended transcript with consecutive
+    // same-role user messages (supported data): normalizeMessagesForAPI
+    // merges them, so the normalized view does NOT align 1:1 with history.
+    const appendedHistory: NormalizedMessageParam[] = [
+      {
+        role: 'user',
+        id: 'u-old',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        _snapshot: { beforeHash: 'h1' },
+        content: [
+          { type: 'text', text: 'old turn' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'B'.repeat(4000) } },
+        ],
+      },
+      {
+        role: 'user',
+        id: 'u-new',
+        timestamp: '2026-08-28T00:00:00.000Z',
+        content: [{ type: 'text', text: 'appended turn' }],
+      },
+    ]
+    ;(engine as any).messages.push(...appendedHistory)
+    for await (const _ev of engine.submitMessage('hello')) {
+      // drain
+    }
+
+    // History structure and metadata survive the strip: no wholesale
+    // replace, no merge collapse, ids/timestamps/_snapshot unchanged.
+    const history = engine.getMessages()
+    expect(history).toHaveLength(4) // two appended + the submitted prompt + the assistant reply
+    const oldMsg = history[0]
+    expect(oldMsg.id).toBe('u-old')
+    expect(oldMsg.timestamp).toBe('2026-01-01T00:00:00.000Z')
+    expect(oldMsg._snapshot).toEqual({ beforeHash: 'h1' })
+    const newMsg = history[1]
+    expect(newMsg.id).toBe('u-new')
+    expect(newMsg.timestamp).toBe('2026-08-28T00:00:00.000Z')
+    expect(newMsg.content).toEqual([{ type: 'text', text: 'appended turn' }])
+
+    // The image was replaced by a placeholder text block in place.
+    const blocks = oldMsg.content as any[]
+    expect(blocks.some((b) => b.type === 'image')).toBe(false)
+    expect(blocks.some((b) => b.type === 'text' && /removed to fit request size limit/.test(b.text))).toBe(true)
+
+    // The provider view merged the three user messages and carries no
+    // transcript metadata.
+    expect(captured.length).toBeGreaterThan(0)
+    expect(captured).toHaveLength(1) // all user messages merged into one
+    for (const msg of captured) {
+      expect(msg).not.toHaveProperty('id')
+      expect(msg).not.toHaveProperty('timestamp')
+      expect(msg).not.toHaveProperty('_snapshot')
+      expect(Object.keys(msg).sort()).toEqual(['content', 'role'])
+    }
+  })
 })

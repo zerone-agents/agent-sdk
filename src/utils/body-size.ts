@@ -96,15 +96,23 @@ function collectImageLocations(messages: any[]): ImageLocation[] {
   return locations
 }
 
+/** One applied image-strip operation, identified by block object identity. */
+export interface ImageStripOperation {
+  /** The original image block object that was replaced (reference identity — the same object lives in the caller's source messages). */
+  target: any
+  /** The text placeholder block that replaced it. */
+  replacement: any
+}
+
 export function enforceBodySizeLimit(
   messages: any[],
   maxBytes: number = DEFAULT_MAX_REQUEST_BODY_BYTES,
   systemPrompt?: string,
-): { messages: any[]; strippedCount: number } {
+): { messages: any[]; strippedCount: number; strippedBlocks: ImageStripOperation[] } {
   let currentSize = estimateBodyBytes(messages, systemPrompt)
 
   if (currentSize <= maxBytes) {
-    return { messages, strippedCount: 0 }
+    return { messages, strippedCount: 0, strippedBlocks: [] }
   }
 
   const result = messages.map((msg) => {
@@ -115,6 +123,7 @@ export function enforceBodySizeLimit(
 
   const locations = collectImageLocations(result)
   let strippedCount = 0
+  const strippedBlocks: ImageStripOperation[] = []
 
   for (const loc of locations) {
     if (currentSize <= maxBytes) break
@@ -130,16 +139,18 @@ export function enforceBodySizeLimit(
         type: 'text',
         text: `[Image: ${sub.source?.media_type || 'unknown'}, ${formatBytes(loc.byteSize)} — removed to fit request size limit]`,
       }
+      strippedBlocks.push({ target: sub, replacement: block.content[subIndex] })
     } else {
       msg.content[loc.blockIndex] = {
         type: 'text',
         text: `[Image: ${loc.mediaType}, ${formatBytes(loc.byteSize)} — removed to fit request size limit]`,
       }
+      strippedBlocks.push({ target: block, replacement: msg.content[loc.blockIndex] })
     }
 
     currentSize -= loc.byteSize
     strippedCount++
   }
 
-  return { messages: result, strippedCount }
+  return { messages: result, strippedCount, strippedBlocks }
 }

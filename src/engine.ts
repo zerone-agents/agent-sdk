@@ -82,6 +82,63 @@ function toProviderTool(tool: ToolDefinition): NormalizedTool {
 // QueryEngine
 // ============================================================================
 
+/**
+ * Apply an image-strip plan (from {@link enforceBodySizeLimit}) to original
+ * engine history, matched by BLOCK OBJECT IDENTITY.
+ *
+ * The API-boundary pipeline (normalizeMessagesForAPI → microCompactMessages →
+ * enforceBodySizeLimit) passes image blocks through by reference, so each
+ * stripped block in the plan is the very same object that lives in exactly
+ * one history message. Replacing it there preserves the message's
+ * id/timestamp/_snapshot/rawUsage regardless of whether normalization merged
+ * same-role messages or dropped orphaned tool results (#54 re-review).
+ *
+ * The containing message is replaced with `{ ...msg, content }` (new content
+ * array) rather than mutated in place, mirroring the write-back style used
+ * elsewhere; history length and structure never change.
+ */
+function applyImageStripPlan(
+  messages: NormalizedMessageParam[],
+  plan: Array<{ target: any; replacement: any }>,
+): void {
+  for (const { target, replacement } of plan) {
+    for (let mi = 0; mi < messages.length; mi++) {
+      const msg = messages[mi]
+      if (!Array.isArray(msg.content)) continue
+      let content = msg.content as any[]
+      let changed = false
+
+      for (let bi = 0; bi < content.length; bi++) {
+        const block = content[bi]
+        if (block === target) {
+          content = [...content.slice(0, bi), replacement, ...content.slice(bi + 1)]
+          changed = true
+          break
+        }
+        // Nested image inside a tool_result content array
+        if (block?.type === 'tool_result' && Array.isArray(block.content)) {
+          const si = block.content.indexOf(target)
+          if (si !== -1) {
+            const newBlock = {
+              ...block,
+              content: [...block.content.slice(0, si), replacement, ...block.content.slice(si + 1)],
+            }
+            content = [...content.slice(0, bi), newBlock, ...content.slice(bi + 1)]
+            changed = true
+            break
+          }
+        }
+      }
+
+      if (changed) {
+        // A block object lives in exactly one message — stop after applying.
+        messages[mi] = { ...msg, content }
+        break
+      }
+    }
+  }
+}
+
 export class QueryEngine {
   private config: QueryEngineConfig
   private provider: LLMProvider
@@ -277,26 +334,12 @@ export class QueryEngine {
       const bodySizeResult = enforceBodySizeLimit(apiMessages, maxBodyBytes, systemPrompt)
       apiMessages = bodySizeResult.messages as NormalizedMessageParam[]
       if (bodySizeResult.strippedCount > 0) {
-        // Write stripped content back onto the ORIGINAL history objects so
-        // id/timestamp/_snapshot survive (#54). The normalized view aligns
-        // 1:1 with this.messages when normalization neither merged
-        // same-role messages nor dropped orphaned tool results (the normal
-        // case — engine history alternates roles by construction). When
-        // alignment does not hold, fall back to the wholesale replace
-        // (pre-#54 behavior) rather than write content onto the wrong
-        // message.
-        if (
-          apiMessages.length === this.messages.length &&
-          apiMessages.every((m, i) => m.role === this.messages[i].role)
-        ) {
-          for (let i = 0; i < apiMessages.length; i++) {
-            if (apiMessages[i].content !== this.messages[i].content) {
-              this.messages[i] = { ...this.messages[i], content: apiMessages[i].content }
-            }
-          }
-        } else {
-          this.messages = apiMessages
-        }
+        // Apply the strip plan to the ORIGINAL history objects, matched by
+        // block identity, so id/timestamp/_snapshot/rawUsage survive (#54).
+        // The normalized provider view never replaces history — not even
+        // when normalization merged same-role messages or dropped orphaned
+        // tool results (e.g. resumed or externally-appended transcripts).
+        applyImageStripPlan(this.messages, bodySizeResult.strippedBlocks)
         yield {
           type: 'system',
           subtype: 'warning',
