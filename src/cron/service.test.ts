@@ -1262,4 +1262,77 @@ describe('shutdown barrier (issue #57)', () => {
     })
     await h.service.stop()
   })
+
+  it('a start() called after the shutdown intent is published rejects immediately', async () => {
+    const h = makeService({})
+    let releaseLoad!: () => void
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve
+    })
+    const originalLoad = h.taskStorage.load.bind(h.taskStorage)
+    ;(h.taskStorage as unknown as { load: () => Promise<unknown> }).load = async () => {
+      await loadGate
+      return originalLoad()
+    }
+
+    const starting = h.service.start()
+    await new Promise((r) => setImmediate(r))
+    const stopping = h.service.stop({ drainMs: 0 }) // intent published synchronously
+
+    // A SECOND start must reject at call time — joining the in-flight start
+    // and reporting success after shutdown began would reopen the lifecycle.
+    await expect(h.service.start()).rejects.toBeInstanceOf(CronServiceStoppingError)
+    // The stop itself is still parked behind the original start.
+    let stopSettled = false
+    stopping.then(
+      () => { stopSettled = true },
+      () => { stopSettled = true },
+    )
+    await new Promise((r) => setImmediate(r))
+    expect(stopSettled).toBe(false)
+
+    releaseLoad()
+    await starting
+    await stopping
+    await expect(h.service.create(everyMinute)).rejects.toBeInstanceOf(CronServiceStoppingError)
+  })
+
+  it('a failed runtime stop keeps the lock held and the service non-accepting', async () => {
+    let releaseExecutor!: () => void
+    const executorGate = new Promise<void>((resolve) => {
+      releaseExecutor = resolve
+    })
+    const executor: CronExecutor = async () => {
+      await executorGate
+      return { output: 'x' }
+    }
+    const order: string[] = []
+    const { lock, releaseCount } = makeRecordingLock(order)
+    const h = makeService({ executor, lock })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+    const execution = await h.service.enqueueNow(task.id)
+
+    // Break the timer port so the drain loop's waitViaTimer throws inside
+    // coordinator.stop — CronRuntime.stop() then rejects mid-shutdown.
+    ;(h.timer as unknown as { setTimeout: () => number }).setTimeout = () => {
+      throw new Error('timer port broken')
+    }
+
+    await expect(h.service.stop({ drainMs: 10_000 })).rejects.toThrow('timer port broken')
+
+    // Failure convergence (review on PR #58): the runtime stop was NOT
+    // proven safe, so the single-writer lock stays HELD, no clean 'stopped'
+    // is published, and the service remains non-accepting.
+    expect(releaseCount()).toBe(0)
+    await expect(h.service.create(everyMinute)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.start()).rejects.toBeInstanceOf(CronServiceStoppingError)
+    // A concurrent stop observes the SAME shared outcome.
+    await expect(h.service.stop({ drainMs: 0 })).rejects.toThrow('timer port broken')
+    expect(releaseCount()).toBe(0)
+    // Read-only stays available; the execution record is intact.
+    expect(await h.service.getExecution(execution.id)).not.toBeNull()
+
+    releaseExecutor()
+  })
 })

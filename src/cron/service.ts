@@ -283,9 +283,11 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
 
   return {
     async start(): Promise<void> {
-      // Shutdown is one-way: no lifecycle transition may reopen operations
-      // while a stop is draining or has failed its lock release (issue #57).
-      if (phase === 'stopping') throw new CronServiceStoppingError('start', phase)
+      // Shutdown is one-way and starts at stop()-CALL time: the synchronous
+      // intent rejects lifecycle transitions even while an in-flight start
+      // is still settling (joining that start and reporting success would
+      // reopen the lifecycle behind a pending shutdown — review on PR #58).
+      if (stoppingIntent) throw new CronServiceStoppingError('start', 'stopping')
       // Concurrent start() calls observe the SAME outcome as the in-flight
       // one (shared start promise — review on PR #58).
       if (phase === 'starting') {
@@ -372,23 +374,35 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
         // Interim unhandled guard: the error (if any) re-surfaces at the
         // await below, even if the barrier drains for a long time.
         runtimeStop.catch(() => {})
+        let runtimeStopped = false
         try {
           await waitForInflight()
           await runtimeStop
+          runtimeStopped = true
         } finally {
-          // Issue #57's required order: settle entered ops → stop the
-          // runtime → release the lock → ONLY THEN publish stopped. The
-          // release is part of the shared stop outcome: a release failure
-          // rejects stop() and leaves the service non-accepting (phase
-          // stays 'stopping', stopPromise retained) — never a clean
-          // 'stopped' on a failed lock boundary.
-          await options.lock?.release()
-          phase = 'stopped'
-          stoppedByShutdown = true
-          stopPromise = null
-          // Shutdown settled cleanly: the intake intent has done its job —
-          // clear it so a restart fires normally again.
-          stoppingIntent = false
+          // Only a PROVEN-SAFE runtime stop may settle the lock boundary:
+          // if runtimeStop rejected (e.g. a failing Timer/storage port), the
+          // coordinator may be unsafely settled and the runtime's internal
+          // state is stale — releasing the lock or publishing a clean
+          // 'stopped' would let a restart no-op against it (review on
+          // PR #58). The failure-convergence path: stop() rejects with the
+          // runtime error and the service stays non-accepting with the
+          // single-writer lock HELD (phase 'stopping', stopPromise and
+          // intent retained) until manual intervention.
+          if (runtimeStopped) {
+            // Issue #57's required order: settle entered ops → stop the
+            // runtime → release the lock → ONLY THEN publish stopped. The
+            // release is part of the shared stop outcome: a release failure
+            // rejects stop() and equally leaves the service non-accepting —
+            // never a clean 'stopped' on a failed lock boundary.
+            await options.lock?.release()
+            phase = 'stopped'
+            stoppedByShutdown = true
+            stopPromise = null
+            // Shutdown settled cleanly: the intake intent has done its job —
+            // clear it so a restart fires normally again.
+            stoppingIntent = false
+          }
         }
       })
       stopPromise = stopping
