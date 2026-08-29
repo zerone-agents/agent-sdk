@@ -983,4 +983,196 @@ describe('shutdown barrier (issue #57)', () => {
     expect((await h.service.runNow(task.id)).status).toBe('succeeded')
     await h.service.stop()
   })
+
+  it('stop() during an in-flight start() waits for it instead of returning early', async () => {
+    const order: string[] = []
+    const { lock } = makeRecordingLock(order)
+    const h = makeService({ lock })
+    // Hold the start mid-flight at the scheduler's storage load.
+    let releaseLoad!: () => void
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve
+    })
+    const originalLoad = h.taskStorage.load.bind(h.taskStorage)
+    ;(h.taskStorage as unknown as { load: () => Promise<unknown> }).load = async () => {
+      await loadGate
+      return originalLoad()
+    }
+
+    const starting = h.service.start()
+    await new Promise((r) => setImmediate(r))
+
+    const stopping = h.service.stop({ drainMs: 0 })
+    let stopSettled = false
+    stopping.then(
+      () => { stopSettled = true },
+      () => { stopSettled = true },
+    )
+    await new Promise((r) => setImmediate(r))
+    // stop() must NOT settle while the start is still in flight — shutdown
+    // cannot linearize before a start that is already acquiring the lock.
+    expect(stopSettled).toBe(false)
+
+    releaseLoad()
+    await starting
+    await stopping
+    // The start completed and was THEN shut down: ops reject, lock released.
+    await expect(h.service.create(everyMinute)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    expect(order[order.length - 1]).toBe('lock-release')
+  })
+
+  it('stopped is published only after lock release settles; the boundary holds for concurrent stop/start', async () => {
+    const order: string[] = []
+    let releaseRelease!: () => void
+    const releaseGate = new Promise<void>((resolve) => {
+      releaseRelease = resolve
+    })
+    let releases = 0
+    const lock = {
+      acquire: async () => {},
+      release: async () => {
+        await releaseGate
+        releases += 1
+        order.push('lock-release')
+      },
+    }
+    const h = makeService({ lock })
+    await h.service.start()
+
+    const stopping = h.service.stop({ drainMs: 0 })
+    let stopSettled = false
+    stopping.then(
+      () => { stopSettled = true },
+      () => { stopSettled = true },
+    )
+    await new Promise((r) => setImmediate(r))
+
+    // While the release is pending: the first stop has not settled...
+    expect(stopSettled).toBe(false)
+    // ...a concurrent second stop awaits the SAME outcome (not a no-op)...
+    const second = h.service.stop({ drainMs: 0 })
+    let secondSettled = false
+    second.then(
+      () => { secondSettled = true },
+      () => { secondSettled = true },
+    )
+    await new Promise((r) => setImmediate(r))
+    expect(secondSettled).toBe(false)
+    // ...and start() cannot begin reacquiring the lock behind the boundary.
+    await expect(h.service.start()).rejects.toBeInstanceOf(CronServiceStoppingError)
+
+    releaseRelease()
+    await Promise.all([stopping, second])
+    expect(releases).toBe(1)
+
+    // Only after the boundary settles is a restart allowed again.
+    await h.service.start()
+    expect((await h.service.create(everyMinute)).id).toBeTruthy()
+    await h.service.stop()
+    expect(releases).toBe(2)
+  })
+
+  it('a lock release failure is part of the shared stop outcome; the service stays non-accepting', async () => {
+    const lock = {
+      acquire: async () => {},
+      release: async () => {
+        throw new Error('release failed')
+      },
+    }
+    const h = makeService({ lock })
+    await h.service.start()
+
+    await expect(h.service.stop({ drainMs: 0 })).rejects.toThrow('release failed')
+    // Not a clean stopped: operations and lifecycle transitions stay
+    // non-accepting rather than claiming shutdown completed.
+    await expect(h.service.create(everyMinute)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.start()).rejects.toBeInstanceOf(CronServiceStoppingError)
+    // A concurrent stop observes the SAME error outcome.
+    await expect(h.service.stop({ drainMs: 0 })).rejects.toThrow('release failed')
+  })
+
+  it('a resume deferred behind stop() cannot resurrect the runtime — restart still works', async () => {
+    const h = makeService({})
+    await h.service.start()
+    await h.service.suspend()
+
+    // Hold the resume mid-flight at the scheduler's storage load.
+    let releaseLoad!: () => void
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve
+    })
+    const originalLoad = h.taskStorage.load.bind(h.taskStorage)
+    ;(h.taskStorage as unknown as { load: () => Promise<unknown> }).load = async () => {
+      await loadGate
+      return originalLoad()
+    }
+
+    const resuming = h.service.resume()
+    await new Promise((r) => setImmediate(r))
+    const stopping = h.service.stop({ drainMs: 0 })
+    await new Promise((r) => setImmediate(r))
+
+    releaseLoad()
+    await resuming
+    await stopping
+
+    // The restart must ACTUALLY restart: a late runtime resume used to
+    // overwrite the runtime's stopped state, making start() a silent no-op.
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+    expect((await h.service.runNow(task.id)).status).toBe('succeeded')
+    await h.service.stop()
+  })
+
+  it('a suspend deferred behind stop() cannot overwrite the stopped runtime', async () => {
+    let releaseExecutor!: () => void
+    const executorGate = new Promise<void>((resolve) => {
+      releaseExecutor = resolve
+    })
+    let started = 0
+    const executor: CronExecutor = async () => {
+      started += 1
+      await executorGate
+      return { output: 'late' }
+    }
+    const h = makeService({ executor })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+    const run = h.service.runNow(task.id)
+    await vi.waitFor(() => expect(started).toBe(1))
+
+    // Hold the suspend mid-transition: the interrupt path's final
+    // updateStatus write is gated.
+    let releaseStatus!: () => void
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatus = resolve
+    })
+    const originalStatus = h.executionStore.updateStatus.bind(h.executionStore)
+    ;(
+      h.executionStore as unknown as {
+        updateStatus: (...args: unknown[]) => Promise<unknown>
+      }
+    ).updateStatus = async (...args: unknown[]) => {
+      await statusGate
+      return originalStatus(...(args as never[]))
+    }
+
+    const suspending = h.service.suspend()
+    await new Promise((r) => setImmediate(r))
+    const stopping = h.service.stop({ drainMs: 0 })
+    await new Promise((r) => setImmediate(r))
+
+    releaseStatus()
+    await suspending
+    await stopping
+    const result = await run
+    expect(result.status).toBe('interrupted')
+
+    releaseExecutor()
+    // Restart works: the runtime was left stopped, not resurrected by the
+    // late suspend completing after shutdown.
+    await h.service.start()
+    expect((await h.service.runNow(task.id)).status).toBe('succeeded')
+    await h.service.stop()
+  })
 })

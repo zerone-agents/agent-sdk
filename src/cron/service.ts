@@ -72,8 +72,13 @@ export interface CronService {
   getExecution(executionId: string): Promise<CronExecution | null>
 }
 
-/** Service lifecycle phases; `stopping` exists between `stop()` entry and lock release. */
-export type CronServicePhase = 'stopped' | 'running' | 'suspended' | 'stopping'
+/**
+ * Service lifecycle phases. `starting` and `stopping` are the transient
+ * barriers: a shared start/stop promise linearizes concurrent lifecycle
+ * calls, and `stopping` persists through lock release (and beyond, on a
+ * release failure) so shutdown's lock boundary is never observable early.
+ */
+export type CronServicePhase = 'stopped' | 'starting' | 'running' | 'suspended' | 'stopping'
 
 /**
  * Stable typed rejection for protected CronService operations after shutdown
@@ -195,6 +200,27 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
   let inflight = 0
   let inflightIdle: (() => void) | null = null
   let stopPromise: Promise<void> | null = null
+  let startPromise: Promise<void> | null = null
+
+  /**
+   * Lifecycle serialization (review on PR #58): the start/stop/suspend/
+   * resume BODIES run on one chain, so stop always owns the FINAL runtime
+   * transition — a suspend/resume entered just before stop cannot complete
+   * after it and overwrite the runtime's stopped state. Entry checks and
+   * phase transitions stay synchronous at call time; only the awaited bodies
+   * serialize. While any body is mid-flight the scheduler is inert (not yet
+   * started, suspended, or being stopped), so stop()'s immediate-intake
+   * guarantee is preserved even when its body is briefly queued.
+   */
+  let lifecycleChain: Promise<unknown> = Promise.resolve()
+  function enqueueLifecycle<T>(fn: () => Promise<T>): Promise<T> {
+    const run = lifecycleChain.then(fn, fn)
+    lifecycleChain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
 
   function assertAccepting(method: string): void {
     if (phase === 'stopping' || (phase === 'stopped' && stoppedByShutdown)) {
@@ -237,38 +263,74 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
   return {
     async start(): Promise<void> {
       // Shutdown is one-way: no lifecycle transition may reopen operations
-      // while a stop is draining (issue #57).
+      // while a stop is draining or has failed its lock release (issue #57).
       if (phase === 'stopping') throw new CronServiceStoppingError('start', phase)
-      // Idempotent start: a second start() while running (or suspended) must
-      // be a no-op. Without this guard, a failed re-acquire of the runtime
-      // lock would hit the catch below and RELEASE the still-live lock,
-      // letting a second process start on the same directory.
-      if (phase !== 'stopped') return
-      try {
-        await options.lock?.acquire()
-        await runtime.start()
-        phase = 'running'
-        stoppedByShutdown = false
-        await emitSchedule()
-      } catch (err) {
-        // Release the lock on any start failure so a retry is not deadlocked.
-        await options.lock?.release().catch(() => {})
-        throw err
+      // Concurrent start() calls observe the SAME outcome as the in-flight
+      // one (shared start promise — review on PR #58).
+      if (phase === 'starting') {
+        await startPromise!
+        return
       }
+      // Idempotent start: a second start() while running (or suspended) must
+      // be a no-op. (Historic guard rationale: a failed re-acquire must not
+      // release a still-live lock.)
+      if (phase !== 'stopped') return
+      phase = 'starting'
+      const starting = enqueueLifecycle(async () => {
+        try {
+          await options.lock?.acquire()
+          await runtime.start()
+          phase = 'running'
+          stoppedByShutdown = false
+          await emitSchedule()
+        } catch (err) {
+          // Release BEFORE flipping the phase back so callers awaiting this
+          // promise cannot enter between the release and the phase write
+          // (a concurrent start must not acquire against a pending release).
+          await options.lock?.release().catch(() => {})
+          phase = 'stopped'
+          throw err
+        } finally {
+          startPromise = null
+        }
+      })
+      startPromise = starting
+      return starting
     },
 
     async stop(options2?: { drainMs?: number }): Promise<void> {
-      // Idempotent: a stop() after a full stop is a no-op.
+      // Idempotent: a stop() after a fully settled stop is a no-op.
       if (phase === 'stopped') return
-      // Concurrent stop() calls observe the SAME completion/error outcome.
+      // Concurrent stop() calls observe the SAME completion/error outcome —
+      // including while the lock release is still pending (review on PR #58:
+      // 'stopped' must never be observable before the release settles).
       if (phase === 'stopping') {
         await stopPromise!
         return
       }
+      if (phase === 'starting') {
+        // Linearize AFTER the in-flight start (same outcome): if it reached
+        // running, proceed with the shutdown; a failed start left nothing
+        // to stop (its catch already released the lock). If another stop
+        // won the race meanwhile, observe its outcome instead.
+        await startPromise!.then(
+          () => undefined,
+          () => undefined,
+        )
+        // The cast re-widens the type: TS's narrowing from the outer
+        // `phase === 'starting'` check survives the await, but the start
+        // body HAS meanwhile written the real phase (running/stopped).
+        const phaseNow = phase as CronServicePhase
+        if (phaseNow === 'stopping') {
+          await stopPromise!
+          return
+        }
+        if (phaseNow !== 'running') return
+      }
       phase = 'stopping'
-      const stopping = (async () => {
+      const stopping = enqueueLifecycle(async () => {
         // runtime.stop()'s synchronous first step is scheduler.stop(), so
-        // scheduler intake stops DETERMINISTICALLY at stop()-call time —
+        // scheduler intake stops as soon as this (serialized) body runs —
         // never delayed by the operations drained below. The coordinator's
         // drainMs/interrupt phase runs CONCURRENTLY with the barrier: a
         // hung protected operation (e.g. a runNow awaiting a hung execution)
@@ -282,28 +344,42 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
           await waitForInflight()
           await runtimeStop
         } finally {
+          // Issue #57's required order: settle entered ops → stop the
+          // runtime → release the lock → ONLY THEN publish stopped. The
+          // release is part of the shared stop outcome: a release failure
+          // rejects stop() and leaves the service non-accepting (phase
+          // stays 'stopping', stopPromise retained) — never a clean
+          // 'stopped' on a failed lock boundary.
+          await options.lock?.release()
           phase = 'stopped'
           stoppedByShutdown = true
           stopPromise = null
-          await options.lock?.release().catch(() => {})
         }
-      })()
+      })
       stopPromise = stopping
       return stopping
     },
 
     suspend: async () => {
       assertAccepting('suspend')
-      await runtime.suspend()
-      // A concurrent stop() may have transitioned to 'stopping' while the
-      // runtime call was in flight — never clobber it.
-      if (phase === 'running') phase = 'suspended'
+      return enqueueLifecycle(async () => {
+        // A stop may have transitioned while this body was queued: abandon
+        // rather than overwrite the runtime's final state.
+        if (phase === 'stopping' || phase === 'stopped') return
+        await runtime.suspend()
+        // A concurrent stop() may have transitioned to 'stopping' while the
+        // runtime call was in flight — never clobber it.
+        if (phase === 'running') phase = 'suspended'
+      })
     },
 
     resume: async () => {
       assertAccepting('resume')
-      await runtime.resume()
-      if (phase === 'suspended') phase = 'running'
+      return enqueueLifecycle(async () => {
+        if (phase !== 'suspended') return
+        await runtime.resume()
+        if (phase === 'suspended') phase = 'running'
+      })
     },
 
     async create(input: CreateCronTaskInput): Promise<CronTask> {
