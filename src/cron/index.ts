@@ -59,9 +59,14 @@ export { CronRuntime } from './runtime.js'
 export type { CronRuntimeState } from './runtime.js'
 
 // Service (single entry point)
-export { createCronService, DEFAULT_MAX_CRON_TASKS } from './service.js'
+export {
+  createCronService,
+  CronServiceStoppingError,
+  DEFAULT_MAX_CRON_TASKS,
+} from './service.js'
 export type {
   CreateCronServiceOptions,
   CronRuntimeLock,
   CronService,
+  CronServicePhase,
 } from './service.js'

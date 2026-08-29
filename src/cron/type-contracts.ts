@@ -10,6 +10,9 @@ import type { ExecutionStore } from './execution-store.js'
 // Public-entry contract: ExecutionClaimInput must be importable from the cron
 // entry point (SDK consumers reference this first-class port contract).
 import type { ExecutionClaimInput } from './index.js'
+// Public-entry contract (issue #57): the typed shutdown rejection must be
+// importable from the cron entry point so hosts can map it (e.g. 503).
+import { CronServiceStoppingError } from './index.js'
 import type { CronService } from './service.js'
 import type { CronTask } from './types.js'
 
@@ -80,3 +83,9 @@ void claimInput
 // a runtime test in tools.test.ts).
 const svc: CronService = null as unknown as CronService
 void svc.enqueueNow
+
+// The typed shutdown rejection (issue #57) is constructible and carries the
+// machine-readable fields hosts map to HTTP 503 shutting_down.
+const stoppingErr = new CronServiceStoppingError('create', 'stopping')
+void stoppingErr.method
+void stoppingErr.phase
