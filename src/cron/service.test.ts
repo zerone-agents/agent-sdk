@@ -1347,8 +1347,8 @@ describe('shutdown barrier (issue #57)', () => {
       await executorGate
       return { output: 'hung' }
     }
-    const { releaseCount } = makeRecordingLock([])
-    const h = makeService({ executor, lock: { acquire: async () => {}, release: async () => {} } })
+    const { lock, releaseCount } = makeRecordingLock([])
+    const h = makeService({ executor, lock })
     await h.service.start()
     const task = await h.service.create(everyMinute)
 
