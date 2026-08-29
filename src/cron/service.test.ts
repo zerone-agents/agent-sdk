@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { FakeClock, ManualTimer } from './clock.js'
-import { createCronService, DEFAULT_MAX_CRON_TASKS } from './service.js'
+import {
+  createCronService,
+  CronServiceStoppingError,
+  DEFAULT_MAX_CRON_TASKS,
+} from './service.js'
 import type { CronEvent, CronEventSink } from './events.js'
 import type { ExecutionStore } from './execution-store.js'
 import type { CronExecutor } from './executor.js'
@@ -719,6 +723,264 @@ describe('enqueueNow (issue #51)', () => {
       expect(execs.some((e) => e.status === 'succeeded')).toBe(true)
     })
     expect(gated.calls()).toBe(1)
+    await h.service.stop()
+  })
+})
+
+describe('shutdown barrier (issue #57)', () => {
+  /** Lock double that records release order and counts releases. */
+  function makeRecordingLock(order: string[]) {
+    let releases = 0
+    return {
+      lock: {
+        acquire: async () => {},
+        release: async () => {
+          releases += 1
+          order.push('lock-release')
+        },
+      },
+      releaseCount: () => releases,
+    }
+  }
+
+  /** Gates taskStorage.add so a protected operation can be held mid-flight. */
+  function gateStorageAdd(storage: MemoryCronStorage, order?: string[]) {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const originalAdd = storage.add.bind(storage)
+    ;(storage as unknown as { add: (t: unknown) => Promise<unknown> }).add = async (
+      input: unknown,
+    ) => {
+      await gate
+      const task = await originalAdd(input as never)
+      order?.push('add-done')
+      return task
+    }
+    return release
+  }
+
+  it('a held create settles before the directory lock is released', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => {
+      unhandled.push(err)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const order: string[] = []
+      const { lock } = makeRecordingLock(order)
+      const h = makeService({ lock })
+      await h.service.start()
+      const releaseAdd = gateStorageAdd(h.taskStorage, order)
+
+      const held = h.service.create(everyMinute)
+      await new Promise((r) => setImmediate(r)) // entered; parked at the gate
+
+      const stopping = h.service.stop({ drainMs: 0 })
+      await new Promise((r) => setImmediate(r))
+      // stop() is parked on the barrier: the entered create has not settled,
+      // so the lock must NOT be released yet.
+      expect(order).not.toContain('lock-release')
+
+      releaseAdd()
+      const task = await held
+      expect(task.id).toBeTruthy()
+      await stopping
+      // The storage write settled strictly before the lock release — a
+      // second process can only acquire after this point.
+      expect(order.indexOf('add-done')).toBeLessThan(order.indexOf('lock-release'))
+
+      await new Promise((r) => setImmediate(r))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('new protected operations and lifecycle transitions fail with the typed error during and after shutdown', async () => {
+    const h = makeService({})
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    const releaseAdd = gateStorageAdd(h.taskStorage)
+    const held = h.service.create(everyMinute)
+    await new Promise((r) => setImmediate(r))
+    const stopping = h.service.stop({ drainMs: 0 })
+    await new Promise((r) => setImmediate(r))
+
+    // Protected operations reject with the stable typed error while stopping.
+    await expect(h.service.create(everyMinute)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.update(task.id, { name: 'x' })).rejects.toBeInstanceOf(
+      CronServiceStoppingError,
+    )
+    await expect(h.service.delete(task.id)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.runNow(task.id)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.enqueueNow(task.id)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    // Lifecycle transitions cannot reopen operations during shutdown.
+    await expect(h.service.start()).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.suspend()).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.resume()).rejects.toBeInstanceOf(CronServiceStoppingError)
+    // Read-only methods remain available during stopping.
+    expect(await h.service.list()).toHaveLength(1)
+    expect(await h.service.get(task.id)).not.toBeNull()
+
+    releaseAdd()
+    await held
+    await stopping
+
+    // After a full stop the same lock-safety rule applies (no lock held).
+    await expect(h.service.create(everyMinute)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.enqueueNow(task.id)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    // Read-only methods remain available after stop.
+    expect(await h.service.list()).toHaveLength(2)
+  })
+
+  it('scheduler intake stops promptly, not delayed by a held operation', async () => {
+    let calls = 0
+    const executor: CronExecutor = async () => {
+      calls += 1
+      return { output: 'x' }
+    }
+    const h = makeService({ executor })
+    await h.service.start()
+    const task = await h.service.create(everyMinute) // fires around t=60s
+
+    const releaseAdd = gateStorageAdd(h.taskStorage)
+    const held = h.service.create(everyMinute)
+    await new Promise((r) => setImmediate(r))
+    const stopping = h.service.stop({ drainMs: 0 }) // unawaited: intake must stop NOW
+    await new Promise((r) => setImmediate(r))
+
+    // Advance far past the next slot: intake is stopped, so nothing fires
+    // even though stop() is still parked on the held create.
+    await h.timer.advance(10 * 60_000)
+    expect(calls).toBe(0)
+    expect(await h.service.listExecutions({ cronTaskId: task.id })).toEqual([])
+
+    releaseAdd()
+    await held
+    await stopping
+  })
+
+  it('a hung runNow is settled by the interrupt phase, so the barrier clears and the lock releases', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => {
+      unhandled.push(err)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const order: string[] = []
+      const { lock } = makeRecordingLock(order)
+      let releaseExecutor!: () => void
+      const executorGate = new Promise<void>((resolve) => {
+        releaseExecutor = resolve
+      })
+      let started = 0
+      const executor: CronExecutor = async () => {
+        started += 1
+        await executorGate
+        return { output: 'never' }
+      }
+      const h = makeService({ executor, lock })
+      await h.service.start()
+      const task = await h.service.create(everyMinute)
+
+      const run = h.service.runNow(task.id)
+      await vi.waitFor(() => expect(started).toBe(1)) // execution is active
+
+      // drainMs: 0 skips the grace and interrupts — which settles the hung
+      // runNow, which clears the barrier, which releases the lock.
+      const stopping = h.service.stop({ drainMs: 0 })
+      const result = await run
+      expect(result.status).toBe('interrupted')
+      order.push('run-settled')
+      await stopping
+      expect(order.indexOf('run-settled')).toBeLessThan(order.indexOf('lock-release'))
+
+      releaseExecutor()
+      await new Promise((r) => setImmediate(r))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('stop() is idempotent and concurrent callers observe the same outcome; the lock releases once', async () => {
+    const order: string[] = []
+    const { lock, releaseCount } = makeRecordingLock(order)
+    const h = makeService({ lock })
+    await h.service.start()
+    const releaseAdd = gateStorageAdd(h.taskStorage)
+    const held = h.service.create(everyMinute)
+    await new Promise((r) => setImmediate(r))
+
+    // Two concurrent stop() calls: both park on the same barrier; do NOT
+    // await them yet (they resolve only after the held create settles).
+    const stopA = h.service.stop({ drainMs: 0 })
+    const stopB = h.service.stop({ drainMs: 0 })
+    await new Promise((r) => setImmediate(r))
+    expect(releaseCount()).toBe(0) // still parked on the held create
+
+    releaseAdd()
+    await held
+    await Promise.all([stopA, stopB])
+    expect(releaseCount()).toBe(1)
+
+    // stop() after a full stop is a no-op — no second release.
+    await h.service.stop()
+    expect(releaseCount()).toBe(1)
+  })
+
+  it('active executions still receive the drainMs grace during shutdown', async () => {
+    let releaseExecutor!: () => void
+    const executorGate = new Promise<void>((resolve) => {
+      releaseExecutor = resolve
+    })
+    const executor: CronExecutor = async () => {
+      await executorGate
+      return { output: 'graceful' }
+    }
+    const h = makeService({ executor })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+    const execution = await h.service.enqueueNow(task.id)
+
+    const stopping = h.service.stop({ drainMs: 10_000 })
+    await h.timer.advance(1_000) // inside the grace window; still running
+    releaseExecutor()
+    // Flush microtasks so the run completes and clears its active slot
+    // BEFORE the next drain poll fires (ManualTimer fires poll callbacks
+    // synchronously; without the flush, the poll's idle check can race the
+    // run-completion chain and re-arm a poll nobody advances).
+    await new Promise((r) => setImmediate(r))
+    await h.timer.advance(2_000) // drain poll observes the completion
+    await stopping
+
+    expect(await h.service.getExecution(execution.id)).toMatchObject({ status: 'succeeded' })
+  })
+
+  it('protected operations remain available before the first start() and reject only after shutdown', async () => {
+    const h = makeService({})
+    // Setup/recovery flows keep working pre-start (backward-compatible
+    // behavior); the typed rejection applies to shutdown, not setup.
+    const task = await h.service.create(everyMinute)
+    expect(task.id).toBeTruthy()
+    expect(await h.service.list()).toHaveLength(1)
+
+    await h.service.start()
+    expect((await h.service.runNow(task.id)).status).toBe('succeeded')
+    await h.service.stop()
+
+    // After a shutdown stop the lock is released — mutations reject.
+    await expect(h.service.create(everyMinute)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.enqueueNow(task.id)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    // Read-only methods keep working.
+    expect(await h.service.list()).toHaveLength(1)
+
+    // A successful restart reopens operations.
+    await h.service.start()
+    expect((await h.service.runNow(task.id)).status).toBe('succeeded')
     await h.service.stop()
   })
 })
