@@ -1335,4 +1335,48 @@ describe('shutdown barrier (issue #57)', () => {
 
     releaseExecutor()
   })
+
+  it('a runtime-stop failure before interruption is surfaced promptly behind a hung operation', async () => {
+    let releaseExecutor!: () => void
+    const executorGate = new Promise<void>((resolve) => {
+      releaseExecutor = resolve
+    })
+    let started = 0
+    const executor: CronExecutor = async () => {
+      started += 1
+      await executorGate
+      return { output: 'hung' }
+    }
+    const { releaseCount } = makeRecordingLock([])
+    const h = makeService({ executor, lock: { acquire: async () => {}, release: async () => {} } })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+
+    // An already-entered runNow whose execution hangs: only the interrupt
+    // phase of stop() could settle it.
+    const run = h.service.runNow(task.id)
+    await vi.waitFor(() => expect(started).toBe(1))
+
+    // Break the timer port so the drain loop throws BEFORE interruptAll —
+    // the runtime stop rejects without ever settling the hung execution.
+    ;(h.timer as unknown as { setTimeout: () => number }).setTimeout = () => {
+      throw new Error('timer port broken')
+    }
+
+    // Every stop caller must observe the KNOWN failure promptly (not stay
+    // pending forever behind the hung operation) with the same shared error.
+    const stopA = h.service.stop({ drainMs: 10_000 })
+    const stopB = h.service.stop({ drainMs: 10_000 })
+    await expect(stopA).rejects.toThrow('timer port broken')
+    await expect(stopB).rejects.toThrow('timer port broken')
+
+    // The failure-convergence state: lock held, service non-accepting.
+    expect(releaseCount()).toBe(0)
+    await expect(h.service.create(everyMinute)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    await expect(h.service.start()).rejects.toBeInstanceOf(CronServiceStoppingError)
+
+    // Cleanup: the hung execution settles once its executor is released.
+    releaseExecutor()
+    expect((await run).status).toBe('succeeded')
+  })
 })

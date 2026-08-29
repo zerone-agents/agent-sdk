@@ -364,31 +364,35 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
       phase = 'stopping'
       const stopping = enqueueLifecycle(async () => {
         // runtime.stop()'s synchronous first step is scheduler.stop(), so
-        // scheduler intake stops as soon as this (serialized) body runs —
-        // never delayed by the operations drained below. The coordinator's
-        // drainMs/interrupt phase runs CONCURRENTLY with the barrier: a
-        // hung protected operation (e.g. a runNow awaiting a hung execution)
-        // is settled by the interrupt phase, which then clears the barrier —
-        // waiting for it strictly before the drain would deadlock.
-        const runtimeStop = runtime.stop(options2)
-        // Interim unhandled guard: the error (if any) re-surfaces at the
-        // await below, even if the barrier drains for a long time.
-        runtimeStop.catch(() => {})
+        // scheduler intake stops as soon as this (serialized) body runs.
+        // OBSERVE THE RUNTIME STOP FIRST (review on PR #58): its bounded
+        // drain/interrupt phase settles every execution-backed protected
+        // operation (a hung runNow is interrupted after drainMs), while an
+        // early failure — one thrown BEFORE it could interrupt — surfaces
+        // PROMPTLY; awaiting the operation barrier first would hide that
+        // known failure behind a hung operation forever (all stop callers
+        // pending on a rejection that already happened). Awaiting the
+        // runtime stop first is deadlock-free: the drain is bounded by
+        // drainMs and pure CRUD operations never block it.
         let runtimeStopped = false
         try {
-          await waitForInflight()
-          await runtimeStop
+          await runtime.stop(options2)
           runtimeStopped = true
+          // Execution-backed operations settled above; only pure CRUD
+          // operations (e.g. a slow storage write) can remain — they must
+          // truly settle before the lock boundary (issue #57).
+          await waitForInflight()
         } finally {
           // Only a PROVEN-SAFE runtime stop may settle the lock boundary:
-          // if runtimeStop rejected (e.g. a failing Timer/storage port), the
-          // coordinator may be unsafely settled and the runtime's internal
-          // state is stale — releasing the lock or publishing a clean
-          // 'stopped' would let a restart no-op against it (review on
-          // PR #58). The failure-convergence path: stop() rejects with the
-          // runtime error and the service stays non-accepting with the
-          // single-writer lock HELD (phase 'stopping', stopPromise and
-          // intent retained) until manual intervention.
+          // if the runtime stop rejected (e.g. a failing Timer/storage
+          // port), the coordinator may be unsafely settled and the
+          // runtime's internal state is stale — releasing the lock or
+          // publishing a clean 'stopped' would let a restart no-op against
+          // it (review on PR #58). The failure-convergence path: stop()
+          // rejects with the runtime error and the service stays
+          // non-accepting with the single-writer lock HELD (phase
+          // 'stopping', stopPromise and intent retained) until manual
+          // intervention.
           if (runtimeStopped) {
             // Issue #57's required order: settle entered ops → stop the
             // runtime → release the lock → ONLY THEN publish stopped. The
