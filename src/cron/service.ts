@@ -166,6 +166,12 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     timer,
     host: {
       onFire: async (task, scheduledFireTime) => {
+        // Intake boundary at stop()-call time (review on PR #58): the
+        // synchronous stopping intent drops EVERY scheduled submission —
+        // including restart/resume catch-up fires racing a queued stop —
+        // regardless of the scheduler's internal arming state. The
+        // serialized stop body then stops the scheduler itself.
+        if (stoppingIntent) return
         // Fire-and-forget for scheduled triggers: the scheduler's timer loop
         // must never depend on execution duration (a hung executor with a
         // 30-minute timeout would stall every other task's schedule). Per-task
@@ -201,6 +207,17 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
   let inflightIdle: (() => void) | null = null
   let stopPromise: Promise<void> | null = null
   let startPromise: Promise<void> | null = null
+  /**
+   * Shutdown INTENT, published in stop()'s synchronous prefix (review on
+   * PR #58): from stop()-call time — even while an in-flight start/resume
+   * body is still settling — protected operations reject and the onFire
+   * submission boundary drops every scheduled fire (including restart and
+   * resume catch-ups). The serialized stop body then stops the scheduler
+   * itself. Cleared when shutdown settles successfully (or a waited-out
+   * start failed and left nothing to stop) so restarts work; retained on a
+   * failed lock release (the wedged, non-accepting state).
+   */
+  let stoppingIntent = false
 
   /**
    * Lifecycle serialization (review on PR #58): the start/stop/suspend/
@@ -223,8 +240,12 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
   }
 
   function assertAccepting(method: string): void {
-    if (phase === 'stopping' || (phase === 'stopped' && stoppedByShutdown)) {
-      throw new CronServiceStoppingError(method, phase)
+    if (
+      stoppingIntent ||
+      phase === 'stopping' ||
+      (phase === 'stopped' && stoppedByShutdown)
+    ) {
+      throw new CronServiceStoppingError(method, stoppingIntent || phase === 'stopping' ? 'stopping' : phase)
     }
   }
 
@@ -301,6 +322,12 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     async stop(options2?: { drainMs?: number }): Promise<void> {
       // Idempotent: a stop() after a fully settled stop is a no-op.
       if (phase === 'stopped') return
+      // Shutdown INTENT is published SYNCHRONOUSLY, before any await: from
+      // this call-time boundary, protected operations reject and the onFire
+      // submission boundary drops scheduled fires — even while an in-flight
+      // start/resume body is still settling (review on PR #58). The actual
+      // runtime stop linearizes below.
+      stoppingIntent = true
       // Concurrent stop() calls observe the SAME completion/error outcome —
       // including while the lock release is still pending (review on PR #58:
       // 'stopped' must never be observable before the release settles).
@@ -325,7 +352,12 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
           await stopPromise!
           return
         }
-        if (phaseNow !== 'running') return
+        if (phaseNow !== 'running') {
+          // The start failed and released its lock: nothing to stop. Clear
+          // the intent so the service stays restartable.
+          stoppingIntent = false
+          return
+        }
       }
       phase = 'stopping'
       const stopping = enqueueLifecycle(async () => {
@@ -354,6 +386,9 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
           phase = 'stopped'
           stoppedByShutdown = true
           stopPromise = null
+          // Shutdown settled cleanly: the intake intent has done its job —
+          // clear it so a restart fires normally again.
+          stoppingIntent = false
         }
       })
       stopPromise = stopping

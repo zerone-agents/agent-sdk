@@ -1175,4 +1175,91 @@ describe('shutdown barrier (issue #57)', () => {
     expect((await h.service.runNow(task.id)).status).toBe('succeeded')
     await h.service.stop()
   })
+
+  it('stop() synchronously closes operation intake during an in-flight start()', async () => {
+    const h = makeService({})
+    // A pre-start task exists so the start's restart catch-up has a slot
+    // that WOULD fire if intake were not closed at stop()-call time.
+    const task = await h.service.create(everyMinute)
+
+    let releaseLoad!: () => void
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve
+    })
+    const originalLoad = h.taskStorage.load.bind(h.taskStorage)
+    ;(h.taskStorage as unknown as { load: () => Promise<unknown> }).load = async () => {
+      await loadGate
+      return originalLoad()
+    }
+
+    const starting = h.service.start()
+    await new Promise((r) => setImmediate(r))
+
+    const stopping = h.service.stop({ drainMs: 0 })
+    // BEFORE anything settles: a protected operation called after stop()
+    // must be rejected with the typed error — the shutdown boundary begins
+    // at stop()-call time, not after the in-flight start finishes.
+    await expect(h.service.create(everyMinute)).rejects.toBeInstanceOf(CronServiceStoppingError)
+    let stopSettled = false
+    stopping.then(
+      () => { stopSettled = true },
+      () => { stopSettled = true },
+    )
+    await new Promise((r) => setImmediate(r))
+    expect(stopSettled).toBe(false)
+
+    releaseLoad()
+    await starting
+    await stopping
+
+    // No fire ever occurred: the start's restart catch-up of `task` was
+    // dropped by the stopping intent, and the scheduler is now stopped.
+    await h.timer.advance(10 * 60_000)
+    expect(await h.service.listExecutions({ cronTaskId: task.id })).toEqual([])
+  })
+
+  it('a resume racing stop() submits no catch-up fire after shutdown was requested', async () => {
+    let started = 0
+    const executor: CronExecutor = async () => {
+      started += 1
+      return { output: 'x' }
+    }
+    const h = makeService({ executor })
+    await h.service.start()
+    const task = await h.service.create(everyMinute)
+    await h.service.suspend()
+    await h.timer.advance(5 * 60_000) // missed slots accumulate while suspended
+
+    let releaseLoad!: () => void
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve
+    })
+    const originalLoad = h.taskStorage.load.bind(h.taskStorage)
+    ;(h.taskStorage as unknown as { load: () => Promise<unknown> }).load = async () => {
+      await loadGate
+      return originalLoad()
+    }
+
+    const resuming = h.service.resume()
+    await new Promise((r) => setImmediate(r))
+    const stopping = h.service.stop({ drainMs: 0 })
+
+    releaseLoad()
+    await resuming
+    await stopping
+
+    // The resume completed, but its catch-up of the missed slots was
+    // dropped: shutdown was requested before any fire could be submitted.
+    expect(started).toBe(0)
+    expect(await h.service.listExecutions({ cronTaskId: task.id })).toEqual([])
+
+    // The intent is cleared once shutdown settles: a restart fires
+    // normally again (its own catch-up of the missed slot runs).
+    await h.service.start()
+    await vi.waitFor(async () => {
+      const execs = await h.service.listExecutions({ cronTaskId: task.id })
+      expect(execs.some((e) => e.status === 'succeeded')).toBe(true)
+    })
+    await h.service.stop()
+  })
 })
