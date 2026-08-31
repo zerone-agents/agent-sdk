@@ -12,6 +12,12 @@ export type ContentBlockParam =
   | { type: 'tool_use'; id: string; name: string; input: any }
   | { type: 'tool_result'; tool_use_id: string; content: string | any[]; is_error?: boolean }
 
+/**
+ * Input accepted by the public query/prompt APIs: a plain string or rich
+ * content blocks (e.g. text + image). Strings remain fully supported.
+ */
+export type AgentInput = string | ContentBlockParam[]
+
 export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: any }

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { z } from 'zod'
-import { Agent } from './agent.js'
+import { Agent, query } from './agent.js'
 import { createSdkMcpServer } from './sdk-mcp-server.js'
 import { tool } from './tool-helper.js'
-import type { AgentOptions, McpServerConfig } from './types.js'
+import type { AgentOptions, McpServerConfig, AgentInput } from './types.js'
 
 // Mocked pool — only the acquireMCPConnection symbol is replaced; the rest
 // of the module surface (types, internal helpers) stays intact.
@@ -358,5 +358,101 @@ describe('Agent.prompt() error propagation (issue #28)', () => {
     expect(result.is_error).toBeUndefined()
     expect(result.error_type).toBeUndefined()
     expect(result.errors).toBeUndefined()
+  })
+})
+
+describe('AgentInput: rich content through public APIs (issue #60)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** Streaming provider mock: captures every request message. */
+  function capturingProvider(captured: any[]) {
+    return {
+      apiType: 'anthropic-messages' as const,
+      createMessage: async () => { throw new Error('not used') },
+      createMessageStream: async function* (params: any) {
+        captured.push(...params.messages)
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+  }
+
+  const imageInput: AgentInput = [
+    { type: 'text', text: 'what is in this picture?' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+  ]
+
+  it('Agent.query() passes text+image blocks to the provider intact', async () => {
+    const captured: any[] = []
+    const agent = new Agent(makeBaseOptions({ includePartialMessages: true }))
+    ;(agent as any).provider = capturingProvider(captured)
+
+    for await (const _ev of agent.query(imageInput)) {
+      // drain
+    }
+
+    // Blocks reach the provider unmodified — not stringified, dropped, or rewritten.
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg).toBeDefined()
+    expect(userMsg.content).toEqual(imageInput)
+
+    // messageLog records the rich content under the user entry.
+    const entry = agent.getMessageLog().find((e) => e.type === 'user')
+    expect(entry?.message.content).toEqual(imageInput)
+  })
+
+  it('Agent.query() with a plain string keeps existing behavior', async () => {
+    const captured: any[] = []
+    const agent = new Agent(makeBaseOptions({ includePartialMessages: true }))
+    ;(agent as any).provider = capturingProvider(captured)
+
+    for await (const _ev of agent.query('hello')) {
+      // drain
+    }
+
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg.content).toBe('hello')
+    expect(agent.getMessageLog().find((e) => e.type === 'user')?.message.content).toBe('hello')
+  })
+
+  it('Agent.prompt() accepts text+image blocks; messages carry them verbatim', async () => {
+    const captured: any[] = []
+    const agent = new Agent(makeBaseOptions({ includePartialMessages: true }))
+    ;(agent as any).provider = capturingProvider(captured)
+
+    const result = await agent.prompt(imageInput)
+
+    expect(result.is_error).not.toBe(true)
+    expect(result.text).toBe('ok')
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg.content).toEqual(imageInput)
+    expect(result.messages.find((e) => e.type === 'user')?.message.content).toEqual(imageInput)
+  })
+
+  it('top-level query() accepts text+image blocks (hook observes them; blocked before provider)', async () => {
+    let hookSaw: unknown
+    const events: any[] = []
+    for await (const ev of query({
+      prompt: imageInput,
+      options: makeBaseOptions({
+        hooks: {
+          UserPromptSubmit: [{
+            hooks: [async (ctx: any) => { hookSaw = ctx.toolInput; return { block: true } }],
+          }],
+        },
+      }),
+    })) {
+      events.push(ev)
+    }
+
+    // Rich content passed through the public seam into the hook context;
+    // the query terminated with the standard hook-block error result —
+    // no provider needed for this end-to-end path.
+    expect(hookSaw).toEqual(imageInput)
+    const result = events.find((e) => e.type === 'result')
+    expect(result?.is_error).toBe(true)
+    expect(result?.errors?.join(' ')).toContain('Blocked by UserPromptSubmit')
   })
 })

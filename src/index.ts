@@ -429,6 +429,7 @@ export type {
   QueryEngineConfig,
 
   // Content block types
+  AgentInput,
   ContentBlockParam,
   ContentBlock,
 

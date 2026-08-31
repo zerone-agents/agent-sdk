@@ -30,6 +30,7 @@ import type {
   Message,
   PermissionMode,
   McpServerConfig,
+  AgentInput,
 } from './types.js'
 import { QueryEngine } from './engine.js'
 import { resolveAgent } from './resolve-agent.js'
@@ -523,7 +524,7 @@ export class Agent {
    * Run a query with streaming events.
    */
   async *query(
-    prompt: string,
+    prompt: AgentInput,
     overrides?: QueryOverrides,
   ): AsyncGenerator<SDKMessage, void> {
     await this.setupDone
@@ -661,7 +662,7 @@ export class Agent {
    * Internally iterates through the streaming query and aggregates the outcome.
    */
   async prompt(
-    text: string,
+    text: AgentInput,
     overrides?: QueryOverrides,
   ): Promise<QueryResult> {
     const t0 = performance.now()
@@ -1055,7 +1056,7 @@ export function createAgent(options: AgentOptions = {}): Agent {
  * The agent is created, used, and cleaned up automatically.
  */
 export async function* query(params: {
-  prompt: string
+  prompt: AgentInput
   options?: AgentOptions
 }): AsyncGenerator<SDKMessage, void> {
   const ephemeral = createAgent(params.options)
