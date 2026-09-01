@@ -65,14 +65,12 @@ describe('applyAllowedTools wildcard matching (issue #64)', () => {
     expect(console.warn).not.toHaveBeenCalled()
   })
 
-  it("a bare '*' is a LITERAL, not allow-all (review round 1)", () => {
-    // Preserves historical exact-match semantics: '*' matches only a tool
-    // literally named '*' — i.e. nothing here.
+  it("allow-side bare '*' selects everything (review round 2), silently", () => {
+    // Asymmetric semantics: allow-side '*' = allow-all; the deny-side keeps
+    // '*' as a literal no-op (see applyDisallowedTools tests).
     const result = applyAllowedTools(POOL, ['*'])
-    expect(result).toEqual([])
-    // And it surfaces as the zero-match misconfiguration signal
-    const warns = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]))
-    expect(warns.some((w) => w.includes('matched none of the 7 built-in tools'))).toBe(true)
+    expect(names(result)).toEqual(names(POOL))
+    expect(console.warn).not.toHaveBeenCalled()
   })
 
   it('a non-trailing * stays a literal (boundary semantics)', () => {
@@ -137,6 +135,15 @@ describe('filterTools composition (compat)', () => {
       true,
     )
     expect(warns.some((w) => w.includes('mcp__utilities__*'))).toBe(false)
+  })
+
+  it('deny diagnostics run against the ORIGINAL input — no false stale for allow-removed tools (review round 2)', () => {
+    // The allow-list keeps only base tools, so the MCP deny wildcard would
+    // see an empty match set if diagnostics ran on the post-allow pool.
+    // It must NOT warn: the MCP tools exist in the original input.
+    const result = filterTools(POOL, ['Read', 'Write', 'Bash'], ['mcp__utilities__*'])
+    expect(names(result)).toEqual(['Read', 'Write', 'Bash'])
+    expect(console.warn).not.toHaveBeenCalled()
   })
 })
 

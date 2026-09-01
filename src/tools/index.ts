@@ -94,9 +94,11 @@ export function getAllBaseTools(): ToolDefinition[] {
  *
  * Entries are exact literals, except an entry with a trailing `*` AND a
  * non-empty prefix switches to prefix matching — `mcp__utilities__*` matches
- * every tool name starting with `mcp__utilities__`. A bare `*` is a literal
- * (matches only a tool literally named `*`), preserving the historical
- * deny-list semantics of `disallowedTools: ['*']` (no deny-all flip).
+ * every tool name starting with `mcp__utilities__`. A bare `*` is
+ * side-dependent (issue #64 review round 2): on the allow side it selects
+ * everything (short-circuit in applyAllowedTools); on the deny side it stays
+ * a literal no-op, preserving the historical semantics of
+ * `disallowedTools: ['*']` (no deny-all flip).
  */
 interface ParsedToolList {
   exact: Set<string>
@@ -142,9 +144,10 @@ function warnDeadWildcardEntries(scope: string, parsed: ParsedToolList, toolName
 
 /**
  * Apply an allow-list to a tool set. Entries are exact names or trailing-`*`
- * prefixes (`mcp__srv__*`); a bare `*` is a literal. Diagnostics: wildcard
- * entries matching zero tools warn, and a non-empty allow-list that filters
- * out EVERY tool warns loudly — almost certainly misconfiguration (#64).
+ * prefixes (`mcp__srv__*`); a bare `*` selects everything. Diagnostics:
+ * wildcard entries matching zero tools warn, and a non-empty allow-list that
+ * filters out EVERY tool warns loudly — almost certainly misconfiguration
+ * (#64).
  *
  * NOTE (source-based contract): callers decide which tools this applies to.
  * `resolveAgent()` applies it to built-in base tools ONLY — custom and MCP
@@ -155,6 +158,10 @@ export function applyAllowedTools(
   allowedTools?: string[],
 ): ToolDefinition[] {
   if (!allowedTools || allowedTools.length === 0) return tools
+
+  // Allow-side bare '*' selects everything (deny-side stays a literal —
+  // see parseToolList). Other entries alongside '*' are redundant.
+  if (allowedTools.includes('*')) return tools
 
   const parsed = parseToolList(allowedTools)
   const kept = tools.filter((t) => matchesToolList(parsed, t.name))
@@ -175,19 +182,22 @@ export function applyAllowedTools(
 /**
  * Apply a deny-list to a tool set. Same entry syntax as
  * {@link applyAllowedTools}; matched tools are removed. Wildcard entries
- * matching zero tools (within the set this is applied to) warn as stale
- * patterns. Diagnostics run against the pool passed in — apply this to the
- * full merged pool so MCP patterns are not falsely flagged stale (#64).
+ * matching zero tools warn as stale patterns. Diagnostics run against
+ * `diagnosticPool` (defaults to `tools`) — `filterTools()` passes its
+ * ORIGINAL pre-allow input so wildcards matching tools the allow-list
+ * already removed are not falsely flagged stale; apply this to the full
+ * merged pool so MCP patterns are never flagged stale (#64).
  */
 export function applyDisallowedTools(
   tools: ToolDefinition[],
   disallowedTools?: string[],
+  diagnosticPool: ToolDefinition[] = tools,
 ): ToolDefinition[] {
   if (!disallowedTools || disallowedTools.length === 0) return tools
 
   const parsed = parseToolList(disallowedTools)
 
-  warnDeadWildcardEntries('disallowedTools', parsed, tools.map((t) => t.name))
+  warnDeadWildcardEntries('disallowedTools', parsed, diagnosticPool.map((t) => t.name))
 
   return tools.filter((t) => !matchesToolList(parsed, t.name))
 }
@@ -196,25 +206,31 @@ export function applyDisallowedTools(
  * Filter tools by allowed/disallowed lists (allow first, then deny — deny
  * wins). Convenience composition of {@link applyAllowedTools} and
  * {@link applyDisallowedTools} over one shared set; see those for entry
- * syntax and diagnostics. `resolveAgent()` does NOT use this — it applies
- * the lists per source (see its source-based contract).
+ * syntax. Deny-side stale diagnostics run against the ORIGINAL input (before
+ * the allow-list removed anything), so wildcards targeting allow-removed
+ * tools are not falsely flagged stale. `resolveAgent()` does NOT use this —
+ * it applies the lists per source (see its source-based contract).
  */
 export function filterTools(
   tools: ToolDefinition[],
   allowedTools?: string[],
   disallowedTools?: string[],
 ): ToolDefinition[] {
-  return applyDisallowedTools(applyAllowedTools(tools, allowedTools), disallowedTools)
+  const allowed = applyAllowedTools(tools, allowedTools)
+  return applyDisallowedTools(allowed, disallowedTools, tools)
 }
 
 /**
- * Assemble tool pool: base tools + MCP tools, with deduplication.
+ * Assemble tool pool: merge base and MCP tools with deduplication.
+ *
+ * Contract (issue #64 review): merge + dedup ONLY — this helper never
+ * filters. Allow/deny lists are applied per source by the caller
+ * (`resolveAgent()` gates built-ins with the allow-list, bypasses custom/MCP,
+ * then runs the deny-list on this merged pool).
  */
 export function assembleToolPool(
   baseTools: ToolDefinition[],
   mcpTools: ToolDefinition[] = [],
-  allowedTools?: string[],
-  disallowedTools?: string[],
 ): ToolDefinition[] {
   const combined = [...baseTools, ...mcpTools]
 
@@ -224,8 +240,7 @@ export function assembleToolPool(
     byName.set(tool.name, tool)
   }
 
-  let tools = Array.from(byName.values())
-  return filterTools(tools, allowedTools, disallowedTools)
+  return Array.from(byName.values())
 }
 
 // Re-export individual tools

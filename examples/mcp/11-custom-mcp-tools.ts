@@ -82,9 +82,10 @@ async function main() {
         description: 'Utility MCP agent',
         prompt: { type: 'preset', preset: 'default' },
         // MCP tools BYPASS allowedTools — no allow-list entry is needed for
-        // them. allowedTools (exact names or trailing-* prefixes such as
-        // mcp__srv__*) gates built-in tools only; disallowedTools applies to
-        // every tool including MCP ones.
+        // them. allowedTools (exact built-in names or trailing-* prefixes,
+        // e.g. 'Web*' for WebSearch/WebFetch) gates built-in tools only;
+        // disallowedTools applies to every tool including MCP ones
+        // (e.g. 'mcp__utilities__*' would remove these MCP tools).
       },
       permissionMode: 'bypassPermissions',
     },
