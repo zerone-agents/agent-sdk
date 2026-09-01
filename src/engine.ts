@@ -23,6 +23,7 @@ import type {
   ToolDefinition,
   TokenUsage,
   EngineSnapshot,
+  AgentInput,
 } from './types.js'
 import type {
   LLMProvider,
@@ -196,7 +197,7 @@ export class QueryEngine {
    * Yields SDKMessage events as the agent works.
    */
   async *submitMessage(
-    prompt: string | any[],
+    prompt: AgentInput,
   ): AsyncGenerator<SDKMessage> {
     // Hook: SessionStart
     await this.executeHooks('SessionStart')
@@ -222,7 +223,7 @@ export class QueryEngine {
     // Add user message
     const userMessageId = crypto.randomUUID()
     const userTimestamp = new Date().toISOString()
-    this.messages.push({ role: 'user', content: prompt as any, id: userMessageId, timestamp: userTimestamp })
+    this.messages.push({ role: 'user', content: prompt, id: userMessageId, timestamp: userTimestamp })
 
     // Emit the user message id so callers (e.g. host applications) can target it for revert.
     yield { type: 'user', uuid: userMessageId, timestamp: userTimestamp } as SDKMessage

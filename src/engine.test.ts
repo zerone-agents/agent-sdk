@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
-import type { QueryEngineConfig, SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition } from './types.js'
+import type { QueryEngineConfig, SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition, ContentBlockParam } from './types.js'
 import type { LLMProvider, StreamChunk, CreateMessageParams, CreateMessageResponse, NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
@@ -1255,11 +1255,11 @@ describe('QueryEngine message timestamps (issue #54)', () => {
       ...makeConfig(provider),
       maxRequestBodyBytes: 100, // force image stripping
     })
-    const imagePrompt = [
+    const imagePrompt: ContentBlockParam[] = [
       { type: 'text', text: 'look' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(5000) } },
     ]
-    for await (const _ev of engine.submitMessage(imagePrompt as any)) {
+    for await (const _ev of engine.submitMessage(imagePrompt)) {
       // drain
     }
 
@@ -1275,6 +1275,36 @@ describe('QueryEngine message timestamps (issue #54)', () => {
       expect(msg).not.toHaveProperty('timestamp')
       expect(msg).not.toHaveProperty('_snapshot')
     }
+  })
+
+  it('default pipeline passes text+image blocks to the provider intact (no body-size strip)', async () => {
+    const captured: any[] = []
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
+        captured.push(...params.messages)
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider))
+    const input: ContentBlockParam[] = [
+      { type: 'text', text: 'look at this' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+    ]
+    for await (const _ev of engine.submitMessage(input)) {
+      // drain — typed call, no cast
+    }
+
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg).toBeDefined()
+    expect(userMsg.content).toEqual(input)
+    // History (what saveSession persists) keeps blocks verbatim too.
+    const historyUser = engine.getMessages().find((m) => m.role === 'user')
+    expect(historyUser?.content).toEqual(input)
   })
 
   it('retains an image when micro-compaction brings the request under the limit (#54 review)', async () => {
@@ -1308,11 +1338,11 @@ describe('QueryEngine message timestamps (issue #54)', () => {
       ...makeConfig(provider, [bigTool]),
       maxRequestBodyBytes: 200_000,
     })
-    const imagePrompt = [
+    const imagePrompt: ContentBlockParam[] = [
       { type: 'text', text: 'look' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(100_000) } },
     ]
-    for await (const _ev of engine.submitMessage(imagePrompt as any)) {
+    for await (const _ev of engine.submitMessage(imagePrompt)) {
       // drain
     }
 
