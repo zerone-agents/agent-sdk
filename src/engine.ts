@@ -212,9 +212,17 @@ export class QueryEngine {
     // Hook: SessionStart
     await this.executeHooks('SessionStart')
 
-    // Hook: UserPromptSubmit
+    // Hook: UserPromptSubmit — receives an INDEPENDENT clone: the hook API
+    // has no input-replacement contract, and in-place mutation of
+    // ctx.toolInput must not corrupt the canonical snapshot flowing into
+    // history, provider requests, and persistence (issue #60 review round 2).
+    // Strings are immutable; clone only when hooks are registered and the
+    // input is rich content.
     const userHookResults = await this.executeHooks('UserPromptSubmit', {
-      toolInput: content,
+      toolInput:
+        this.hookRegistry?.hasHooks('UserPromptSubmit') && typeof content !== 'string'
+          ? structuredClone(content)
+          : content,
     })
     // Check if any hook blocks the submission
     if (userHookResults.some((r) => r.block)) {

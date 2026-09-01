@@ -51,6 +51,21 @@ async function run(engine: QueryEngine): Promise<SDKMessage[]> {
   return msgs
 }
 
+/** Streaming provider mock: captures every request message. */
+function capturingStreamProvider(captured: NormalizedMessageParam[]): LLMProvider {
+  return {
+    apiType: 'anthropic-messages',
+    async createMessage() {
+      throw new Error('not used')
+    },
+    async *createMessageStream(_params: CreateMessageParams): AsyncGenerator<StreamChunk> {
+      captured.push(..._params.messages)
+      yield { type: 'text', index: 0, delta: 'ok' }
+      yield { type: 'done', index: -1 }
+    },
+  }
+}
+
 function findResult(msgs: SDKMessage[]): SDKResultMessage {
   const result = msgs.find((m) => m.type === 'result') as SDKResultMessage | undefined
   if (!result) throw new Error('no result message emitted')
@@ -1278,19 +1293,8 @@ describe('QueryEngine message timestamps (issue #54)', () => {
   })
 
   it('default pipeline passes text+image blocks to the provider intact (no body-size strip)', async () => {
-    const captured: any[] = []
-    const provider: LLMProvider = {
-      apiType: 'anthropic-messages',
-      async createMessage() {
-        throw new Error('not used')
-      },
-      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
-        captured.push(...params.messages)
-        yield { type: 'text', index: 0, delta: 'ok' }
-        yield { type: 'done', index: -1 }
-      },
-    }
-    const engine = new QueryEngine(makeConfig(provider))
+    const captured: NormalizedMessageParam[] = []
+    const engine = new QueryEngine(makeConfig(capturingStreamProvider(captured)))
     const input: ContentBlockParam[] = [
       { type: 'text', text: 'look at this' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
@@ -1308,19 +1312,8 @@ describe('QueryEngine message timestamps (issue #54)', () => {
   })
 
   it('snapshots rich input: caller mutation after the first event cannot corrupt history or provider requests', async () => {
-    const captured: any[] = []
-    const provider: LLMProvider = {
-      apiType: 'anthropic-messages',
-      async createMessage() {
-        throw new Error('not used')
-      },
-      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
-        captured.push(...params.messages)
-        yield { type: 'text', index: 0, delta: 'ok' }
-        yield { type: 'done', index: -1 }
-      },
-    }
-    const engine = new QueryEngine(makeConfig(provider))
+    const captured: NormalizedMessageParam[] = []
+    const engine = new QueryEngine(makeConfig(capturingStreamProvider(captured)))
     type ImageBlock = Extract<ContentBlockParam, { type: 'image' }>
     const imgBlock: ImageBlock = {
       type: 'image',

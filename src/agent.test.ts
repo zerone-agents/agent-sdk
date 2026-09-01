@@ -382,7 +382,7 @@ function capturingProvider(captured: NormalizedMessageParam[]): LLMProvider {
 /** Agent wired with a capturing streaming provider (includePartialMessages on). */
 function makeStreamingAgent(captured: NormalizedMessageParam[]): Agent {
   const agent = new Agent(makeBaseOptions({ includePartialMessages: true }))
-  ;(agent as any).provider = capturingProvider(captured)
+  ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider(captured)
   return agent
 }
 
@@ -513,7 +513,7 @@ describe('AgentInput snapshot integrity (issue #60 review)', () => {
       persistSession: true,
       sessionId,
     }))
-    ;(agent as any).provider = capturingProvider(captured)
+    ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider(captured)
 
     const blocks: ContentBlockParam[] = [
       { type: 'text', text: 'original' },
@@ -531,6 +531,49 @@ describe('AgentInput snapshot integrity (issue #60 review)', () => {
       expect(data).not.toBeNull()
       const userMsg = data!.messages.find((m) => m.role === 'user')
       expect(userMsg?.content).toEqual(originalBlocks())
+    } finally {
+      await deleteSession(sessionId)
+    }
+  })
+
+  it('UserPromptSubmit hook mutating ctx.toolInput in place cannot corrupt the turn', async () => {
+    const sessionId = `agent-input-hookmut-${crypto.randomUUID()}`
+    const captured: NormalizedMessageParam[] = []
+    const agent = new Agent(makeBaseOptions({
+      includePartialMessages: true,
+      persistSession: true,
+      sessionId,
+      hooks: {
+        UserPromptSubmit: [{
+          hooks: [async (ctx: HookInput) => {
+            // In-place mutation of the hook-visible input — no replacement,
+            // no return value: just corrupt the object the SDK handed over.
+            const blocks = ctx.toolInput as ContentBlockParam[]
+            blocks[0] = { type: 'text', text: 'mutated-by-hook' }
+            return {}
+          }],
+        }],
+      },
+    }))
+    ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider(captured)
+
+    const blocks: ContentBlockParam[] = [{ type: 'text', text: 'original' }]
+    try {
+      for await (const _ev of agent.query(blocks)) {
+        // drain
+      }
+
+      // Every observer — provider request, message log, and persisted
+      // transcript — records the content as submitted. Before the hook-input
+      // clone, the hook's in-place mutation reached provider/history/
+      // transcript as 'mutated-by-hook' while messageLog kept 'original' —
+      // an audit/persistence divergence.
+      const expected: ContentBlockParam[] = [{ type: 'text', text: 'original' }]
+      expect(captured.find((m) => m.role === 'user')?.content).toEqual(expected)
+      expect(agent.getMessageLog().find((e) => e.type === 'user')?.message.content).toEqual(expected)
+      const data = await loadSession(sessionId)
+      expect(data).not.toBeNull()
+      expect(data!.messages.find((m) => m.role === 'user')?.content).toEqual(expected)
     } finally {
       await deleteSession(sessionId)
     }
