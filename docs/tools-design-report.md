@@ -94,14 +94,14 @@ private buildToolPool(): ToolDefinition[] {
 | `allowedTools` | `string[]` | 二次白名单过滤（交集） |
 | `disallowedTools` | `string[]` | 黑名单排除 |
 
-#### 层级 2：MCP 工具合并（`src/tools/index.ts:169-185`）
+#### 层级 2：MCP 工具合并（`src/tools/index.ts`）
 
 ```typescript
-assembleToolPool(baseTools, mcpTools, allowedTools, disallowedTools)
+assembleToolPool(baseTools, mcpTools, _allowedTools?, _disallowedTools?)
 ```
 
 - 基础工具 + MCP 工具合并，按 name 去重（后定义覆盖先定义）
-- 再应用 allowedTools / disallowedTools 过滤
+- **仅合并去重，不过滤**：allow/deny 参数自 2.0 起弃用并忽略（`@deprecated`），过滤职责移至 `resolveAgent` 按来源分流（allow-list 只作用于内置工具，MCP/custom 绕过；deny-list 作用于合并后的整个池）
 
 #### 层级 3：Query 级覆盖（`src/agent.ts:291-302`）
 

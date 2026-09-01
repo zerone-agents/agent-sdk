@@ -8,7 +8,8 @@ import type { ToolDefinition } from '../types.js'
  *
  * Contract (review): the allow-list gates built-in base tools ONLY — custom
  * and MCP tools bypass it; the deny-list applies to the whole pool. A bare
- * `*` is a literal (preserves historical deny-list semantics).
+ * `*` is asymmetric: allow-side selects everything; deny-side is a literal
+ * no-op (preserving historical deny-list semantics).
  */
 
 function tool(name: string): ToolDefinition {
@@ -71,6 +72,14 @@ describe('applyAllowedTools wildcard matching (issue #64)', () => {
     const result = applyAllowedTools(POOL, ['*'])
     expect(names(result)).toEqual(names(POOL))
     expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it("bare '*' does not skip stale diagnostics for other entries (review round 3)", () => {
+    // allow-all via '*', but 'Ghost*' matches nothing → stale warning still fires
+    const result = applyAllowedTools(POOL, ['*', 'Ghost*'])
+    expect(names(result)).toEqual(names(POOL))
+    const warns = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]))
+    expect(warns.some((w) => w.includes('Ghost*') && w.includes('matches no tools'))).toBe(true)
   })
 
   it('a non-trailing * stays a literal (boundary semantics)', () => {

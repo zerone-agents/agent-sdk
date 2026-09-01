@@ -159,14 +159,17 @@ export function applyAllowedTools(
 ): ToolDefinition[] {
   if (!allowedTools || allowedTools.length === 0) return tools
 
+  const parsed = parseToolList(allowedTools)
+
+  // Diagnostics run even when a bare '*' selects everything — other entries
+  // alongside it can still be stale patterns (review round 3).
+  warnDeadWildcardEntries('allowedTools', parsed, tools.map((t) => t.name))
+
   // Allow-side bare '*' selects everything (deny-side stays a literal —
-  // see parseToolList). Other entries alongside '*' are redundant.
+  // see parseToolList). Other entries alongside '*' are redundant matches.
   if (allowedTools.includes('*')) return tools
 
-  const parsed = parseToolList(allowedTools)
   const kept = tools.filter((t) => matchesToolList(parsed, t.name))
-
-  warnDeadWildcardEntries('allowedTools', parsed, tools.map((t) => t.name))
 
   if (kept.length === 0 && tools.length > 0) {
     console.warn(
@@ -227,11 +230,19 @@ export function filterTools(
  * filters. Allow/deny lists are applied per source by the caller
  * (`resolveAgent()` gates built-ins with the allow-list, bypasses custom/MCP,
  * then runs the deny-list on this merged pool).
+ *
+ * @deprecated Since 2.0. Filtering is now `resolveAgent`'s responsibility;
+ * this helper only merges + dedupes. The allow/deny parameters are kept for
+ * backward compatibility and are ignored.
  */
 export function assembleToolPool(
   baseTools: ToolDefinition[],
   mcpTools: ToolDefinition[] = [],
+  _allowedTools?: string[],   // unused since 2.0
+  _disallowedTools?: string[], // unused since 2.0
 ): ToolDefinition[] {
+  void _allowedTools
+  void _disallowedTools
   const combined = [...baseTools, ...mcpTools]
 
   // Deduplicate by name (later definitions override)
