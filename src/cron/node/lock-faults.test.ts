@@ -13,7 +13,9 @@ import path from 'node:path'
 
 const faults = vi.hoisted(() => ({
   write: null as Error | null,
+  close: null as Error | null,
   unlink: null as Error | null,
+  unlinkCalls: 0,
 }))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -23,16 +25,23 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     open: (async (...args: Parameters<typeof real.open>) => {
       const handle = await real.open(...args)
       // Delegate to the ORIGINAL handle instance (FileHandle methods do not
-      // survive detachment); only intercept write for fault injection.
+      // survive detachment); only intercept write/close for fault injection.
       return {
         write: async (...writeArgs: Parameters<typeof handle.write>) => {
           if (faults.write) throw faults.write
           return handle.write(...writeArgs)
         },
-        close: () => handle.close(),
+        close: async () => {
+          // Rejection semantics, not a sync throw: real FileHandle.close()
+          // always fails via promise rejection — a sync throw would break
+          // the production cleanup path's `.catch()` chain.
+          if (faults.close) throw faults.close
+          return handle.close()
+        },
       } as unknown as FileHandle
     }) as typeof real.open,
     unlink: (async (...args: Parameters<typeof real.unlink>) => {
+      faults.unlinkCalls += 1
       if (faults.unlink) throw faults.unlink
       return real.unlink(...args)
     }) as typeof real.unlink,
@@ -45,13 +54,17 @@ let dir: string
 
 beforeEach(async () => {
   faults.write = null
+  faults.close = null
   faults.unlink = null
+  faults.unlinkCalls = 0
   dir = await mkdtemp(path.join(tmpdir(), 'cron-sdk-lock-fault-'))
 })
 
 afterEach(async () => {
   faults.write = null
+  faults.close = null
   faults.unlink = null
+  faults.unlinkCalls = 0
   await rm(dir, { recursive: true, force: true })
 })
 
@@ -108,5 +121,25 @@ describe('acquireRuntimeLock fault boundaries (issue #52 review)', () => {
     // The cleanup unlink failing (EACCES) must not replace the original
     // write failure (ENOSPC) in the rejection.
     await expect(acquireRuntimeLock(dir)).rejects.toMatchObject({ code: 'ENOSPC' })
+  })
+
+  it('a failed handle close after a successful write still cleans up the lock file', async () => {
+    faults.close = Object.assign(new Error('EBADF: bad file descriptor'), { code: 'EBADF' })
+
+    await expect(acquireRuntimeLock(dir)).rejects.toMatchObject({ code: 'EBADF' })
+    // Exception-safe acquisition covers the close step too: no wedged lock.
+    await expect(stat(path.join(dir, 'runtime.lock'))).rejects.toMatchObject({ code: 'ENOENT' })
+
+    // After the fault clears, the directory is NOT wedged.
+    faults.close = null
+    const lock = await acquireRuntimeLock(dir)
+    await lock.release()
+  })
+
+  it('concurrent double release unlinks the lock at most once', async () => {
+    const lock = await acquireRuntimeLock(dir)
+    faults.unlinkCalls = 0
+    await Promise.all([lock.release(), lock.release()])
+    expect(faults.unlinkCalls).toBe(1)
   })
 })
