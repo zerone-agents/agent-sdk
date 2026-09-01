@@ -24,22 +24,18 @@ const MOCK_TOOLS: ToolDefinition[] = [
   { name: 'MultiTask', isReadOnly: () => false, call: vi.fn() } as any,
 ]
 
-vi.mock('./index.js', () => ({
-  getAllBaseTools: () => [...MOCK_TOOLS],
-  assembleToolPool: (base: ToolDefinition[], mcp: ToolDefinition[]) => [...base, ...mcp],
-  filterTools: (tools: ToolDefinition[], allowed?: string[], disallowed?: string[]) => {
-    let filtered = tools
-    if (allowed && allowed.length > 0) {
-      const allowedSet = new Set(allowed)
-      filtered = filtered.filter((t) => allowedSet.has(t.name))
-    }
-    if (disallowed && disallowed.length > 0) {
-      const disallowedSet = new Set(disallowed)
-      filtered = filtered.filter((t) => !disallowedSet.has(t.name))
-    }
-    return filtered
-  },
-}))
+// resolveAgent (via buildSubagentTools) consumes getAllBaseTools +
+// assembleToolPool + applyAllowedTools/applyDisallowedTools. Spread the real
+// implementations and only override getAllBaseTools so the tool pool is
+// predictable while the rest of the resolution pipeline (including the real
+// wildcard filtering semantics) stays intact.
+vi.mock('./index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./index.js')>()
+  return {
+    ...actual,
+    getAllBaseTools: () => [...MOCK_TOOLS],
+  }
+})
 
 const { QueryEngine } = await import('../engine.js')
 const {
