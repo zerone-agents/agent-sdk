@@ -6,6 +6,7 @@ import type {
   AgentEnvironment,
 } from '../types.js'
 import { SkillRegistry } from '../skills/registry.js'
+import { createEmptyServices } from './services.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
 vi.mock('../engine.js', () => ({
@@ -73,6 +74,7 @@ function makeEnv(): AgentEnvironment {
     customTools: [],
     mcpTools: [],
     skillRegistry: new SkillRegistry(),
+    subprocessEnv: {},
   }
 }
 
@@ -82,6 +84,8 @@ function makeContext(overrides: Partial<SubagentContext> = {}): SubagentContext 
     agentId: 'general',
     env: makeEnv(),
     subAgents: TEST_AGENTS,
+    services: createEmptyServices(),
+    subprocessEnv: {},
     ...overrides,
   }
 }

@@ -4,7 +4,9 @@ let mockCreateImpl: any
 
 // Mock the Anthropic SDK
 vi.mock('@anthropic-ai/sdk', () => {
-  const MockAnthropic = function () {
+  // Structured instance shape: the SDK's Anthropic client exposes
+  // `messages.create`, which the provider awaits as an async iterable.
+  const MockAnthropic = function (this: { messages: { create: () => unknown } }) {
     this.messages = {
       create: () => mockCreateImpl,
     }

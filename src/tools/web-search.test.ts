@@ -12,6 +12,7 @@ import {
 import { WebSearchTool } from './web-search.js'
 import { createEmptyServices } from './services.js'
 import type { WebSearchConfig } from './web-search.js'
+import type { ToolContext } from '../types.js'
 
 function sseResponse(payload: unknown): Response {
   return new Response(`data: ${JSON.stringify(payload)}\n\n`, {
@@ -433,10 +434,10 @@ describe('buildProviders', () => {
   })
 })
 
-function makeCtx(config?: WebSearchConfig) {
+function makeCtx(config?: WebSearchConfig): ToolContext {
   const services = createEmptyServices()
   if (config) services.webSearch = config
-  return { cwd: process.cwd(), agentId: 'test-agent', services }
+  return { cwd: process.cwd(), agentId: 'test-agent', services, subprocessEnv: { ...process.env } }
 }
 
 describe('WebSearchTool fallback loop', () => {

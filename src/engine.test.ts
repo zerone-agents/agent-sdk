@@ -30,6 +30,7 @@ function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryE
       customTools: [],
       mcpTools: [],
       skillRegistry: new SkillRegistry(),
+      subprocessEnv: {},
     },
     resolved: {
       definition: { description: 'test', prompt: 'test prompt' },
@@ -1305,7 +1306,7 @@ describe('QueryEngine message timestamps (issue #54)', () => {
 
     const userMsg = captured.find((m) => m.role === 'user')
     expect(userMsg).toBeDefined()
-    expect(userMsg.content).toEqual(input)
+    expect(userMsg!.content).toEqual(input)
     // History (what saveSession persists) keeps blocks verbatim too.
     const historyUser = engine.getMessages().find((m) => m.role === 'user')
     expect(historyUser?.content).toEqual(input)

@@ -21,8 +21,9 @@ function createMockService() {
     stop: vi.fn(async () => {}),
     suspend: vi.fn(async () => {}),
     resume: vi.fn(async () => {}),
-    create: vi.fn(async (input: { cron: string; prompt: string }) => ({
+    create: vi.fn(async (input: { cron: string; prompt: string; name?: string }) => ({
       id: 'task-1',
+      name: input.name,
       cron: input.cron,
       prompt: input.prompt,
       createdAt: 1_000,
@@ -241,6 +242,7 @@ describe('per-context isolation (ADR 0005)', () => {
     const serviceA = createMockService()
     serviceA.create.mockResolvedValue({
       id: 'task-A',
+      name: undefined,
       cron: '*/5 * * * *',
       prompt: 'from A',
       createdAt: 1_000,
@@ -248,6 +250,7 @@ describe('per-context isolation (ADR 0005)', () => {
     const serviceB = createMockService()
     serviceB.create.mockResolvedValue({
       id: 'task-B',
+      name: undefined,
       cron: '*/5 * * * *',
       prompt: 'from B',
       createdAt: 1_000,

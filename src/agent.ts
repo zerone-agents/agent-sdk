@@ -522,6 +522,9 @@ export class Agent {
 
   /**
    * Run a query with streaming events.
+   *
+   * Accepts `AgentInput`: a plain string, or rich content blocks
+   * (`ContentBlockParam[]`, e.g. text + images) — see issue #60.
    */
   async *query(
     prompt: AgentInput,
@@ -668,6 +671,9 @@ export class Agent {
   /**
    * Convenience method: send a prompt and collect the final answer as a single object.
    * Internally iterates through the streaming query and aggregates the outcome.
+   *
+   * Accepts `AgentInput`: a plain string, or rich content blocks
+   * (`ContentBlockParam[]`, e.g. text + images) — see issue #60.
    */
   async prompt(
     text: AgentInput,

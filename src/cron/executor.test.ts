@@ -15,7 +15,7 @@ const task: CronTask = {
 
 function fakeAgent(calls: {
   prompts: string[]
-  closed: () => number
+  closed: () => void
   events?: () => AsyncGenerator<{ type: string; message?: unknown }>
   onQuery?: () => void
 }): (options: AgentOptions) => Agent {

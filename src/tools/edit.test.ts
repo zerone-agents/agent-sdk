@@ -3,10 +3,18 @@ import { mkdtemp, rm, readFile, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { FileEditTool } from './edit.js'
+import { DefaultToolServices } from './default-services.js'
+import type { ToolContext } from '../types.js'
 
 describe('FileEditTool', () => {
   let workdir: string
-  const mockContext = { cwd: '', sessionId: 'test' }
+  const mockContext: ToolContext = {
+    cwd: '',
+    sessionId: 'test',
+    agentId: 'test-edit-suite',
+    services: new DefaultToolServices(),
+    subprocessEnv: { ...process.env },
+  }
 
   beforeEach(async () => {
     workdir = await mkdtemp(join(tmpdir(), 'edit-test-'))
