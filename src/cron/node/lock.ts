@@ -23,16 +23,30 @@ export async function acquireRuntimeLock(cronDir: string): Promise<CronRuntimeLo
     await handle.write(
       `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
     )
-  } finally {
-    await handle.close()
+  } catch (err) {
+    // Exception-safe acquisition (issue #52 review): a failure after the
+    // O_EXCL create but before returning must not leave the lock file
+    // behind — the directory would stay wedged for every future owner
+    // until manual cleanup. Best-effort cleanup, then surface the ORIGINAL
+    // failure (a secondary cleanup error must not mask it).
+    await handle.close().catch(() => {})
+    await unlink(lockPath).catch(() => {})
+    throw err
   }
+  await handle.close()
 
   return {
     // The lock is already held when returned; acquire() is an idempotent no-op
     // so the object satisfies the CronRuntimeLock port consumed by start().
     acquire: async () => {},
     release: async () => {
-      await unlink(lockPath).catch(() => {})
+      await unlink(lockPath).catch((err) => {
+        // ENOENT = already released (idempotent). Any other failure (EACCES,
+        // EPERM, EBUSY, ...) must surface: resolving while runtime.lock still
+        // exists would silently wedge the directory for every subsequent
+        // Runtime/maintenance owner (issue #52 review).
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+      })
     },
   }
 }
