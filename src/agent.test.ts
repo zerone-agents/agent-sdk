@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { z } from 'zod'
-import { Agent } from './agent.js'
+import { Agent, query } from './agent.js'
 import { createSdkMcpServer } from './sdk-mcp-server.js'
 import { tool } from './tool-helper.js'
-import type { AgentOptions, McpServerConfig } from './types.js'
+import type { AgentOptions, McpServerConfig, AgentInput, ContentBlockParam, SDKMessage } from './types.js'
+import type { LLMProvider, CreateMessageParams, StreamChunk, NormalizedMessageParam } from './providers/types.js'
+import type { HookInput } from './hooks.js'
+import { loadSession, deleteSession } from './session.js'
 
 // Mocked pool — only the acquireMCPConnection symbol is replaced; the rest
 // of the module surface (types, internal helpers) stays intact.
@@ -358,5 +361,221 @@ describe('Agent.prompt() error propagation (issue #28)', () => {
     expect(result.is_error).toBeUndefined()
     expect(result.error_type).toBeUndefined()
     expect(result.errors).toBeUndefined()
+  })
+})
+
+/** Streaming provider mock: captures every request message. */
+function capturingProvider(captured: NormalizedMessageParam[]): LLMProvider {
+  return {
+    apiType: 'anthropic-messages',
+    async createMessage() {
+      throw new Error('not used')
+    },
+    async *createMessageStream(_params: CreateMessageParams): AsyncGenerator<StreamChunk> {
+      captured.push(..._params.messages)
+      yield { type: 'text', index: 0, delta: 'ok' }
+      yield { type: 'done', index: -1 }
+    },
+  }
+}
+
+/** Agent wired with a capturing streaming provider (includePartialMessages on). */
+function makeStreamingAgent(captured: NormalizedMessageParam[]): Agent {
+  const agent = new Agent(makeBaseOptions({ includePartialMessages: true }))
+  ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider(captured)
+  return agent
+}
+
+describe('AgentInput: rich content through public APIs (issue #60)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const imageInput: AgentInput = [
+    { type: 'text', text: 'what is in this picture?' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+  ]
+
+  it('Agent.query() passes text+image blocks to the provider intact', async () => {
+    const captured: NormalizedMessageParam[] = []
+    const agent = makeStreamingAgent(captured)
+
+    for await (const _ev of agent.query(imageInput)) {
+      // drain
+    }
+
+    // Blocks reach the provider unmodified — not stringified, dropped, or rewritten.
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg).toBeDefined()
+    expect(userMsg.content).toEqual(imageInput)
+
+    // messageLog records the rich content under the user entry.
+    const entry = agent.getMessageLog().find((e) => e.type === 'user')
+    expect(entry?.message.content).toEqual(imageInput)
+  })
+
+  it('Agent.query() with a plain string keeps existing behavior', async () => {
+    const captured: NormalizedMessageParam[] = []
+    const agent = makeStreamingAgent(captured)
+
+    for await (const _ev of agent.query('hello')) {
+      // drain
+    }
+
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg.content).toBe('hello')
+    expect(agent.getMessageLog().find((e) => e.type === 'user')?.message.content).toBe('hello')
+  })
+
+  it('Agent.prompt() accepts text+image blocks; messages carry them verbatim', async () => {
+    const captured: NormalizedMessageParam[] = []
+    const agent = makeStreamingAgent(captured)
+
+    const result = await agent.prompt(imageInput)
+
+    expect(result.is_error).not.toBe(true)
+    expect(result.text).toBe('ok')
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg.content).toEqual(imageInput)
+    expect(result.messages.find((e) => e.type === 'user')?.message.content).toEqual(imageInput)
+  })
+
+  it('top-level query() accepts text+image blocks (hook observes them; blocked before provider)', async () => {
+    let hookSaw: unknown
+    const events: SDKMessage[] = []
+    for await (const ev of query({
+      prompt: imageInput,
+      options: makeBaseOptions({
+        hooks: {
+          UserPromptSubmit: [{
+            hooks: [async (ctx: HookInput) => { hookSaw = ctx.toolInput; return { block: true } }],
+          }],
+        },
+      }),
+    })) {
+      events.push(ev)
+    }
+
+    // Rich content passed through the public seam into the hook context;
+    // the query terminated with the standard hook-block error result —
+    // no provider needed for this end-to-end path.
+    expect(hookSaw).toEqual(imageInput)
+    const result = events.find((e) => e.type === 'result')
+    expect(result?.is_error).toBe(true)
+    expect(result?.errors?.join(' ')).toContain('Blocked by UserPromptSubmit')
+  })
+})
+
+describe('AgentInput snapshot integrity (issue #60 review)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** The content as submitted — what every downstream observer must see. */
+  function originalBlocks(): ContentBlockParam[] {
+    return [
+      { type: 'text', text: 'original' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+    ]
+  }
+
+  it('caller mutation after the first user event cannot corrupt the turn (provider + messageLog)', async () => {
+    const captured: NormalizedMessageParam[] = []
+    const agent = makeStreamingAgent(captured)
+
+    type ImageBlock = Extract<ContentBlockParam, { type: 'image' }>
+    const imgBlock: ImageBlock = {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' },
+    }
+    const blocks: ContentBlockParam[] = [{ type: 'text', text: 'original' }, imgBlock]
+
+    for await (const ev of agent.query(blocks)) {
+      if (ev.type === 'user') {
+        // Caller mutates the submitted array mid-flight: replaces the text
+        // block AND rewrites the image block's nested source in place.
+        blocks[0] = { type: 'text', text: 'mutated-after-yield' }
+        imgBlock.source = { type: 'base64', media_type: 'image/jpeg', data: 'bXV0YXRlZA==' }
+      }
+    }
+
+    const expected = originalBlocks()
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg?.content).toEqual(expected)
+    expect(agent.getMessageLog().find((e) => e.type === 'user')?.message.content).toEqual(expected)
+  })
+
+  it('persisted transcript records the content as submitted, not as later mutated', async () => {
+    const sessionId = `agent-input-snapshot-${crypto.randomUUID()}`
+    const captured: NormalizedMessageParam[] = []
+    const agent = new Agent(makeBaseOptions({
+      includePartialMessages: true,
+      persistSession: true,
+      sessionId,
+    }))
+    ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider(captured)
+
+    const blocks: ContentBlockParam[] = [
+      { type: 'text', text: 'original' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+    ]
+
+    try {
+      for await (const ev of agent.query(blocks)) {
+        if (ev.type === 'user') {
+          blocks[0] = { type: 'text', text: 'mutated-after-yield' }
+        }
+      }
+
+      const data = await loadSession(sessionId)
+      expect(data).not.toBeNull()
+      const userMsg = data!.messages.find((m) => m.role === 'user')
+      expect(userMsg?.content).toEqual(originalBlocks())
+    } finally {
+      await deleteSession(sessionId)
+    }
+  })
+
+  it('UserPromptSubmit hook mutating ctx.toolInput in place cannot corrupt the turn', async () => {
+    const sessionId = `agent-input-hookmut-${crypto.randomUUID()}`
+    const captured: NormalizedMessageParam[] = []
+    const agent = new Agent(makeBaseOptions({
+      includePartialMessages: true,
+      persistSession: true,
+      sessionId,
+      hooks: {
+        UserPromptSubmit: [{
+          hooks: [async (ctx: HookInput) => {
+            // In-place mutation of the hook-visible input — no replacement,
+            // no return value: just corrupt the object the SDK handed over.
+            const blocks = ctx.toolInput as ContentBlockParam[]
+            blocks[0] = { type: 'text', text: 'mutated-by-hook' }
+            return {}
+          }],
+        }],
+      },
+    }))
+    ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider(captured)
+
+    const blocks: ContentBlockParam[] = [{ type: 'text', text: 'original' }]
+    try {
+      for await (const _ev of agent.query(blocks)) {
+        // drain
+      }
+
+      // Every observer — provider request, message log, and persisted
+      // transcript — records the content as submitted. Before the hook-input
+      // clone, the hook's in-place mutation reached provider/history/
+      // transcript as 'mutated-by-hook' while messageLog kept 'original' —
+      // an audit/persistence divergence.
+      const expected: ContentBlockParam[] = [{ type: 'text', text: 'original' }]
+      expect(captured.find((m) => m.role === 'user')?.content).toEqual(expected)
+      expect(agent.getMessageLog().find((e) => e.type === 'user')?.message.content).toEqual(expected)
+      const data = await loadSession(sessionId)
+      expect(data).not.toBeNull()
+      expect(data!.messages.find((m) => m.role === 'user')?.content).toEqual(expected)
+    } finally {
+      await deleteSession(sessionId)
+    }
   })
 })

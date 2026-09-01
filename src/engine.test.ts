@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
-import type { QueryEngineConfig, SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition } from './types.js'
+import type { QueryEngineConfig, SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition, ContentBlockParam } from './types.js'
 import type { LLMProvider, StreamChunk, CreateMessageParams, CreateMessageResponse, NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
@@ -49,6 +49,21 @@ async function run(engine: QueryEngine): Promise<SDKMessage[]> {
   const msgs: SDKMessage[] = []
   for await (const m of engine.submitMessage('hi')) msgs.push(m)
   return msgs
+}
+
+/** Streaming provider mock: captures every request message. */
+function capturingStreamProvider(captured: NormalizedMessageParam[]): LLMProvider {
+  return {
+    apiType: 'anthropic-messages',
+    async createMessage() {
+      throw new Error('not used')
+    },
+    async *createMessageStream(_params: CreateMessageParams): AsyncGenerator<StreamChunk> {
+      captured.push(..._params.messages)
+      yield { type: 'text', index: 0, delta: 'ok' }
+      yield { type: 'done', index: -1 }
+    },
+  }
 }
 
 function findResult(msgs: SDKMessage[]): SDKResultMessage {
@@ -1255,11 +1270,11 @@ describe('QueryEngine message timestamps (issue #54)', () => {
       ...makeConfig(provider),
       maxRequestBodyBytes: 100, // force image stripping
     })
-    const imagePrompt = [
+    const imagePrompt: ContentBlockParam[] = [
       { type: 'text', text: 'look' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(5000) } },
     ]
-    for await (const _ev of engine.submitMessage(imagePrompt as any)) {
+    for await (const _ev of engine.submitMessage(imagePrompt)) {
       // drain
     }
 
@@ -1275,6 +1290,53 @@ describe('QueryEngine message timestamps (issue #54)', () => {
       expect(msg).not.toHaveProperty('timestamp')
       expect(msg).not.toHaveProperty('_snapshot')
     }
+  })
+
+  it('default pipeline passes text+image blocks to the provider intact (no body-size strip)', async () => {
+    const captured: NormalizedMessageParam[] = []
+    const engine = new QueryEngine(makeConfig(capturingStreamProvider(captured)))
+    const input: ContentBlockParam[] = [
+      { type: 'text', text: 'look at this' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+    ]
+    for await (const _ev of engine.submitMessage(input)) {
+      // drain — typed call, no cast
+    }
+
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg).toBeDefined()
+    expect(userMsg.content).toEqual(input)
+    // History (what saveSession persists) keeps blocks verbatim too.
+    const historyUser = engine.getMessages().find((m) => m.role === 'user')
+    expect(historyUser?.content).toEqual(input)
+  })
+
+  it('snapshots rich input: caller mutation after the first event cannot corrupt history or provider requests', async () => {
+    const captured: NormalizedMessageParam[] = []
+    const engine = new QueryEngine(makeConfig(capturingStreamProvider(captured)))
+    type ImageBlock = Extract<ContentBlockParam, { type: 'image' }>
+    const imgBlock: ImageBlock = {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' },
+    }
+    const blocks: ContentBlockParam[] = [{ type: 'text', text: 'original' }, imgBlock]
+    for await (const ev of engine.submitMessage(blocks)) {
+      if (ev.type === 'user') {
+        // Caller mutates the submitted array mid-flight — the engine must
+        // have snapshotted the content before yielding the user event.
+        blocks[0] = { type: 'text', text: 'mutated-after-yield' }
+        imgBlock.source = { type: 'base64', media_type: 'image/jpeg', data: 'bXV0YXRlZA==' }
+      }
+    }
+
+    const expected: ContentBlockParam[] = [
+      { type: 'text', text: 'original' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+    ]
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg?.content).toEqual(expected)
+    const historyUser = engine.getMessages().find((m) => m.role === 'user')
+    expect(historyUser?.content).toEqual(expected)
   })
 
   it('retains an image when micro-compaction brings the request under the limit (#54 review)', async () => {
@@ -1308,11 +1370,11 @@ describe('QueryEngine message timestamps (issue #54)', () => {
       ...makeConfig(provider, [bigTool]),
       maxRequestBodyBytes: 200_000,
     })
-    const imagePrompt = [
+    const imagePrompt: ContentBlockParam[] = [
       { type: 'text', text: 'look' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(100_000) } },
     ]
-    for await (const _ev of engine.submitMessage(imagePrompt as any)) {
+    for await (const _ev of engine.submitMessage(imagePrompt)) {
       // drain
     }
 

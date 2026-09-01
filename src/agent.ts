@@ -30,6 +30,7 @@ import type {
   Message,
   PermissionMode,
   McpServerConfig,
+  AgentInput,
 } from './types.js'
 import { QueryEngine } from './engine.js'
 import { resolveAgent } from './resolve-agent.js'
@@ -523,9 +524,17 @@ export class Agent {
    * Run a query with streaming events.
    */
   async *query(
-    prompt: string,
+    prompt: AgentInput,
     overrides?: QueryOverrides,
   ): AsyncGenerator<SDKMessage, void> {
+    // Snapshot rich input at the public boundary (issue #60 review): callers
+    // may mutate the blocks array mid-flight; the messageLog projection and
+    // everything downstream must record the content as submitted. Engine's
+    // submitMessage snapshots again for direct QueryEngine consumers — each
+    // public boundary owns its input integrity. Strings are immutable and
+    // skip the copy.
+    const input = typeof prompt === 'string' ? prompt : structuredClone(prompt)
+
     await this.setupDone
 
     const opts = { ...this.cfg, ...overrides }
@@ -607,7 +616,7 @@ export class Agent {
 
     // Run the engine (try/finally ensures persistence even on abort)
     try {
-      for await (const event of engine.submitMessage(prompt)) {
+      for await (const event of engine.submitMessage(input)) {
         // messageLog is a PROJECTION of engine events (issue #54): entries
         // reuse the engine history message's uuid and timestamp. A prompt
         // blocked by UserPromptSubmit hooks never gets a 'user' event, so
@@ -617,7 +626,7 @@ export class Agent {
         if (event.type === 'user') {
           this.messageLog.push({
             type: 'user',
-            message: { role: 'user', content: prompt },
+            message: { role: 'user', content: input },
             uuid: event.uuid,
             timestamp: event.timestamp,
           })
@@ -661,7 +670,7 @@ export class Agent {
    * Internally iterates through the streaming query and aggregates the outcome.
    */
   async prompt(
-    text: string,
+    text: AgentInput,
     overrides?: QueryOverrides,
   ): Promise<QueryResult> {
     const t0 = performance.now()
@@ -1055,7 +1064,7 @@ export function createAgent(options: AgentOptions = {}): Agent {
  * The agent is created, used, and cleaned up automatically.
  */
 export async function* query(params: {
-  prompt: string
+  prompt: AgentInput
   options?: AgentOptions
 }): AsyncGenerator<SDKMessage, void> {
   const ephemeral = createAgent(params.options)

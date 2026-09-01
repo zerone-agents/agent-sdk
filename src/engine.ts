@@ -23,6 +23,7 @@ import type {
   ToolDefinition,
   TokenUsage,
   EngineSnapshot,
+  AgentInput,
 } from './types.js'
 import type {
   LLMProvider,
@@ -196,14 +197,32 @@ export class QueryEngine {
    * Yields SDKMessage events as the agent works.
    */
   async *submitMessage(
-    prompt: string | any[],
+    prompt: AgentInput,
   ): AsyncGenerator<SDKMessage> {
+    // Snapshot rich input at the engine boundary (issue #60 review): callers
+    // may mutate the blocks array (or nested block objects) while the async
+    // loop is in flight — after the user event is yielded but before the
+    // provider call. History, provider requests, hooks, and persistence must
+    // all observe the content as submitted, so freeze it before anything is
+    // yielded. Strings are immutable and skip the copy. structuredClone
+    // throws on non-cloneable values (functions, Proxies) — an honest
+    // boundary failure instead of silent content divergence downstream.
+    const content = typeof prompt === 'string' ? prompt : structuredClone(prompt)
+
     // Hook: SessionStart
     await this.executeHooks('SessionStart')
 
-    // Hook: UserPromptSubmit
+    // Hook: UserPromptSubmit — receives an INDEPENDENT clone: the hook API
+    // has no input-replacement contract, and in-place mutation of
+    // ctx.toolInput must not corrupt the canonical snapshot flowing into
+    // history, provider requests, and persistence (issue #60 review round 2).
+    // Strings are immutable; clone only when hooks are registered and the
+    // input is rich content.
     const userHookResults = await this.executeHooks('UserPromptSubmit', {
-      toolInput: prompt,
+      toolInput:
+        this.hookRegistry?.hasHooks('UserPromptSubmit') && typeof content !== 'string'
+          ? structuredClone(content)
+          : content,
     })
     // Check if any hook blocks the submission
     if (userHookResults.some((r) => r.block)) {
@@ -222,7 +241,7 @@ export class QueryEngine {
     // Add user message
     const userMessageId = crypto.randomUUID()
     const userTimestamp = new Date().toISOString()
-    this.messages.push({ role: 'user', content: prompt as any, id: userMessageId, timestamp: userTimestamp })
+    this.messages.push({ role: 'user', content, id: userMessageId, timestamp: userTimestamp })
 
     // Emit the user message id so callers (e.g. host applications) can target it for revert.
     yield { type: 'user', uuid: userMessageId, timestamp: userTimestamp } as SDKMessage
