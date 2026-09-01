@@ -85,6 +85,20 @@ const result = await agent.prompt("List 3 JavaScript testing frameworks.");
 console.log(result.text);
 ```
 
+**Rich content** (multimodal input — `AgentInput` accepts content blocks, e.g. text + image):
+
+```typescript
+const result = await agent.prompt([
+  { type: "text", text: "What's in this screenshot?" },
+  {
+    type: "image",
+    source: { type: "base64", media_type: "image/png", data: base64Png },
+  },
+]);
+```
+
+Plain strings remain fully supported everywhere.
+
 For the full set of patterns (multi-turn, custom tools, skills, hooks, MCP, subagents, permissions, web UI), see [Getting Started](docs/getting-started.md).
 
 ## Documentation

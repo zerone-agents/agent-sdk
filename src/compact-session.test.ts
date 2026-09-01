@@ -25,7 +25,8 @@ function makeNonStreamingProvider(): LLMProvider {
     async createMessage() {
       return {
         content: [{ type: 'text', text: 'SUMMARY: goal, instructions, discoveries, accomplished, files.' }],
-        usage: { input_tokens: 1, output_tokens: 1 },
+        stopReason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 1, totalInputTokens: 1 },
       }
     },
   }

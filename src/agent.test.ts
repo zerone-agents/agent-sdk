@@ -407,7 +407,7 @@ describe('AgentInput: rich content through public APIs (issue #60)', () => {
     // Blocks reach the provider unmodified — not stringified, dropped, or rewritten.
     const userMsg = captured.find((m) => m.role === 'user')
     expect(userMsg).toBeDefined()
-    expect(userMsg.content).toEqual(imageInput)
+    expect(userMsg!.content).toEqual(imageInput)
 
     // messageLog records the rich content under the user entry.
     const entry = agent.getMessageLog().find((e) => e.type === 'user')
@@ -423,7 +423,7 @@ describe('AgentInput: rich content through public APIs (issue #60)', () => {
     }
 
     const userMsg = captured.find((m) => m.role === 'user')
-    expect(userMsg.content).toBe('hello')
+    expect(userMsg?.content).toBe('hello')
     expect(agent.getMessageLog().find((e) => e.type === 'user')?.message.content).toBe('hello')
   })
 
@@ -436,7 +436,7 @@ describe('AgentInput: rich content through public APIs (issue #60)', () => {
     expect(result.is_error).not.toBe(true)
     expect(result.text).toBe('ok')
     const userMsg = captured.find((m) => m.role === 'user')
-    expect(userMsg.content).toEqual(imageInput)
+    expect(userMsg?.content).toEqual(imageInput)
     expect(result.messages.find((e) => e.type === 'user')?.message.content).toEqual(imageInput)
   })
 

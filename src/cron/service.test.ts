@@ -7,29 +7,35 @@ import {
   DEFAULT_MAX_CRON_TASKS,
 } from './service.js'
 import type { CronEvent, CronEventSink } from './events.js'
-import type { ExecutionStore } from './execution-store.js'
+import type { ExecutionClaimInput, ExecutionStatusPatch, ExecutionStore } from './execution-store.js'
 import type { CronExecutor } from './executor.js'
 import type { CronStorage } from './storage.js'
-import type { CronExecution, CronTask } from './types.js'
+import type {
+  CronExecution,
+  CronExecutionQuery,
+  CronExecutionStatus,
+  CronTask,
+  CronTaskChanges,
+} from './types.js'
 
 class MemoryCronStorage implements CronStorage {
   tasks: CronTask[] = []
   private nextId = 1
   async load() { return this.tasks.map((t) => ({ ...t })) }
-  async get(id) { return this.tasks.find((t) => t.id === id) ?? null }
-  async add(task) {
+  async get(id: string) { return this.tasks.find((t) => t.id === id) ?? null }
+  async add(task: Omit<CronTask, 'id' | 'createdAt'>) {
     const full: CronTask = { ...task, id: `t${this.nextId++}`, createdAt: 1 }
     this.tasks.push(full)
     return { ...full }
   }
-  async update(id, changes) {
+  async update(id: string, changes: CronTaskChanges) {
     const t = this.tasks.find((x) => x.id === id)
     if (!t) return null
     Object.assign(t, changes)
     return { ...t }
   }
-  async remove(ids) { this.tasks = this.tasks.filter((t) => !ids.includes(t.id)) }
-  async markFired(ids, firedAt) {
+  async remove(ids: string[]) { this.tasks = this.tasks.filter((t) => !ids.includes(t.id)) }
+  async markFired(ids: string[], firedAt: number) {
     for (const t of this.tasks) if (ids.includes(t.id)) t.lastFiredAt = firedAt
   }
 }
@@ -40,7 +46,7 @@ class MemoryExecutionStore implements ExecutionStore {
   private byFire = new Map<string, string>()
   private nextId = 1
   async recoverInterrupted() { return 0 }
-  async claim(input) {
+  async claim(input: ExecutionClaimInput) {
     const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
     const dupId = this.byFire.get(key)
     const dup = dupId !== undefined ? this.executions.find((e) => e.id === dupId) : undefined
@@ -63,15 +69,15 @@ class MemoryExecutionStore implements ExecutionStore {
     this.byFire.set(key, created.id)
     return { kind: active ? ('skipped' as const) : ('claimed' as const), execution: created }
   }
-  async get(id) { return this.executions.find((e) => e.id === id) ?? null }
-  async list(query) {
+  async get(id: string) { return this.executions.find((e) => e.id === id) ?? null }
+  async list(query?: CronExecutionQuery) {
     let out = [...this.executions].sort((a, b) => b.scheduledFireTime - a.scheduledFireTime)
     if (query?.cronTaskId) out = out.filter((e) => e.cronTaskId === query.cronTaskId)
     if (query?.status) out = out.filter((e) => e.status === query.status)
     const offset = query?.offset ?? 0
     return query?.limit !== undefined ? out.slice(offset, offset + query.limit) : out.slice(offset)
   }
-  async updateStatus(id, status, patch) {
+  async updateStatus(id: string, status: CronExecutionStatus, patch?: ExecutionStatusPatch) {
     const e = this.executions.find((x) => x.id === id)
     if (!e) return null
     Object.assign(e, { status }, patch ?? {})
@@ -1148,14 +1154,11 @@ describe('shutdown barrier (issue #57)', () => {
       releaseStatus = resolve
     })
     const originalStatus = h.executionStore.updateStatus.bind(h.executionStore)
-    ;(
-      h.executionStore as unknown as {
-        updateStatus: (...args: unknown[]) => Promise<unknown>
-      }
-    ).updateStatus = async (...args: unknown[]) => {
+    const gatedUpdateStatus: ExecutionStore['updateStatus'] = async (...args) => {
       await statusGate
-      return originalStatus(...(args as never[]))
+      return originalStatus(...args)
     }
+    h.executionStore.updateStatus = gatedUpdateStatus
 
     const suspending = h.service.suspend()
     await new Promise((r) => setImmediate(r))

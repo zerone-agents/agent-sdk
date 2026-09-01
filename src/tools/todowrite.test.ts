@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolContext, ToolResult } from '../types.js'
 import { formatTodosReminder } from './todowrite.js'
+import { DefaultToolServices } from './default-services.js'
 
 const mockContext: ToolContext = {
   cwd: '/tmp/test',
   agentId: 'test-agent',
   sessionId: 'test-session-001',
+  services: new DefaultToolServices(),
   subprocessEnv: { ...process.env },
 }
 

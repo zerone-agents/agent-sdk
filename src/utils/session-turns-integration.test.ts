@@ -88,6 +88,7 @@ function buildConfig(
       customTools: [],
       mcpTools: [],
       skillRegistry: new SkillRegistry(),
+      subprocessEnv: {},
     },
     resolved: {
       definition: { description: 'test', prompt: 'test prompt' },

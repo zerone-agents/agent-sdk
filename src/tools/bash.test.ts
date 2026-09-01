@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'events'
 import type { ToolContext } from '../types.js'
+import { createEmptyServices } from './services.js'
 
 // Mock cross-spawn: default export is a function (async spawn) with a .sync method
 const mockSync = vi.fn()
@@ -214,9 +215,7 @@ function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     cwd: process.cwd(),
     agentId: 'test',
-    model: 'test',
-    provider: {} as any,
-    agents: {},
+    services: createEmptyServices(),
     subprocessEnv: { ...process.env },
     ...overrides,
   }

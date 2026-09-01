@@ -37,6 +37,7 @@ function makeEnv(overrides: Partial<AgentEnvironment> = {}): AgentEnvironment {
     customTools: [],
     mcpTools: [],
     skillRegistry,
+    subprocessEnv: {},
     ...overrides,
   }
 }

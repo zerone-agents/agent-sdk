@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 
 // mock buildMCPClient while keeping createMCPToolDefinition (real) and types intact
 vi.mock('./client.js', async (importOriginal) => {
@@ -27,7 +27,7 @@ const stdioConfig = (overrides: Partial<{ command: string; args: string[]; env: 
 interface MockBuilt {
   client: { close: ReturnType<typeof vi.fn>; callTool: ReturnType<typeof vi.fn> }
   rawTools: any[]
-  close: ReturnType<typeof vi.fn>
+  close: Mock<() => Promise<void>>
 }
 
 function mockBuiltClient(tools: any[] = [{ name: 'tool1', description: 'd', inputSchema: {} }]): MockBuilt {
@@ -38,7 +38,7 @@ function mockBuiltClient(tools: any[] = [{ name: 'tool1', description: 'd', inpu
   return {
     client,
     rawTools: tools,
-    close: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   }
 }
 

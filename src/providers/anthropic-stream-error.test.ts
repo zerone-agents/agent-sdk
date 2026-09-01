@@ -4,7 +4,7 @@ let mockCreateImpl: any
 
 // Mock the Anthropic SDK
 vi.mock('@anthropic-ai/sdk', () => {
-  const MockAnthropic = function () {
+  const MockAnthropic = function (this: any) {
     this.messages = {
       create: () => mockCreateImpl,
     }

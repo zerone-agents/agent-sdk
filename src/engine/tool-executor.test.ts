@@ -15,6 +15,7 @@ import type {
 } from '../types.js'
 import type { NormalizedMessageParam } from '../providers/types.js'
 import type { Logger } from '../utils/logger.js'
+import { createEmptyServices } from '../tools/services.js'
 
 // ============================================================================
 // Test helpers
@@ -104,6 +105,8 @@ describe('executeSingleTool', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     expect(result.is_error).toBe(true)
@@ -127,6 +130,8 @@ describe('executeSingleTool', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     expect(result.is_error).toBe(true)
@@ -148,6 +153,8 @@ describe('executeSingleTool', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     expect(result.is_error).toBe(true)
@@ -174,6 +181,8 @@ describe('executeSingleTool', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     expect(result.is_error).toBe(true)
@@ -208,6 +217,8 @@ describe('executeSingleTool', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     // Tool should be called with the updated input, not the original
@@ -236,6 +247,8 @@ describe('executeSingleTool', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     expect(result.is_error).toBe(true)
@@ -264,6 +277,8 @@ describe('executeSingleTool', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     expect(result.is_error).toBeFalsy()
@@ -290,6 +305,8 @@ describe('executeSingleTool', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     expect(result.is_error).toBe(true)
@@ -316,6 +333,8 @@ describe('executeSingleTool', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     expect(result.is_error).toBe(true)
@@ -646,6 +665,8 @@ describe('executeSingleTool logging security', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
   }
 
@@ -684,6 +705,8 @@ describe('executeSingleTool logging security', () => {
       skillRegistry: undefined as any,
       env: {} as any,
       subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
     })
 
     const allLogged = [...calls.debug, ...calls.trace, ...calls.error].join('\n')

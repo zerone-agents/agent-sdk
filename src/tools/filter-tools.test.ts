@@ -34,7 +34,7 @@ const POOL = [
   tool('mcp__utilities__get_temperature'),
   tool('mcp__utilities__convert_units'),
   tool('mcp__knowledge__knowledge_search'),
-].map(Object.freeze)
+].map((t) => Object.freeze(t))
 
 function names(tools: ToolDefinition[]): string[] {
   return tools.map((t) => t.name)

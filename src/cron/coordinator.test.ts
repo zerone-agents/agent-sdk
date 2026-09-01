@@ -58,7 +58,7 @@ function createStore(seeded: CronExecution[] = []) {
     },
     async claim(input) {
       claims.push({ ...input })
-      const key = input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`
+      const key = (input.dedupKey ?? `${input.taskId}:${input.scheduledFireTime}`) as `${string}:${number}`
       const existingId = byFire.get(key)
       // In-place semantics on purpose (review: the initial-record contract
       // must not depend on the store adapter): stored objects are returned by
@@ -317,7 +317,7 @@ describe('CronExecutionCoordinator', () => {
     // The claim-input union makes this unrepresentable for typed callers; the
     // coordinator still refuses at runtime for JS/host callers, and the
     // rejected submission is cleaned up like any rejected claim.
-    await expect(h.coordinator.submit(task, 60_000, 'manual')).rejects.toThrow(/dedupKey/)
+    await expect(h.coordinator.submit(task, 60_000, 'manual' as 'scheduled')).rejects.toThrow(/dedupKey/)
 
     await h.coordinator.stop()
   })
@@ -327,7 +327,7 @@ describe('CronExecutionCoordinator', () => {
     await h.coordinator.start()
 
     await expect(
-      h.coordinator.submit(task, 60_000, 'scheduled', 'manual:wrong'),
+      h.coordinator.submit(task, 60_000, 'scheduled' as 'manual', 'manual:wrong'),
     ).rejects.toThrow(/dedupKey/)
 
     await h.coordinator.stop()

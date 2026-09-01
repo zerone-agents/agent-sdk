@@ -36,7 +36,7 @@ describe('createDefaultAgentCronExecutor', () => {
     let closed = 0
     const resolve = vi.fn(async (_agentId?: string) => ({ agentId: 'x' }) as AgentOptions)
     const executor = createDefaultAgentCronExecutor(resolve, {
-      createAgentFn: fakeAgent({ prompts, closed: () => { closed++ } }),
+      createAgentFn: fakeAgent({ prompts, closed: () => ++closed }),
     })
 
     const result = await executor(task, {
@@ -54,7 +54,7 @@ describe('createDefaultAgentCronExecutor', () => {
   it('re-resolves on every execution (no caching)', async () => {
     const resolve = vi.fn(async () => ({}) as AgentOptions)
     const executor = createDefaultAgentCronExecutor(resolve, {
-      createAgentFn: fakeAgent({ prompts: [], closed: () => {} }),
+      createAgentFn: fakeAgent({ prompts: [], closed: () => 0 }),
     })
     const ctx = { executionId: 'e', trigger: 'scheduled' as const, signal: new AbortController().signal }
 

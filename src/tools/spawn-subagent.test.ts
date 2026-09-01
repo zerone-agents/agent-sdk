@@ -52,6 +52,7 @@ const env = {
   customTools: [],
   mcpTools: [],
   skillRegistry: { getUserInvocable: () => [] } as any,
+  subprocessEnv: {},
 } as AgentEnvironment
 
 const AGENTS: Record<string, AgentDefinition> = {

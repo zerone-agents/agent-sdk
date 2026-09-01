@@ -414,10 +414,18 @@ describe('listDirectory — symlinks', () => {
 })
 
 import { FileReadTool } from './read.js'
+import { DefaultToolServices } from './default-services.js'
+import type { ToolContext } from '../types.js'
 
 describe('FileReadTool.call — directory paths (end-to-end)', () => {
   let workdir: string
-  const mockContext = { cwd: '', sessionId: 'test' }
+  const mockContext: ToolContext = {
+    cwd: '',
+    sessionId: 'test',
+    agentId: 'test-read-directory-suite',
+    services: new DefaultToolServices(),
+    subprocessEnv: { ...process.env },
+  }
 
   beforeEach(async () => {
     workdir = await mkdtemp(join(tmpdir(), 'read-tool-e2e-'))

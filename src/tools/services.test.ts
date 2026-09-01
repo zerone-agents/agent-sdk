@@ -48,11 +48,11 @@ describe('resolveToolServices', () => {
     const shared = createEmptyServices()
     const handler = async () => 'answer'
     shared.askUser = handler
-    shared.webSearch = { apiKey: 'exa-key' }
+    shared.webSearch = { providers: [] }
     const cron = {} as CronService
     const combined = resolveToolServices(shared, cron)
     expect(combined.askUser).toBe(handler)
-    expect(combined.webSearch).toEqual({ apiKey: 'exa-key' })
+    expect(combined.webSearch).toEqual({ providers: [] })
     // Original keeps its own (unset) cron
     expect(shared.cron).toBeNull()
   })
