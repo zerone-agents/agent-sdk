@@ -81,9 +81,10 @@ async function main() {
       agent: {
         description: 'Utility MCP agent',
         prompt: { type: 'preset', preset: 'default' },
-        // Trailing-* prefix matching: admits every tool named
-        // mcp__utilities__<tool>. Exact names also work and can be mixed in.
-        allowedTools: ['mcp__utilities__*'],
+        // MCP tools BYPASS allowedTools — no allow-list entry is needed for
+        // them. allowedTools (exact names or trailing-* prefixes such as
+        // mcp__srv__*) gates built-in tools only; disallowedTools applies to
+        // every tool including MCP ones.
       },
       permissionMode: 'bypassPermissions',
     },

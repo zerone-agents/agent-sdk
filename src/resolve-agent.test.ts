@@ -155,6 +155,80 @@ describe('resolveAgent', () => {
   })
 })
 
+describe('resolveAgent source-based filtering contract (issue #64 review)', () => {
+  const mcpA = { name: 'mcp__srv__alpha', isReadOnly: () => true, call: vi.fn() } as any
+  const mcpB = { name: 'mcp__srv__beta', isReadOnly: () => true, call: vi.fn() } as any
+  const custom = { name: 'my_custom', isReadOnly: () => false, call: vi.fn() } as any
+
+  it('MCP tools bypass allowedTools (allow-list gates built-ins only)', () => {
+    const r = resolveAgent(
+      makeEnv({ mcpTools: [mcpA, mcpB] }),
+      { description: 'd', prompt: 'p', allowedTools: ['Read'] },
+    )
+    const names = r.tools.map(t => t.name)
+    expect(names).toContain('Read')
+    expect(names).toContain('mcp__srv__alpha')
+    expect(names).toContain('mcp__srv__beta')
+    // unlisted built-ins are still gated
+    expect(names).not.toContain('Write')
+    expect(names).not.toContain('Bash')
+  })
+
+  it('custom tools bypass allowedTools', () => {
+    const r = resolveAgent(
+      makeEnv({ customTools: [custom] }),
+      { description: 'd', prompt: 'p', allowedTools: ['Read'] },
+    )
+    const names = r.tools.map(t => t.name)
+    expect(names).toContain('my_custom')
+    expect(names).toContain('Read')
+    expect(names).not.toContain('Write')
+  })
+
+  it('disallowedTools still applies to MCP tools (deny runs on the merged pool)', () => {
+    const r = resolveAgent(
+      makeEnv({ mcpTools: [mcpA, mcpB] }),
+      {
+        description: 'd',
+        prompt: 'p',
+        allowedTools: ['Read'],
+        disallowedTools: ['mcp__srv__beta'],
+      },
+    )
+    const names = r.tools.map(t => t.name)
+    expect(names).toContain('mcp__srv__alpha')
+    expect(names).not.toContain('mcp__srv__beta')
+  })
+
+  it('deny-list wildcard removes MCP tools while unlisted base tools survive', () => {
+    const r = resolveAgent(
+      makeEnv({ mcpTools: [mcpA, mcpB] }),
+      { description: 'd', prompt: 'p', disallowedTools: ['mcp__srv__*'] },
+    )
+    const names = r.tools.map(t => t.name)
+    expect(names).toContain('Read')
+    expect(names).not.toContain('mcp__srv__alpha')
+    expect(names).not.toContain('mcp__srv__beta')
+  })
+
+  it('warns when the final pool resolves to zero tools', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const r = resolveAgent(
+        makeEnv(),
+        { description: 'd', prompt: 'p', allowedTools: ['DoesNotExist'] },
+      )
+      expect(r.tools).toEqual([])
+      const warns = warn.mock.calls.map(c => String(c[0]))
+      // scope warning from applyAllowedTools + final-pool warning from resolveAgent
+      expect(warns.some(w => w.includes('matched none of the 8 built-in tools'))).toBe(true)
+      expect(warns.some(w => w.includes('resolved to zero tools'))).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
 describe('resolvePrompt', () => {
   it('returns undefined for undefined/empty', () => {
     expect(resolvePrompt(undefined)).toBeUndefined()

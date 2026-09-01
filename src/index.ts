@@ -79,6 +79,8 @@ export {
   // Registry
   getAllBaseTools,
   filterTools,
+  applyAllowedTools,
+  applyDisallowedTools,
   assembleToolPool,
 
   // Helpers
