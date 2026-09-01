@@ -90,7 +90,45 @@ export function getAllBaseTools(): ToolDefinition[] {
 }
 
 /**
+ * Compile an allow/deny list into a name matcher (issue #64).
+ *
+ * Entries are exact literals, except a trailing `*` switches the entry to
+ * prefix matching — `mcp__utilities__*` matches every tool whose name starts
+ * with `mcp__utilities__`. A bare `*` therefore matches everything.
+ */
+function compileToolListMatcher(list: string[]): (name: string) => boolean {
+  const exact = new Set(list.filter((e) => !e.endsWith('*')))
+  const prefixes = list
+    .filter((e) => e.endsWith('*'))
+    .map((e) => e.slice(0, -1))
+  if (prefixes.length === 0) {
+    return (name) => exact.has(name)
+  }
+  return (name) =>
+    exact.has(name) || prefixes.some((p) => name.startsWith(p))
+}
+
+/** Warn once per wildcard list entry that matches no tool (stale pattern). */
+function warnDeadWildcardEntries(scope: string, list: string[], toolNames: string[]): void {
+  for (const entry of list) {
+    if (!entry.endsWith('*')) continue
+    const prefix = entry.slice(0, -1)
+    if (!toolNames.some((n) => n.startsWith(prefix))) {
+      console.warn(
+        `[tools] ${scope} entry "${entry}" matches no tools — stale pattern or wrong server name?`,
+      )
+    }
+  }
+}
+
+/**
  * Filter tools by allowed/disallowed lists.
+ *
+ * Entries support a trailing `*` for prefix matching (e.g. `mcp__srv__*`
+ * admits every tool from the `mcp__srv__` server); other entries are exact
+ * literals. Diagnostics: wildcard entries matching zero tools warn, and a
+ * non-empty allow-list that filters out EVERY tool warns loudly — that is
+ * almost certainly misconfiguration (issue #64).
  */
 export function filterTools(
   tools: ToolDefinition[],
@@ -100,13 +138,28 @@ export function filterTools(
   let filtered = tools
 
   if (allowedTools && allowedTools.length > 0) {
-    const allowed = new Set(allowedTools)
-    filtered = filtered.filter((t) => allowed.has(t.name))
+    const matchesAllowed = compileToolListMatcher(allowedTools)
+    const kept = filtered.filter((t) => matchesAllowed(t.name))
+
+    warnDeadWildcardEntries('allowedTools', allowedTools, filtered.map((t) => t.name))
+
+    if (kept.length === 0 && filtered.length > 0) {
+      console.warn(
+        `[tools] allowedTools [${allowedTools.join(', ')}] matched none of the ${filtered.length} available tools — ` +
+          `all tools were filtered out and the agent has no tools. ` +
+          `Entries are exact names or trailing-* prefixes (e.g. mcp__srv__*).`,
+      )
+    }
+
+    filtered = kept
   }
 
   if (disallowedTools && disallowedTools.length > 0) {
-    const disallowed = new Set(disallowedTools)
-    filtered = filtered.filter((t) => !disallowed.has(t.name))
+    const matchesDisallowed = compileToolListMatcher(disallowedTools)
+
+    warnDeadWildcardEntries('disallowedTools', disallowedTools, filtered.map((t) => t.name))
+
+    filtered = filtered.filter((t) => !matchesDisallowed(t.name))
   }
 
   return filtered

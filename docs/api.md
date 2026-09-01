@@ -85,7 +85,7 @@ integrations to `compactSessionStream()` or `compactSession()`.
 | `apiKey`             | `string`                                | `ZERONE_AGENT_API_KEY` env var | API key                                                              |
 | `baseURL`            | `string`                                | —                      | Custom API endpoint                                                  |
 | `cwd`                | `string`                                | `process.cwd()`        | Working directory                                                    |
-| `agent`             | `AgentDefinition`                       | —                      | Main agent definition: `prompt` (system prompt), `appendPrompt`, `allowedTools` / `disallowedTools`, `availableSkills`, `maxTurns` (default `10`) |
+| `agent`             | `AgentDefinition`                       | —                      | Main agent definition: `prompt` (system prompt), `appendPrompt`, `allowedTools` / `disallowedTools` (exact names or trailing-`*` prefixes, e.g. `mcp__srv__*` admits every tool from that MCP server; wildcards matching zero tools and allow-lists stripping all tools both log warnings), `availableSkills`, `maxTurns` (default `10`) |
 | `customTools`        | `ToolDefinition[]`                      | —                      | Custom tools, merged with the built-in tool pool                     |
 | `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` / `auto` |
 | `canUseTool`         | `function`                              | —                      | Custom permission callback                                           |
