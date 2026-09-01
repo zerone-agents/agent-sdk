@@ -1307,6 +1307,45 @@ describe('QueryEngine message timestamps (issue #54)', () => {
     expect(historyUser?.content).toEqual(input)
   })
 
+  it('snapshots rich input: caller mutation after the first event cannot corrupt history or provider requests', async () => {
+    const captured: any[] = []
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        throw new Error('not used')
+      },
+      async *createMessageStream(params): AsyncGenerator<StreamChunk> {
+        captured.push(...params.messages)
+        yield { type: 'text', index: 0, delta: 'ok' }
+        yield { type: 'done', index: -1 }
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider))
+    type ImageBlock = Extract<ContentBlockParam, { type: 'image' }>
+    const imgBlock: ImageBlock = {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' },
+    }
+    const blocks: ContentBlockParam[] = [{ type: 'text', text: 'original' }, imgBlock]
+    for await (const ev of engine.submitMessage(blocks)) {
+      if (ev.type === 'user') {
+        // Caller mutates the submitted array mid-flight — the engine must
+        // have snapshotted the content before yielding the user event.
+        blocks[0] = { type: 'text', text: 'mutated-after-yield' }
+        imgBlock.source = { type: 'base64', media_type: 'image/jpeg', data: 'bXV0YXRlZA==' }
+      }
+    }
+
+    const expected: ContentBlockParam[] = [
+      { type: 'text', text: 'original' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+    ]
+    const userMsg = captured.find((m) => m.role === 'user')
+    expect(userMsg?.content).toEqual(expected)
+    const historyUser = engine.getMessages().find((m) => m.role === 'user')
+    expect(historyUser?.content).toEqual(expected)
+  })
+
   it('retains an image when micro-compaction brings the request under the limit (#54 review)', async () => {
     const bigTool: ToolDefinition = {
       name: 'bigdata',

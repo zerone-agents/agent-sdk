@@ -199,12 +199,22 @@ export class QueryEngine {
   async *submitMessage(
     prompt: AgentInput,
   ): AsyncGenerator<SDKMessage> {
+    // Snapshot rich input at the engine boundary (issue #60 review): callers
+    // may mutate the blocks array (or nested block objects) while the async
+    // loop is in flight — after the user event is yielded but before the
+    // provider call. History, provider requests, hooks, and persistence must
+    // all observe the content as submitted, so freeze it before anything is
+    // yielded. Strings are immutable and skip the copy. structuredClone
+    // throws on non-cloneable values (functions, Proxies) — an honest
+    // boundary failure instead of silent content divergence downstream.
+    const content = typeof prompt === 'string' ? prompt : structuredClone(prompt)
+
     // Hook: SessionStart
     await this.executeHooks('SessionStart')
 
     // Hook: UserPromptSubmit
     const userHookResults = await this.executeHooks('UserPromptSubmit', {
-      toolInput: prompt,
+      toolInput: content,
     })
     // Check if any hook blocks the submission
     if (userHookResults.some((r) => r.block)) {
@@ -223,7 +233,7 @@ export class QueryEngine {
     // Add user message
     const userMessageId = crypto.randomUUID()
     const userTimestamp = new Date().toISOString()
-    this.messages.push({ role: 'user', content: prompt, id: userMessageId, timestamp: userTimestamp })
+    this.messages.push({ role: 'user', content, id: userMessageId, timestamp: userTimestamp })
 
     // Emit the user message id so callers (e.g. host applications) can target it for revert.
     yield { type: 'user', uuid: userMessageId, timestamp: userTimestamp } as SDKMessage
