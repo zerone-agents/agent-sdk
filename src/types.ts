@@ -364,8 +364,7 @@ export interface SkillContext extends ToolContext {
 
 /** Context available to subagent-spawning tools (Task/MultiTask). */
 export interface SubagentContext extends ToolContext {
-  env: AgentEnvironment
-  /** Runtime-global environment (issue #72); replaces env in 3.0 */
+  /** Runtime-global environment inherited from the parent session (issue #72). */
   runtime: RuntimeEnvironment
   subAgents: Record<string, AgentDefinition>
   /**
@@ -920,9 +919,7 @@ export interface QueryResult {
 // --------------------------------------------------------------------------
 
 export interface QueryEngineConfig {
-  /** Session-level shared "world" (provider, model, cwd, tool pools, skill registry) */
-  env: AgentEnvironment
-  /** Runtime-global environment (issue #72); replaces env in 3.0 */
+  /** Runtime-global environment shared by every agent in the session (issue #72). */
   runtime: RuntimeEnvironment
   /** The agent's effective capabilities, resolved once by resolveAgent */
   resolved: ResolvedAgent

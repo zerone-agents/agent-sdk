@@ -72,7 +72,7 @@ export interface ToolPermissionResult {
 export interface ToolExecutionContext {
   config: Pick<
     QueryEngineConfig,
-    'env' | 'runtime' | 'resolved' | 'subAgents' | 'canUseTool' | 'abortSignal' | 'agentId'
+    'runtime' | 'resolved' | 'subAgents' | 'canUseTool' | 'abortSignal' | 'agentId'
   >
   messages: NormalizedMessageParam[]
   sessionId: string
@@ -303,7 +303,7 @@ export async function runToolsBackground(
   }
 
   const makeContext = (block: ToolUseBlock): EngineToolContext => ({
-    cwd: ctx.config.env.cwd,
+    cwd: ctx.config.runtime.cwd,
     abortSignal: ctx.config.abortSignal,
     agentId: ctx.config.agentId,
     sessionId: ctx.sessionId,
@@ -311,12 +311,11 @@ export async function runToolsBackground(
     // Per-agent tool services (use provided or create empty)
     services: ctx.config.resolved.services,
     // Pre-computed subprocess env for Bash/Grep
-    subprocessEnv: ctx.config.env.subprocessEnv,
+    subprocessEnv: ctx.config.runtime.subprocessEnv,
     // SkillContext
     resolvedSkills: ctx.config.resolved.skills,
     skillRegistry: ctx.config.resolved.skillRegistry,
     // SubagentContext
-    env: ctx.config.env,
     runtime: ctx.config.runtime,
     subAgents: ctx.config.subAgents ?? {},
     emitEvent: emitSubagentEvent

@@ -81,16 +81,6 @@ function buildConfig(
 ): QueryEngineConfig {
   const canUseTool: CanUseToolFn = async () => ({ behavior: 'allow' })
   return {
-    env: {
-      provider,
-      model: 'test-model',
-      maxTokens: 1024,
-      cwd: process.cwd(),
-      customTools: [],
-      mcpTools: [],
-      skillRegistry: new SkillRegistry(),
-      subprocessEnv: {},
-    },
     runtime: {
       provider,
       model: 'test-model',

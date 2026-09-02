@@ -4,14 +4,6 @@ import type { QueryEngineConfig } from '../types.js'
 
 function makeConfig(overrides: Partial<QueryEngineConfig> = {}): QueryEngineConfig {
   return {
-    env: {
-      cwd: '/test',
-      model: 'test-model',
-      provider: {} as any,
-      tools: [],
-      skills: [],
-      settingSources: [],
-    },
     runtime: {
       provider: {} as any,
       model: 'test-model',
@@ -85,14 +77,6 @@ describe('buildEnvironmentPrompt', () => {
 
   it('includes <sources> block when settingSources is non-empty', async () => {
     const config = makeConfig({
-      env: {
-        cwd: '/test/project',
-        model: 'test-model',
-        provider: {} as any,
-        tools: [],
-        skills: [],
-        settingSources: ['user', 'project'],
-      },
       runtime: {
         provider: {} as any,
         model: 'test-model',

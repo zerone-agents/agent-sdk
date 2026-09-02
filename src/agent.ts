@@ -21,7 +21,6 @@
 import type {
   AgentOptions,
   AgentDefinition,
-  AgentEnvironment,
   AgentCapabilities,
   RuntimeEnvironment,
   QueryResult,
@@ -587,14 +586,6 @@ export class Agent {
     const resolved = resolveAgentCapabilities(runtime, rootCaps, mergedDefinition, {
       skillRegistry: this.skillRegistry,
     })
-    // Legacy session env (removed in 3.0): carries the parent tool pools for
-    // the SubagentContext bridge until spawn isolation lands (issue #72).
-    const env: AgentEnvironment = {
-      ...runtime,
-      customTools: rootCaps.customTools ?? [],
-      mcpTools: this.toolPool,
-      skillRegistry: this.skillRegistry,
-    }
 
     // Sync from previous engine — external modifications (e.g. revert)
     // may have changed engine.messages without updating this.history
@@ -604,7 +595,6 @@ export class Agent {
 
     // Create query engine with current conversation state
     const engine = new QueryEngine({
-      env,
       runtime,
       resolved,
       subAgents: opts.subAgents,
