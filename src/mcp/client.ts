@@ -230,6 +230,18 @@ async function connectOnce(
 }
 
 /**
+ * Single-line, injection-safe representation of a log field (issue #77).
+ * JSON.stringify escapes every control character (incl. \n, \r, C0/C1) and
+ * adds explicit quote boundaries; over-length values are truncated. Underlying
+ * Error.message never enters logs — this only sanitizes host-chosen fields
+ * like the server name.
+ */
+export function sanitizeLogField(value: string, maxLength = 128): string {
+  const s = JSON.stringify(value)
+  return s.length > maxLength ? s.slice(0, maxLength - 2) + '…"' : s
+}
+
+/**
  * Connect to an MCP server and fetch its tools.
  */
 export async function connectMCPServer(
@@ -248,12 +260,19 @@ export async function connectMCPServer(
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
       if (attempt < maxRetries) {
-        console.warn(`[MCP] Retrying connection to "${name}" (attempt ${attempt + 2}/${maxRetries + 1})`)
+        console.warn('[MCP] Retrying connection', {
+          server: sanitizeLogField(name),
+          attempt: attempt + 2,
+          maxAttempts: maxRetries + 1,
+        })
       }
     }
   }
 
-  console.error(`[MCP] Failed to connect to "${name}": ${lastError!.message}`)
+  console.error('[MCP] Failed to connect to server', {
+    server: sanitizeLogField(name),
+    errorType: lastError!.name,
+  })
   return {
     name,
     status: 'error',

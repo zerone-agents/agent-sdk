@@ -684,3 +684,60 @@ describe('root capabilities seam (issue #72, PR #73 review)', () => {
     expect(names).toContain('top_custom')
   })
 })
+
+describe('Agent MCP failure log sanitization (issue #77)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('Skipped log omits connection error text', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      vi.mocked(acquireMCPConnection).mockResolvedValueOnce({
+        name: 'prod-db',
+        status: 'error',
+        tools: [],
+        error: new Error('handshake failed: https://user:sekret@host/api'),
+        close: async () => {},
+      } as any)
+      const agent = new Agent(makeBaseOptions({
+        mcpServers: { 'prod-db': { type: 'stdio', command: 'echo' } },
+      }))
+
+      await getPoolTools(agent)
+
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const [msg, fields] = warnSpy.mock.calls[0]
+      expect(msg).toBe('[MCP] Skipped server')
+      expect(JSON.stringify(warnSpy.mock.calls[0])).not.toContain('sekret')
+      expect(JSON.stringify(warnSpy.mock.calls[0])).not.toContain('https://user')
+      expect(fields.errorType).toBe('Error')
+      expect(fields.server).toBe('"prod-db"')
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('connect-throw log omits error text', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      vi.mocked(acquireMCPConnection).mockRejectedValueOnce(
+        new Error('spawn ENOENT /home/u/secret-path/bin token=x'),
+      )
+      const agent = new Agent(makeBaseOptions({
+        mcpServers: { 'prod-db': { type: 'stdio', command: 'echo' } },
+      }))
+
+      await getPoolTools(agent)
+
+      expect(errSpy).toHaveBeenCalledTimes(1)
+      const [msg, fields] = errSpy.mock.calls[0]
+      expect(msg).toBe('[MCP] Failed to connect to server')
+      expect(JSON.stringify(errSpy.mock.calls[0])).not.toContain('secret-path')
+      expect(JSON.stringify(errSpy.mock.calls[0])).not.toContain('token=x')
+      expect(fields.errorType).toBe('Error')
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+})
