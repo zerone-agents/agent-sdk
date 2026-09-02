@@ -293,7 +293,7 @@ export {
   microCompactMessages,
   pruneMessages,
   createAutoCompactState,
-  PRUNE_PROTECTED_TURNS,
+  PRUNE_PROTECTED_QUERIES,
   PRUNE_THRESHOLD_CHARS,
   PROTECTED_TOOL_NAMES,
 } from './utils/compact.js'

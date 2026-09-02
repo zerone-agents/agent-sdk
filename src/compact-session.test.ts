@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import { compactSessionStream, compactSession } from './compact-session.js'
 import { loadSession, saveSession, deleteSession } from './session.js'
-import { shouldAutoCompact, PRUNE_PROTECTED_TURNS, createAutoCompactState } from './utils/compact.js'
+import { shouldAutoCompact, PRUNE_PROTECTED_QUERIES, createAutoCompactState } from './utils/compact.js'
 import type { LLMProvider, StreamChunk, NormalizedMessageParam } from './providers/types.js'
 
 /**
@@ -398,6 +398,6 @@ describe('compactSessionStream (issue #46)', () => {
   it('exposes the same default protected-turn count as Agent.compactStream()', () => {
     // The default is wired through in compact-session.ts; assert the constant
     // contract so a change to either default must consciously update both.
-    expect(PRUNE_PROTECTED_TURNS).toBe(4)
+    expect(PRUNE_PROTECTED_QUERIES).toBe(4)
   })
 })

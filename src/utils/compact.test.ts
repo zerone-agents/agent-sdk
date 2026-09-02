@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   compactConversationWithProtectedTail,
   createAutoCompactState,
-  PRUNE_PROTECTED_TURNS,
+  PRUNE_PROTECTED_QUERIES,
 } from './compact.js'
 import type { LLMProvider, CreateMessageResponse } from '../providers/types.js'
 import type { NormalizedMessageParam } from '../providers/types.js'
@@ -41,14 +41,14 @@ describe('compactConversationWithProtectedTail protectedTurns', () => {
     eightTurns.push(userMsg(`turn${i}`), assistantMsg(`resp${i}`))
   }
 
-  it('defaults to PRUNE_PROTECTED_TURNS tail when arg omitted', async () => {
+  it('defaults to PRUNE_PROTECTED_QUERIES tail when arg omitted', async () => {
     const result = await drain(compactConversationWithProtectedTail(
       summaryProvider(), 'm', eightTurns, createAutoCompactState(),
     ))
     expect(result.summary).toBe('SUMMARY')
     // [summary-user, summary-assistant, ...tail, lastMsg]
     const kept = JSON.stringify(result.messages.slice(2))
-    expect(kept).toContain(`turn${8 - PRUNE_PROTECTED_TURNS + 1}`) // turn5 when 4
+    expect(kept).toContain(`turn${8 - PRUNE_PROTECTED_QUERIES + 1}`) // turn5 when 4
     expect(kept).not.toContain('turn1')
   })
 
