@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   compactConversationWithProtectedTail,
+  computeProtectedBoundary,
   createAutoCompactState,
   PRUNE_PROTECTED_QUERIES,
+  TOOL_PROTECTED_QUERIES,
 } from './compact.js'
 import type { LLMProvider, CreateMessageResponse } from '../providers/types.js'
 import type { NormalizedMessageParam } from '../providers/types.js'
@@ -176,4 +178,74 @@ describe('compaction timestamps (issue #54)', () => {
     expect(result.summary).toBe('')
     expect(result.messages.map((m) => m.timestamp)).toEqual(before)
   })
+})
+
+/** One query = [user prompt, assistant tool_use, user tool_result wrapper]. */
+function toolRound(prompt: string, id: string, resultText: string): NormalizedMessageParam[] {
+  return [
+    userMsg(prompt),
+    { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: {} }] } as unknown as NormalizedMessageParam,
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: resultText }] } as unknown as NormalizedMessageParam,
+  ]
+}
+
+describe('computeProtectedBoundary (query-range primitive)', () => {
+  it('returns the index of the Nth-from-last real query start', () => {
+    const msgs: NormalizedMessageParam[] = []
+    for (let i = 1; i <= 6; i++) msgs.push(...toolRound(`q${i}`, `id${i}`, 'ok'))
+    // query-start indices: 0,3,6,9,12,15; last 4 → boundary at index 6
+    expect(computeProtectedBoundary(msgs, 4)).toBe(6)
+  })
+
+  it('tool_result wrapper messages do not consume a slot', () => {
+    const msgs = [...toolRound('q1', 'a', 'ok'), ...toolRound('q2', 'b', 'ok')]
+    expect(computeProtectedBoundary(msgs, 1)).toBe(3) // q2's index, not its wrapper
+  })
+
+  it('a pending user query (no results yet) legitimately occupies a slot', () => {
+    const msgs = [...toolRound('q1', 'a', 'ok'), ...toolRound('q2', 'b', 'ok'), userMsg('q3 pending')]
+    // last 1 = q3 pending (index 6); last 2 = q2 (index 3)
+    expect(computeProtectedBoundary(msgs, 1)).toBe(6)
+    expect(computeProtectedBoundary(msgs, 2)).toBe(3)
+  })
+
+  it('queries >= count protects everything (boundary 0); <= 0 protects nothing (boundary length)', () => {
+    const msgs = [...toolRound('q1', 'a', 'ok')]
+    expect(computeProtectedBoundary(msgs, 4)).toBe(0)
+    expect(computeProtectedBoundary(msgs, 0)).toBe(msgs.length)
+  })
+
+  it('no real query → boundary 0', () => {
+    const msgs: NormalizedMessageParam[] = [assistantMsg('x')]
+    expect(computeProtectedBoundary(msgs, 4)).toBe(0)
+  })
+
+  it('PRECEDENCE: queries <= 0 wins even when the window has no real query', () => {
+    // A window that is ONLY a tool_result wrapper (no real query start).
+    const wrapper: NormalizedMessageParam[] = [
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'x' }] } as unknown as NormalizedMessageParam,
+    ]
+    expect(computeProtectedBoundary(wrapper, 0)).toBe(1) // 0 = no protection → clearable
+    expect(computeProtectedBoundary(wrapper, 4)).toBe(0) // positive + no query → all protected
+  })
+
+  it('MIXED-CONTENT: a [text, tool_result] user message IS a query start', () => {
+    const msgs: NormalizedMessageParam[] = [
+      ...toolRound('q1', 'a', 'ok'),
+      { role: 'user', content: [
+        { type: 'text', text: '继续处理这个结果' },
+        { type: 'tool_result', tool_use_id: 'b', content: 'r' },
+      ] } as unknown as NormalizedMessageParam,
+      assistantMsg('resp'),
+    ]
+    // Query starts = q1 (index 0) and the MIXED message (index 3) — identical
+    // semantics to session-queries.test.ts:142. Last 1 → boundary at 3.
+    // (The deleted compact.ts variant `!some(tool_result)` would have said
+    // boundary 0 — this test pins the unified predicate.)
+    expect(computeProtectedBoundary(msgs, 1)).toBe(3)
+  })
+})
+
+it('TOOL_PROTECTED_QUERIES defaults to 2', () => {
+  expect(TOOL_PROTECTED_QUERIES).toBe(2)
 })

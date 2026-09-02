@@ -14,8 +14,13 @@ import type { SDKCompactMessage } from '../types.js'
 import {
   getAutoCompactThreshold,
 } from './tokens.js'
+import { isUserQuery } from './session-queries.js'
 
 export const PRUNE_PROTECTED_QUERIES = 4
+
+/** Recent queries that keep full tool_result payloads at compaction time
+ *  (nested inside the protectedQueries-wide verbatim tail; see spec v4 §4). */
+export const TOOL_PROTECTED_QUERIES = 2
 export const PRUNE_THRESHOLD_CHARS = 20_000
 
 /**
@@ -23,6 +28,29 @@ export const PRUNE_THRESHOLD_CHARS = 20_000
  * Skill instructions must persist in full for the duration of the conversation.
  */
 export const PROTECTED_TOOL_NAMES = new Set<string>(['Skill'])
+
+/**
+ * Start index of the protected window = the index of the `queries`-th-from-last
+ * real query start — counted with the SHARED isUserQuery (imported from
+ * session-queries: pure tool_result wrappers do NOT count; a pending user
+ * query DOES (accepted variance, spec v4 §4); a MIXED [text, tool_result]
+ * message DOES count as a query start, spec v4.2 §1.1). Protected range
+ * is [boundary, length); clearable is [0, boundary). PRECEDENCE (spec v4.1 §1):
+ * the queries <= 0 check runs FIRST — 0 means fully clearable even when the
+ * window has no real queries; only then does no-queries/queries >= count → 0
+ * (everything protected) apply. Shared by pruneMessages and the compaction
+ * window so all "last N queries" decisions agree on the same range semantics
+ * (P0 fix).
+ */
+export function computeProtectedBoundary(messages: any[], queries: number): number {
+  if (queries <= 0) return messages.length
+  const queryStarts: number[] = []
+  for (let i = 0; i < messages.length; i++) {
+    if (isUserQuery(messages[i])) queryStarts.push(i)
+  }
+  if (queryStarts.length === 0 || queries >= queryStarts.length) return 0
+  return queryStarts[queryStarts.length - queries]
+}
 
 /**
  * Build a lookup map from tool_use_id → tool_name by scanning
@@ -40,21 +68,6 @@ function buildToolNameMap(messages: any[]): Map<string, string> {
     }
   }
   return map
-}
-
-/**
- * Whether a message is a "real" user query (not a tool_result wrapper).
- *
- * In the internal normalized format, tool results are carried by messages with
- * role 'user' (Anthropic convention). These are part of the tool loop, not a
- * new user query, so they must be excluded when counting queries to protect.
- */
-function isUserQuery(msg: any): boolean {
-  if (msg.role !== 'user') return false
-  if (Array.isArray(msg.content)) {
-    return !msg.content.some((b: any) => b && b.type === 'tool_result')
-  }
-  return true
 }
 
 export interface AutoCompactState {
