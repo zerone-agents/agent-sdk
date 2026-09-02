@@ -163,3 +163,24 @@ does not affect `sse` / Streamable HTTP transports.
 | `ZERONE_AGENT_MODEL`         | Default model override                                   |
 | `ZERONE_AGENT_BASE_URL`      | Custom API endpoint                                      |
 | `ZERONE_AGENT_MCP_GRACE_MS`  | MCP server shutdown grace period in ms (default: 30000)  |
+
+## Cron
+
+Node-only subpath `@zerone-agent/agent-sdk/cron/node`. State lives under `<dataDir>/cron/` (default `~/.agents/cron/`): `tasks.json`, `executions.jsonl`, `execution-index.json`, and a single-writer `runtime.lock` (O_EXCL — a crash leaves it behind; the error names the path for manual cleanup).
+
+### Online runtime
+
+`createDefaultCronService({ dataDir?, resolveAgent, ... })` composes file storage + the Agent executor + the directory lock. `start()` acquires `runtime.lock`, recovers interrupted executions, and runs the scheduler; `stop()` drains and releases.
+
+### Offline maintenance (issue #52)
+
+```typescript
+import { withCronMaintenanceSession } from '@zerone-agent/agent-sdk/cron/node'
+
+await withCronMaintenanceSession({ dataDir }, async (service) => {
+  await service.create({ cron: '0 16 * * *', prompt: 'Run the report' })
+  const executions = await service.listExecutions({ limit: 50 })
+})
+```
+
+Short-lived CRUD + execution-history access over the SAME directory: acquires the exact same `runtime.lock` (a running Runtime or another maintenance session fails fast), uses the same adapters and validation as the online service, never starts a Scheduler/timer/Agent executor, never runs startup recovery, and releases the lock when the callback settles. A service reference retained past the session refuses every operation.

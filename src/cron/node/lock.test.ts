@@ -45,4 +45,21 @@ describe('acquireRuntimeLock', () => {
     await lock.release()
     await expect(lock.release()).resolves.toBeUndefined()
   })
+
+  it("a repeated release never removes a NEW owner's lock", async () => {
+    const first = await acquireRuntimeLock(dir)
+    await first.release()
+    const second = await acquireRuntimeLock(dir)
+
+    // The stale owner's repeated release must be a no-op, not an unlink of
+    // the live lock — otherwise a third owner could enter while the second
+    // still holds it (mutual exclusion broken).
+    await first.release()
+    await expect(acquireRuntimeLock(dir)).rejects.toThrow(/already running/)
+
+    await second.release()
+    // And the released directory is free again.
+    const third = await acquireRuntimeLock(dir)
+    await third.release()
+  })
 })

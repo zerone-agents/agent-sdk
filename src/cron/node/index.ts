@@ -3,3 +3,8 @@ export { FileCronStorage } from './file-storage.js'
 export { FileExecutionStore } from './file-execution-store.js'
 export { createDefaultCronService, defaultCronDataDir } from './default.js'
 export type { CreateDefaultCronServiceOptions } from './default.js'
+export { withCronMaintenanceSession } from './maintenance.js'
+export type {
+  CronMaintenanceService,
+  CronMaintenanceSessionOptions,
+} from './maintenance.js'
