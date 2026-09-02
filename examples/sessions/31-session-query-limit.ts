@@ -1,35 +1,35 @@
 /**
- * Example 31: Session Context Round Limit (maxSessionTurns)
+ * Example 31: Session Context Query Limit (maxSessionQueries)
  *
- * Demonstrates how maxSessionTurns bounds the conversation via halved
- * compaction: when the session exceeds N rounds, the older half is
+ * Demonstrates how maxSessionQueries bounds the conversation via halved
+ * compaction: when the session exceeds N queries, the older half is
  * summarized by the LLM and the summary replaces it in the persistent
  * transcript, while the most recent half is kept verbatim.
  *
  * The example runs 5 turns of conversation. Each turn asks the agent to
- * remember a number. With maxSessionTurns: 2, rounds beyond the limit are
+ * remember a number. With maxSessionQueries: 2, queries beyond the limit are
  * compacted into a summary — so the agent can still recall earlier numbers
  * from the summary even though their raw messages are gone.
  *
  * Key points:
  * - On overflow, the persistent transcript is rewritten to
- *   [summary pair, ...recent half] (old raw rounds are NOT preserved)
+ *   [summary pair, ...recent half] (old raw queries are NOT preserved)
  * - Compaction reuses the standard compact flow and emits `compact` events
  * - If the summary call fails, the engine falls back to hard truncation
- * - maxSessionTurns can be set at agent creation or overridden per-query
+ * - maxSessionQueries can be set at agent creation or overridden per-query
  *
  * Run: npx tsx examples/sessions/31-session-turn-limit.ts
  */
-import { createAgent, truncateToLastNTurns } from '../../src/index.js'
+import { createAgent, truncateToLastNQueries } from '../../src/index.js'
 import type { NormalizedMessageParam } from '../../src/providers/types.js'
 
 async function main() {
-  console.log('--- Example 31: Session Context Round Limit (maxSessionTurns) ---\n')
+  console.log('--- Example 31: Session Context Query Limit (maxSessionQueries) ---\n')
 
   const agent = createAgent({
     model: process.env.ZERONE_AGENT_MODEL || 'claude-sonnet-4-6',
     agent: { description: 'Session turn limit agent', prompt: { type: 'preset', preset: 'default' }, maxTurns: 3 },
-    maxSessionTurns: 2,
+    maxSessionQueries: 2,
   })
 
   const turns = [
@@ -43,8 +43,8 @@ async function main() {
   for (let i = 0; i < turns.length; i++) {
     console.log(`> Turn ${i + 1}: ${turns[i]}`)
     const result = await agent.prompt(turns[i], {
-      // Dynamically override maxSessionTurns per query
-      maxSessionTurns: i < 4 ? 2 : 3,
+      // Dynamically override maxSessionQueries per query
+      maxSessionQueries: i < 4 ? 2 : 3,
     })
     console.log(`  ${result.text}`)
     console.log(`  Tokens: ${result.usage.input_tokens} in / ${result.usage.output_tokens} out`)
@@ -52,10 +52,10 @@ async function main() {
     console.log(`  Engine history:  ${(await agent.getMessageHistory()).length} messages (post-compaction)\n`)
   }
 
-  // Show the persistent transcript: old rounds have been replaced by a
-  // summary, recent rounds remain verbatim.
+  // Show the persistent transcript: old queries have been replaced by a
+  // summary, recent queries remain verbatim.
   const fullMessages = await agent.getMessageHistory()
-  console.log('--- Persistent transcript (older rounds compacted into a summary) ---')
+  console.log('--- Persistent transcript (older queries compacted into a summary) ---')
   for (const msg of fullMessages) {
     const role = msg.role
     const content = msg.content
@@ -70,9 +70,9 @@ async function main() {
     }
   }
 
-  // Demonstrate the utility function directly. truncateToLastNTurns is the
+  // Demonstrate the utility function directly. truncateToLastNQueries is the
   // hard-truncation fallback used when the summary call fails.
-  console.log('\n--- truncateToLastNTurns() utility demo (fallback path) ---')
+  console.log('\n--- truncateToLastNQueries() utility demo (fallback path) ---')
   const sampleMessages: NormalizedMessageParam[] = [
     { role: 'user', content: 'turn 1' },
     { role: 'assistant', content: 'response 1' },
@@ -81,9 +81,9 @@ async function main() {
     { role: 'user', content: 'turn 3' },
     { role: 'assistant', content: 'response 3' },
   ]
-  const last2 = truncateToLastNTurns(sampleMessages, 2)
-  console.log(`  Original: ${sampleMessages.length} messages (3 rounds)`)
-  console.log(`  After truncateToLastNTurns(msgs, 2): ${last2.length} messages (last 2 rounds)`)
+  const last2 = truncateToLastNQueries(sampleMessages, 2)
+  console.log(`  Original: ${sampleMessages.length} messages (3 queries)`)
+  console.log(`  After truncateToLastNQueries(msgs, 2): ${last2.length} messages (last 2 queries)`)
   console.log(`  First message: ${(last2[0].content as string)}\n`)
 
   await agent.close()
