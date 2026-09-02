@@ -415,30 +415,23 @@ function buildCompactionPrompt(messages: any[]): string {
 }
 
 /**
- * Micro-compact: optimize messages by truncating large tool results
- * to fit within token budgets.
+ * In-place: clears oversized tool_result payloads OUTSIDE the protected window
+ * (the last `protectedQueries` real queries, by RANGE via
+ * computeProtectedBoundary — P0 fix: the previous index-set check could never
+ * match tool_result wrapper messages, so nothing was ever protected).
+ * Public contract unchanged (void + mutates input). Preserves tool_use blocks,
+ * pairing, and Skill results. Default = PRUNE_PROTECTED_QUERIES.
  */
-export function pruneMessages(messages: any[]): void {
-  const userMsgIndices: number[] = []
-  for (let i = 0; i < messages.length; i++) {
-    if (isUserQuery(messages[i])) {
-      userMsgIndices.push(i)
-    }
-  }
-
-  const protectedStart = Math.max(0, userMsgIndices.length - PRUNE_PROTECTED_QUERIES)
-  const protectedIndices = new Set(
-    userMsgIndices.slice(protectedStart),
-  )
-
+export function pruneMessages(
+  messages: any[],
+  protectedQueries: number = PRUNE_PROTECTED_QUERIES,
+): void {
+  const boundary = computeProtectedBoundary(messages, protectedQueries)
   const toolNameMap = buildToolNameMap(messages)
-
   for (let i = 0; i < messages.length; i++) {
-    if (protectedIndices.has(i)) continue
-
+    if (i >= boundary) continue // protected range [boundary, length): skip wholesale
     const msg = messages[i]
     if (msg.role !== 'user' || !Array.isArray(msg.content)) continue
-
     for (const block of msg.content) {
       if (
         block.type === 'tool_result' &&
@@ -447,7 +440,6 @@ export function pruneMessages(messages: any[]): void {
       ) {
         const toolName = toolNameMap.get(block.tool_use_id)
         if (toolName && PROTECTED_TOOL_NAMES.has(toolName)) continue
-
         block.content = '[Old tool result content cleared]'
       }
     }

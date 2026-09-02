@@ -4,6 +4,8 @@ import {
   computeProtectedBoundary,
   createAutoCompactState,
   PRUNE_PROTECTED_QUERIES,
+  pruneMessages,
+  PRUNE_THRESHOLD_CHARS,
   TOOL_PROTECTED_QUERIES,
 } from './compact.js'
 import type { LLMProvider, CreateMessageResponse } from '../providers/types.js'
@@ -248,4 +250,80 @@ describe('computeProtectedBoundary (query-range primitive)', () => {
 
 it('TOOL_PROTECTED_QUERIES defaults to 2', () => {
   expect(TOOL_PROTECTED_QUERIES).toBe(2)
+})
+
+const BIG = 'x'.repeat(PRUNE_THRESHOLD_CHARS + 1)
+
+function bigToolRound(prompt: string, id: string, name = 'Read'): NormalizedMessageParam[] {
+  return [
+    userMsg(prompt),
+    { role: 'assistant', content: [{ type: 'tool_use', id, name, input: {} }] } as unknown as NormalizedMessageParam,
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: BIG }] } as unknown as NormalizedMessageParam,
+  ]
+}
+
+describe('pruneMessages — P0 range protection (behavior change #1)', () => {
+  it('protects the last N queries RANGE and clears older big results', () => {
+    const msgs: NormalizedMessageParam[] = []
+    for (let i = 1; i <= 6; i++) msgs.push(...bigToolRound(`q${i}`, `id${i}`))
+    pruneMessages(msgs, 4)
+    // boundary at q3 (index 6): q1/q2 rounds cleared, q3..q6 retained
+    expect((msgs[2] as any).content[0].content).toBe('[Old tool result content cleared]') // q1 result
+    expect((msgs[5] as any).content[0].content).toBe('[Old tool result content cleared]') // q2 result
+    expect((msgs[8] as any).content[0].content).toBe(BIG) // q3 result
+    expect((msgs[17] as any).content[0].content).toBe(BIG) // q6 result
+  })
+
+  it('mutates in place and returns void (public contract unchanged)', () => {
+    const msgs = bigToolRound('q1', 'a')
+    const ret = pruneMessages(msgs, 0)
+    expect(ret).toBeUndefined()
+    expect((msgs[2] as any).content[0].content).toBe('[Old tool result content cleared]') // input itself mutated
+  })
+
+  it('default protectedQueries = PRUNE_PROTECTED_QUERIES (4)', () => {
+    const msgs: NormalizedMessageParam[] = []
+    for (let i = 1; i <= 6; i++) msgs.push(...bigToolRound(`q${i}`, `id${i}`))
+    pruneMessages(msgs) // no second arg
+    expect((msgs[2] as any).content[0].content).toBe('[Old tool result content cleared]')
+    expect((msgs[8] as any).content[0].content).toBe(BIG)
+  })
+
+  it('leaves results under the threshold untouched', () => {
+    const msgs: NormalizedMessageParam[] = [
+      userMsg('q1'),
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Read', input: {} }] } as unknown as NormalizedMessageParam,
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'small' }] } as unknown as NormalizedMessageParam,
+    ]
+    pruneMessages(msgs, 0)
+    expect((msgs[2] as any).content[0].content).toBe('small')
+  })
+
+  it('never clears a Skill tool_result even outside the window', () => {
+    const msgs = bigToolRound('q1', 'a', 'Skill')
+    pruneMessages(msgs, 0)
+    expect((msgs[2] as any).content[0].content).toBe(BIG)
+  })
+
+  it('preserves tool_use blocks and tool_use↔tool_result pairing', () => {
+    const msgs = bigToolRound('q1', 'a')
+    pruneMessages(msgs, 0)
+    expect((msgs[1] as any).content[0].type).toBe('tool_use')
+    expect((msgs[2] as any).content[0].type).toBe('tool_result')
+    expect((msgs[2] as any).content[0].tool_use_id).toBe('a')
+  })
+
+  it('MIXED-CONTENT query start: its own tool_result is protected in-window', () => {
+    const msgs: NormalizedMessageParam[] = [
+      ...bigToolRound('q1', 'a'),
+      { role: 'user', content: [
+        { type: 'text', text: '继续处理这个结果' },
+        { type: 'tool_result', tool_use_id: 'b', content: BIG },
+      ] } as unknown as NormalizedMessageParam,
+    ]
+    // Query starts = q1 (0) and the mixed message (3); protect last 1 → boundary 3
+    pruneMessages(msgs, 1)
+    expect((msgs[2] as any).content[0].content).toBe('[Old tool result content cleared]') // q1's result: older query → cleared
+    expect((msgs[3] as any).content[1].content).toBe(BIG) // mixed message's own result: in-window → KEPT
+  })
 })
