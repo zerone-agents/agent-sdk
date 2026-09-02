@@ -14,8 +14,13 @@ import type { SDKCompactMessage } from '../types.js'
 import {
   getAutoCompactThreshold,
 } from './tokens.js'
+import { isUserQuery } from './session-queries.js'
 
 export const PRUNE_PROTECTED_QUERIES = 4
+
+/** Recent queries that keep full tool_result payloads at compaction time
+ *  (nested inside the protectedQueries-wide verbatim tail; see spec v4 §4). */
+export const TOOL_PROTECTED_QUERIES = 2
 export const PRUNE_THRESHOLD_CHARS = 20_000
 
 /**
@@ -23,6 +28,32 @@ export const PRUNE_THRESHOLD_CHARS = 20_000
  * Skill instructions must persist in full for the duration of the conversation.
  */
 export const PROTECTED_TOOL_NAMES = new Set<string>(['Skill'])
+
+/**
+ * Start index of the protected window = the index of the `queries`-th-from-last
+ * real query start — counted with the SHARED isUserQuery (imported from
+ * session-queries: pure tool_result wrappers do NOT count; a pending user
+ * query DOES (accepted variance, spec v4 §4); a MIXED [text, tool_result]
+ * message DOES count as a query start, spec v4.2 §1.1). Protected range
+ * is [boundary, length); clearable is [0, boundary). PRECEDENCE (spec v4.1 §1):
+ * the queries <= 0 check runs FIRST — 0 means fully clearable even when the
+ * window has no real queries; only then does no-queries/queries >= count → 0
+ * (everything protected) apply. Shared by pruneMessages and the compaction
+ * window so all "last N queries" decisions agree on the same range semantics
+ * (P0 fix).
+ */
+function computeProtectedBoundary(
+  messages: NormalizedMessageParam[],
+  queries: number,
+): number {
+  if (queries <= 0) return messages.length
+  const queryStarts: number[] = []
+  for (let i = 0; i < messages.length; i++) {
+    if (isUserQuery(messages[i])) queryStarts.push(i)
+  }
+  if (queryStarts.length === 0 || queries >= queryStarts.length) return 0
+  return queryStarts[queryStarts.length - queries]
+}
 
 /**
  * Build a lookup map from tool_use_id → tool_name by scanning
@@ -40,21 +71,6 @@ function buildToolNameMap(messages: any[]): Map<string, string> {
     }
   }
   return map
-}
-
-/**
- * Whether a message is a "real" user query (not a tool_result wrapper).
- *
- * In the internal normalized format, tool results are carried by messages with
- * role 'user' (Anthropic convention). These are part of the tool loop, not a
- * new user query, so they must be excluded when counting queries to protect.
- */
-function isUserQuery(msg: any): boolean {
-  if (msg.role !== 'user') return false
-  if (Array.isArray(msg.content)) {
-    return !msg.content.some((b: any) => b && b.type === 'tool_result')
-  }
-  return true
 }
 
 export interface AutoCompactState {
@@ -282,6 +298,11 @@ export async function compactConversation(
  * verbatim). The last message and the most recent PRUNE_PROTECTED_QUERIES user
  * queries are protected; everything before that is summarized via
  * compactConversationStream. Reassembles [summary, ...tail, lastMessage].
+ * The split boundary is the SHARED computeProtectedBoundary primitive (single
+ * truth, spec v4.4 §4). A cutoff of 0 means the history is fully protected
+ * (no real user query, or protectedQueries >= query count): nothing is
+ * summarizable, so the provider is NOT called and the input array comes back
+ * unchanged — same contract shape as the <2 / failure identity paths.
  *
  * Used by both auto-compaction and manual `compact()` triggers so that both
  * paths share identical behavior.
@@ -292,6 +313,7 @@ export async function* compactConversationWithProtectedTail(
   messages: NormalizedMessageParam[],
   state: AutoCompactState,
   protectedQueries: number = PRUNE_PROTECTED_QUERIES,
+  toolProtectedQueries: number = TOOL_PROTECTED_QUERIES,
 ): AsyncGenerator<SDKCompactMessage, {
   messages: NormalizedMessageParam[]
   state: AutoCompactState
@@ -305,17 +327,10 @@ export async function* compactConversationWithProtectedTail(
   const lastMsg = messages[messages.length - 1]
   const historyMsgs = messages.slice(0, -1)
 
-  const userMsgIndices: number[] = []
-  for (let i = 0; i < historyMsgs.length; i++) {
-    if (isUserQuery(historyMsgs[i])) {
-      userMsgIndices.push(i)
-    }
-  }
-  const protectedStart = Math.max(0, userMsgIndices.length - protectedQueries)
-  const cutoffIndex = protectedStart < userMsgIndices.length
-    ? userMsgIndices[protectedStart]
-    : historyMsgs.length
-
+  // 唯一边界真值；cutoff===0 即全保护（无真实 query，或 protectedQueries>=query 数）
+  // → 无可摘要内容：不调 provider，原样恒等返回（与 <2/失败契约同形）。
+  const cutoffIndex = computeProtectedBoundary(historyMsgs, protectedQueries)
+  if (cutoffIndex === 0) return { messages, state, summary: '' }
   const headMsgs = historyMsgs.slice(0, cutoffIndex)
   const tailMsgs = historyMsgs.slice(cutoffIndex)
 
@@ -325,15 +340,28 @@ export async function* compactConversationWithProtectedTail(
   const result: CompactResult = yield* compactConversationStream(
     provider,
     model,
-    headMsgs as any[],
+    headMsgs,
     state,
   )
 
+  // Failure / empty summary → return the caller's array UNCHANGED (identity,
+  // never re-assembled, never pruned) — compaction failure contract.
+  if (result.summary.length === 0) {
+    return { messages, state: result.state, summary: '' }
+  }
+
+  // Success → prune ONLY the recent window [...tail, lastMsg] (the leading
+  // summary pair is excluded so it cannot consume a protected slot; lastMsg IS
+  // included — a pending user query legitimately occupies a slot, spec v4 §4).
+  const prunedRecent = pruneForCompaction([
+    ...tailMsgs,
+    lastMsg,
+  ], toolProtectedQueries)
+
   return {
     messages: [
-      ...result.compactedMessages as NormalizedMessageParam[],
-      ...tailMsgs as NormalizedMessageParam[],
-      lastMsg,
+      ...(result.compactedMessages as NormalizedMessageParam[]),
+      ...prunedRecent,
     ],
     state: result.state,
     summary: result.summary,
@@ -402,30 +430,25 @@ function buildCompactionPrompt(messages: any[]): string {
 }
 
 /**
- * Micro-compact: optimize messages by truncating large tool results
- * to fit within token budgets.
+ * In-place: clears oversized tool_result payloads OUTSIDE the protected window
+ * (the last `protectedQueries` real queries, by RANGE via
+ * computeProtectedBoundary — P0 fix: the previous index-set check could never
+ * match tool_result wrapper messages, so nothing was ever protected).
+ * Public contract unchanged (void + mutates input). Preserves tool_use blocks,
+ * pairing, and Skill results. Default = PRUNE_PROTECTED_QUERIES.
  */
-export function pruneMessages(messages: any[]): void {
-  const userMsgIndices: number[] = []
-  for (let i = 0; i < messages.length; i++) {
-    if (isUserQuery(messages[i])) {
-      userMsgIndices.push(i)
-    }
-  }
-
-  const protectedStart = Math.max(0, userMsgIndices.length - PRUNE_PROTECTED_QUERIES)
-  const protectedIndices = new Set(
-    userMsgIndices.slice(protectedStart),
-  )
-
+// `any[]` is the published package-root signature since v2.0.0 — kept for
+// back-compat; narrowing it would break existing external callers.
+export function pruneMessages(
+  messages: any[],
+  protectedQueries: number = PRUNE_PROTECTED_QUERIES,
+): void {
+  const boundary = computeProtectedBoundary(messages, protectedQueries)
   const toolNameMap = buildToolNameMap(messages)
-
   for (let i = 0; i < messages.length; i++) {
-    if (protectedIndices.has(i)) continue
-
+    if (i >= boundary) continue // protected range [boundary, length): skip wholesale
     const msg = messages[i]
     if (msg.role !== 'user' || !Array.isArray(msg.content)) continue
-
     for (const block of msg.content) {
       if (
         block.type === 'tool_result' &&
@@ -434,11 +457,35 @@ export function pruneMessages(messages: any[]): void {
       ) {
         const toolName = toolNameMap.get(block.tool_use_id)
         if (toolName && PROTECTED_TOOL_NAMES.has(toolName)) continue
-
         block.content = '[Old tool result content cleared]'
       }
     }
   }
+}
+
+/**
+ * Immutable wrapper used ONLY by the compaction path: clones the window one
+ * level deep (message spread + per-block spread — pruneMessages writes only
+ * block.content, so one level suffices), then DELEGATES to the public
+ * in-place pruneMessages on the clone. The clearing algorithm exists only in
+ * pruneMessages (spec v4.1 §3: no duplicated guardrails). Never mutates the
+ * caller's objects — the failure contract requires byte-for-byte identical
+ * inputs, and the success path shares tail/lastMsg references with the caller.
+ * Module-internal (not re-exported at root). Clone depth is pinned by the
+ * "caller objects untouched" test: a too-shallow clone would mutate caller
+ * blocks and turn it red.
+ */
+function pruneForCompaction(
+  messages: NormalizedMessageParam[],
+  protectedQueries: number,
+): NormalizedMessageParam[] {
+  const cloned: NormalizedMessageParam[] = messages.map((msg) =>
+    Array.isArray(msg.content)
+      ? { ...msg, content: msg.content.map((block) => ({ ...block })) }
+      : msg,
+  )
+  pruneMessages(cloned, protectedQueries)
+  return cloned
 }
 
 export function microCompactMessages(

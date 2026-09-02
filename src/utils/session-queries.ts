@@ -1,18 +1,22 @@
 import type { NormalizedMessageParam } from '../providers/types.js'
 
 /**
- * Check if a user message is a "fresh" user input (not a pure tool_result).
- * A fresh user message has either string content or array content containing
- * at least one non-tool_result block.
+ * Check if a user message is a "real" user query (not a pure tool_result
+ * wrapper).
+ *
+ * A user message qualifies if it has string content, or array content
+ * containing at least one non-tool_result block. MIXED-CONTENT rule
+ * (spec v4.2 §1.1): a `[text, tool_result]` user message IS a query start;
+ * only PURE tool_result wrappers (content exclusively tool_result blocks)
+ * are excluded. Semantics pinned by session-queries.test.ts.
  */
-function isFreshUserQuery(msg: NormalizedMessageParam): boolean {
+export function isUserQuery(msg: NormalizedMessageParam): boolean {
   if (msg.role !== 'user') return false
   if (typeof msg.content === 'string') return true
 
   // Array content: fresh if it has at least one non-tool_result block
-  return (msg.content as any[]).some(
-    (block: any) => block.type !== 'tool_result',
-  )
+  // (content narrowed to the block-array union here; every member has .type)
+  return msg.content.some((block) => block.type !== 'tool_result')
 }
 
 /**
@@ -35,7 +39,7 @@ export function truncateToLastNQueries(
   // Find all query boundaries (indices of fresh user messages)
   const boundaries: number[] = []
   for (let i = 0; i < messages.length; i++) {
-    if (isFreshUserQuery(messages[i])) {
+    if (isUserQuery(messages[i])) {
       boundaries.push(i)
     }
   }
@@ -57,7 +61,7 @@ export function truncateToLastNQueries(
 export function countSessionQueries(messages: NormalizedMessageParam[]): number {
   let count = 0
   for (const msg of messages) {
-    if (isFreshUserQuery(msg)) count++
+    if (isUserQuery(msg)) count++
   }
   return count
 }

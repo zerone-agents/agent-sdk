@@ -806,7 +806,7 @@ export class QueryEngine {
    * so callers can surface progress (e.g. a `/compact` command). This is the
    * same algorithm used by auto-compaction, so behavior is identical.
    */
-  async *compactStream(protectedQueries?: number): AsyncGenerator<SDKCompactMessage> {
+  async *compactStream(protectedQueries?: number, toolProtectedQueries?: number): AsyncGenerator<SDKCompactMessage> {
     await this.executeHooks('PreCompact')
     try {
       const gen = compactMessagesStream({
@@ -815,6 +815,7 @@ export class QueryEngine {
         messages: this.messages,
         state: this.compactState,
         protectedQueries,
+        toolProtectedQueries,
       })
       while (true) {
         const next = await gen.next()
@@ -844,9 +845,9 @@ export class QueryEngine {
    * Consumes `compactStream()` and returns the resulting summary. Useful when a
    * caller does not need incremental progress events.
    */
-  async compact(): Promise<{ summary: string; compacted: boolean }> {
+  async compact(protectedQueries?: number, toolProtectedQueries?: number): Promise<{ summary: string; compacted: boolean }> {
     let summary = ''
-    for await (const ev of this.compactStream()) {
+    for await (const ev of this.compactStream(protectedQueries, toolProtectedQueries)) {
       if (ev.type === 'compact' && ev.phase === 'end') {
         summary = ev.summary ?? ''
       }

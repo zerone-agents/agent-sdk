@@ -11,6 +11,7 @@ import type { SDKCompactMessage } from './types.js'
 import {
   compactConversationWithProtectedTail,
   PRUNE_PROTECTED_QUERIES,
+  TOOL_PROTECTED_QUERIES,
   type AutoCompactState,
 } from './utils/compact.js'
 
@@ -21,6 +22,9 @@ export interface CompactMessagesOptions {
   state: AutoCompactState
   /** Number of recent user queries to preserve verbatim. */
   protectedQueries?: number
+  /** Queries within the compaction tail that keep FULL tool_result payloads.
+   *  Defaults to TOOL_PROTECTED_QUERIES (2). */
+  toolProtectedQueries?: number
 }
 
 export interface CompactMessagesResult {
@@ -46,6 +50,7 @@ export async function* compactMessagesStream(
     opts.messages,
     opts.state,
     opts.protectedQueries ?? PRUNE_PROTECTED_QUERIES,
+    opts.toolProtectedQueries ?? TOOL_PROTECTED_QUERIES,
   )
 
   if (result.summary.length === 0) {

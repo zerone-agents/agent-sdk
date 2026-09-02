@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest'
-import { compactSessionStream, compactSession } from './compact-session.js'
+import { compactSessionStream, compactSession, type CompactSessionResult } from './compact-session.js'
 import { loadSession, saveSession, deleteSession } from './session.js'
-import { shouldAutoCompact, PRUNE_PROTECTED_QUERIES, createAutoCompactState } from './utils/compact.js'
+import { shouldAutoCompact, PRUNE_PROTECTED_QUERIES, PRUNE_THRESHOLD_CHARS, createAutoCompactState } from './utils/compact.js'
 import type { LLMProvider, StreamChunk, NormalizedMessageParam } from './providers/types.js'
 
 /**
@@ -97,6 +97,42 @@ function freshSessionId(label: string): string {
   const id = `compact-session-test-${label}-${crypto.randomUUID()}`
   SESSIONS.push(id)
   return id
+}
+
+/**
+ * One query = [user prompt, assistant tool_use, user tool_result wrapper].
+ * The tool_result payload is oversized (PRUNE_THRESHOLD_CHARS + 1) so that
+ * compaction-time pruning (issue #86) must clear it when it falls outside
+ * the protected tool-result window.
+ */
+function bigToolRound(prompt: string, id: string): NormalizedMessageParam[] {
+  return [
+    { role: 'user', content: prompt } as NormalizedMessageParam,
+    { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: {} }] } as unknown as NormalizedMessageParam,
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'x'.repeat(PRUNE_THRESHOLD_CHARS + 1) }] } as unknown as NormalizedMessageParam,
+  ]
+}
+
+/**
+ * Persist a session of `n` big-tool rounds (oversized tool results) plus a
+ * final assistant message — the fixture for tool-result pruning at
+ * compaction. Returns the session id.
+ */
+async function seedBigToolSession(n: number): Promise<string> {
+  const sid = freshSessionId('big-tool')
+  const messages: NormalizedMessageParam[] = []
+  for (let i = 1; i <= n; i++) messages.push(...bigToolRound(`query ${i}`, `id-${i}`))
+  messages.push({ role: 'assistant', content: 'final' } as NormalizedMessageParam)
+  await saveSession(sid, messages, { cwd: '/tmp/project', model: 'test-model' })
+  return sid
+}
+
+/** Drain a compactSessionStream and return its final result. */
+async function drainSession(stream: ReturnType<typeof compactSessionStream>): Promise<CompactSessionResult> {
+  while (true) {
+    const next = await stream.next()
+    if (next.done) return next.value
+  }
 }
 
 afterAll(async () => {
@@ -399,5 +435,27 @@ describe('compactSessionStream (issue #46)', () => {
     // The default is wired through in compact-session.ts; assert the constant
     // contract so a change to either default must consciously update both.
     expect(PRUNE_PROTECTED_QUERIES).toBe(4)
+  })
+
+  it('compactSessionStream prunes the tail by default and honors toolProtectedQueries', async () => {
+    // Build + persist a session of 6 big-tool queries + final assistant using the
+    // same saveSession/makeNonStreamingProvider helpers the neighboring tests use.
+    const sid = await seedBigToolSession(6) // local helper: saves 6 × bigToolRound + assistantMsg
+    const result = await drainSession(compactSessionStream({ sessionId: sid, provider: makeNonStreamingProvider() }))
+    expect(result.compacted).toBe(true)
+    const tailResults = result.messages.slice(2)
+      .filter((m: any) => m.role === 'user' && Array.isArray(m.content) && m.content[0]?.type === 'tool_result')
+      .map((m: any) => m.content[0].content)
+    expect(tailResults[0]).toBe('[Old tool result content cleared]')
+    expect(tailResults[3]).not.toBe('[Old tool result content cleared]')
+
+    // override disables
+    const sid2 = await seedBigToolSession(6)
+    const r2 = await drainSession(compactSessionStream({ sessionId: sid2, provider: makeNonStreamingProvider(), toolProtectedQueries: 4 }))
+    const cleared2 = r2.messages.filter((m: any) =>
+      m.role === 'user' && Array.isArray(m.content) &&
+      m.content[0]?.type === 'tool_result' &&
+      m.content[0].content === '[Old tool result content cleared]')
+    expect(cleared2).toHaveLength(0)
   })
 })
