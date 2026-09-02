@@ -8,6 +8,7 @@ import type {
 } from '../providers/types.js'
 import type { QueryEngineConfig, CanUseToolFn } from '../types.js'
 import { SkillRegistry } from '../skills/index.js'
+import { createEmptyServices } from '../tools/services.js'
 
 /**
  * Integration test: verifies that the `maxSessionTurns` engine wiring works
@@ -95,6 +96,8 @@ function buildConfig(
       tools: [],
       deferredTools: [],
       skills: [],
+      services: createEmptyServices(),
+      skillRegistry: new SkillRegistry(),
     },
     maxTurns: 1,
     canUseTool,

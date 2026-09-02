@@ -9,6 +9,7 @@
 import type { AgentDefinition, AgentEnvironment, ResolvedAgent } from './types.js'
 import { getAllBaseTools, assembleToolPool, applyAllowedTools, applyDisallowedTools } from './tools/index.js'
 import { filterSkillsByAllowlist } from './skills/registry.js'
+import { createEmptyServices } from './tools/services.js'
 
 export function resolveAgent(env: AgentEnvironment, definition: AgentDefinition): ResolvedAgent {
   // Source-based filtering contract (issue #64): the allow-list gates ONLY
@@ -49,5 +50,12 @@ export function resolveAgent(env: AgentEnvironment, definition: AgentDefinition)
     skills = []
   }
 
-  return { definition, tools, skills, deferredTools }
+  return {
+    definition,
+    tools,
+    deferredTools,
+    skills,
+    services: env.toolServices ?? createEmptyServices(),
+    skillRegistry: env.skillRegistry,
+  }
 }

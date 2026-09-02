@@ -243,3 +243,28 @@ describe('resolvePrompt', () => {
     expect(resolvePrompt({ type: 'preset', preset: 'default', append: 'EXTRA' })).toContain('EXTRA')
   })
 })
+
+describe('per-agent seam (issue #72)', () => {
+  it('carries env.toolServices by reference and defaults to empty services', () => {
+    const services = {
+      askUser: null,
+      findTool: { deferredTools: [], activatedTools: new Set() },
+      config: new Map(),
+      cron: null,
+    } as any
+    const withServices = resolveAgent(
+      makeEnv({ toolServices: services }),
+      { description: 'd', prompt: 'p' },
+    )
+    expect(withServices.services).toBe(services)
+
+    const without = resolveAgent(makeEnv(), { description: 'd', prompt: 'p' })
+    expect(without.services.findTool.deferredTools).toEqual([])
+  })
+
+  it('carries env.skillRegistry by reference', () => {
+    const env = makeEnv()
+    const r = resolveAgent(env, { description: 'd', prompt: 'p' })
+    expect(r.skillRegistry).toBe(env.skillRegistry)
+  })
+})

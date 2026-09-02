@@ -113,11 +113,14 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
   }
 
   const maxTurns = agentDef.maxTurns ?? DEFAULT_SUBAGENT_MAX_TURNS
+  const baseResolution = resolveAgent(opts.env, agentDef)
   const resolved: ResolvedAgent = {
     definition: { ...agentDef, prompt: buildSubagentSystemPrompt(agentDef, opts.mode) },
     tools: buildSubagentTools(opts.env, agentDef, opts.mode),
-    skills: resolveAgent(opts.env, agentDef).skills,
+    skills: baseResolution.skills,
     deferredTools: [],  // sub-agent tools are resolved above without split; this stays empty
+    services: baseResolution.services,
+    skillRegistry: baseResolution.skillRegistry,
   }
 
   const sessionId = crypto.randomUUID()

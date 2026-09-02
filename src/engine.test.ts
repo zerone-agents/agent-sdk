@@ -21,6 +21,7 @@ class FakeAPIConnectionError extends Error {
 }
 
 function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryEngineConfig {
+  const skillRegistry = new SkillRegistry()
   return {
     env: {
       provider,
@@ -29,7 +30,7 @@ function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryE
       cwd: process.cwd(),
       customTools: [],
       mcpTools: [],
-      skillRegistry: new SkillRegistry(),
+      skillRegistry,
       subprocessEnv: {},
     },
     resolved: {
@@ -37,6 +38,8 @@ function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryE
       tools,
       deferredTools: [],
       skills: [],
+      services: createEmptyServices(),
+      skillRegistry,
     },
     maxTurns: 5,
     canUseTool: async () => ({ behavior: 'allow' }),
@@ -1075,6 +1078,8 @@ describe('QueryEngine per-turn tool activation', () => {
         tools: [makeFindToolStandIn()],
         deferredTools: [makeDeferredCronListTool()],
         skills: [],
+        services: createEmptyServices(),
+        skillRegistry: new SkillRegistry(),
       } as any,
     } as any
 
@@ -1124,6 +1129,8 @@ describe('QueryEngine per-turn tool activation', () => {
         tools: [makeFindToolStandIn()],
         deferredTools: [makeDeferredCronListTool()],
         skills: [],
+        services: createEmptyServices(),
+        skillRegistry: new SkillRegistry(),
       } as any,
     } as any
 

@@ -28,7 +28,6 @@ import type {
 import type { NormalizedMessageParam } from '../providers/types.js'
 import { AsyncQueue } from '../utils/async-queue.js'
 import type { HookRegistry } from '../hooks.js'
-import { createEmptyServices } from '../tools/services.js'
 import type { Logger } from '../utils/logger.js'
 import { formatInputPreview, redactSensitiveFields } from '../utils/helpers.js'
 
@@ -288,7 +287,7 @@ export async function runToolsBackground(
   // load their schema (engine.ts rebuilds the provider tools array per turn
   // based on activatedTools). We mirror that here so tool-executor can
   // dispatch tool_use blocks for tools activated earlier in the same query.
-  const activatedNames = ctx.config.env.toolServices?.findTool?.activatedTools
+  const activatedNames = ctx.config.resolved.services.findTool.activatedTools
   const deferredPool = activatedNames && activatedNames.size > 0
     ? ctx.config.resolved.deferredTools.filter(t => activatedNames.has(t.name))
     : []
@@ -310,12 +309,12 @@ export async function runToolsBackground(
     sessionId: ctx.sessionId,
     toolUseId: block.id,
     // Per-agent tool services (use provided or create empty)
-    services: ctx.config.env.toolServices ?? createEmptyServices(),
+    services: ctx.config.resolved.services,
     // Pre-computed subprocess env for Bash/Grep
     subprocessEnv: ctx.config.env.subprocessEnv,
     // SkillContext
     resolvedSkills: ctx.config.resolved.skills,
-    skillRegistry: ctx.config.env.skillRegistry,
+    skillRegistry: ctx.config.resolved.skillRegistry,
     // SubagentContext
     env: ctx.config.env,
     subAgents: ctx.config.subAgents ?? {},

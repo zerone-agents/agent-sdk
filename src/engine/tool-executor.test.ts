@@ -16,6 +16,7 @@ import type {
 import type { NormalizedMessageParam } from '../providers/types.js'
 import type { Logger } from '../utils/logger.js'
 import { createEmptyServices } from '../tools/services.js'
+import { SkillRegistry } from '../skills/registry.js'
 
 // ============================================================================
 // Test helpers
@@ -73,6 +74,8 @@ function makeCtx(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionCo
         definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
         tools: [],
         skills: [],
+        services: createEmptyServices(),
+        skillRegistry: new SkillRegistry(),
       },
       subAgents: {},
       abortSignal: undefined,
@@ -355,6 +358,8 @@ describe('runToolsBackground', () => {
           definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
           tools,
           skills: [],
+          services: createEmptyServices(),
+          skillRegistry: new SkillRegistry(),
         },
       } as any,
     })
@@ -469,6 +474,8 @@ describe('runToolsBackground', () => {
           definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
           tools: [tool],
           skills: [],
+          services: createEmptyServices(),
+          skillRegistry: new SkillRegistry(),
         },
         abortSignal: abortController.signal,
       } as any,
@@ -499,6 +506,8 @@ describe('executeTools', () => {
           definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
           tools,
           skills: [],
+          services: createEmptyServices(),
+          skillRegistry: new SkillRegistry(),
         },
       } as any,
     })
@@ -559,6 +568,8 @@ describe('executeTools', () => {
           definition: { prompt: 'test', allowedTools: [], availableSkills: [] },
           tools: [slowTool],
           skills: [],
+          services: createEmptyServices(),
+          skillRegistry: new SkillRegistry(),
         },
         abortSignal: abortController.signal,
       } as any,

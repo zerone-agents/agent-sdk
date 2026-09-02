@@ -560,6 +560,10 @@ export interface ResolvedAgent {
   tools: ToolDefinition[]
   deferredTools: ToolDefinition[]
   skills: import('./skills/types.js').SkillDefinition[]
+  /** Per-agent tool services; the findTool registry is owned by this agent (issue #72). */
+  services: import('./tools/services.js').ToolServices
+  /** Per-agent skill registry view (consumed by the Skill tool and prompts). */
+  skillRegistry: import('./skills/registry.js').SkillRegistry
 }
 
 export interface ThinkingConfig {
