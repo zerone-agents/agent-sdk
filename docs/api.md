@@ -54,9 +54,9 @@ host owns custom storage, then persist the returned `messages` and `state`
 together. Both interfaces preserve recent queries verbatim by default.
 
 **Compaction options** — two independent knobs control how much of the recent
-tail survives. Both are **new and additive in this release**: the compaction
-entry points accepted no configuration before, and omitting the options
-reproduces exactly the previous defaults.
+tail survives. `toolProtectedQueries` is new across all four surfaces;
+`QueryEngine.compact`/`Agent.compact` (and their streams) gain both parameters
+— previously they accepted no arguments.
 
 | Option                 | Default | Meaning                                                                 |
 | ---------------------- | ------- | ----------------------------------------------------------------------- |
@@ -72,9 +72,9 @@ reproduces exactly the previous defaults.
 | `Agent.compactStream(opts?)` / `Agent.compact(opts?)`                  | `{ protectedQueries?, toolProtectedQueries? }` (previously **no arguments**) |
 
 Set `toolProtectedQueries` ≥ tail size to disable tool-result pruning
-entirely. The new parameters are purely additive — omitting them preserves the
-historical defaults (4 verbatim queries, of which the last 2 keep full tool
-results).
+entirely. Omitting the parameters preserves the historical default values
+(4 verbatim queries, of which the last 2 keep full tool results); resulting
+behavior changes are listed below.
 
 #### Compaction behavior changes
 
