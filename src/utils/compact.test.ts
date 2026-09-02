@@ -48,7 +48,7 @@ describe('compactConversationWithProtectedTail protectedTurns', () => {
     expect(result.summary).toBe('SUMMARY')
     // [summary-user, summary-assistant, ...tail, lastMsg]
     const kept = JSON.stringify(result.messages.slice(2))
-    expect(kept).toContain(`turn${8 - PRUNE_PROTECTED_TURNS + 1}`) // turn3 when 6
+    expect(kept).toContain(`turn${8 - PRUNE_PROTECTED_TURNS + 1}`) // turn5 when 4
     expect(kept).not.toContain('turn1')
   })
 
