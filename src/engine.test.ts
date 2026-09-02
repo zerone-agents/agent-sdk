@@ -595,7 +595,7 @@ describe('executeTools streaming + tools_complete', () => {
   })
 })
 
-describe('maxSessionTurns halved compaction', () => {
+describe('maxSessionQueries halved compaction', () => {
   function makeHalveProvider(opts: { failSummary?: boolean } = {}): LLMProvider {
     return {
       apiType: 'anthropic-messages',
@@ -618,36 +618,36 @@ describe('maxSessionTurns halved compaction', () => {
     }
   }
 
-  function seedTurns(engine: QueryEngine, n: number) {
+  function seedQueries(engine: QueryEngine, n: number) {
     for (let i = 1; i <= n; i++) {
       engine.messages.push(
-        { role: 'user', content: `seed turn ${i}` },
+        { role: 'user', content: `seed query ${i}` },
         { role: 'assistant', content: `seed resp ${i}` },
       )
     }
   }
 
-  it('compacts persistent history when session turns exceed maxSessionTurns', async () => {
-    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider()), maxSessionTurns: 2 })
-    seedTurns(engine, 3) // 3 seeded turns + 1 submitted = 4 > 2
+  it('compacts persistent history when session queries exceed maxSessionQueries', async () => {
+    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider()), maxSessionQueries: 2 })
+    seedQueries(engine, 3) // 3 seeded queries + 1 submitted = 4 > 2
 
     await run(engine)
 
     const json = JSON.stringify(engine.messages)
     expect(json).toContain('SESSION SUMMARY')
-    expect(json).not.toContain('seed turn 1')
+    expect(json).not.toContain('seed query 1')
   })
 
   it('falls back to hard truncation when summary fails', async () => {
-    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider({ failSummary: true })), maxSessionTurns: 2 })
-    seedTurns(engine, 3)
+    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider({ failSummary: true })), maxSessionQueries: 2 })
+    seedQueries(engine, 3)
 
     await run(engine)
 
     const json = JSON.stringify(engine.messages)
     expect(json).not.toContain('SESSION SUMMARY')
-    expect(json).not.toContain('seed turn 1')
-    expect(json).toContain('seed turn 3')
+    expect(json).not.toContain('seed query 1')
+    expect(json).toContain('seed query 3')
   })
 })
 
@@ -941,7 +941,7 @@ describe('QueryEngine per-turn todos reminder injection', () => {
   })
 
   it('list completed during query A survives until query B starts (lifecycle boundary, issue #32)', async () => {
-    const sid = 'engine-test-multiturn-lifecycle'
+    const sid = 'engine-test-multiquery-lifecycle'
     // Seed an ACTIVE list — query A start will NOT clear it.
     await seedTodos(sid, [
       { content: 'Implement feature', status: 'in_progress', priority: 'high' },
@@ -1433,7 +1433,7 @@ describe('QueryEngine message timestamps (issue #54)', () => {
         timestamp: '2026-01-01T00:00:00.000Z',
         _snapshot: { beforeHash: 'h1' },
         content: [
-          { type: 'text', text: 'old turn' },
+          { type: 'text', text: 'old query' },
           { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'B'.repeat(4000) } },
         ],
       },
@@ -1441,7 +1441,7 @@ describe('QueryEngine message timestamps (issue #54)', () => {
         role: 'user',
         id: 'u-new',
         timestamp: '2026-08-28T00:00:00.000Z',
-        content: [{ type: 'text', text: 'appended turn' }],
+        content: [{ type: 'text', text: 'appended query' }],
       },
     ]
     ;(engine as any).messages.push(...appendedHistory)
@@ -1460,7 +1460,7 @@ describe('QueryEngine message timestamps (issue #54)', () => {
     const newMsg = history[1]
     expect(newMsg.id).toBe('u-new')
     expect(newMsg.timestamp).toBe('2026-08-28T00:00:00.000Z')
-    expect(newMsg.content).toEqual([{ type: 'text', text: 'appended turn' }])
+    expect(newMsg.content).toEqual([{ type: 'text', text: 'appended query' }])
 
     // The image was replaced by a placeholder text block in place.
     const blocks = oldMsg.content as any[]

@@ -15,7 +15,7 @@ import {
   getAutoCompactThreshold,
 } from './tokens.js'
 
-export const PRUNE_PROTECTED_TURNS = 4
+export const PRUNE_PROTECTED_QUERIES = 4
 export const PRUNE_THRESHOLD_CHARS = 20_000
 
 /**
@@ -43,13 +43,13 @@ function buildToolNameMap(messages: any[]): Map<string, string> {
 }
 
 /**
- * Whether a message is a "real" user turn (not a tool_result wrapper).
+ * Whether a message is a "real" user query (not a tool_result wrapper).
  *
  * In the internal normalized format, tool results are carried by messages with
  * role 'user' (Anthropic convention). These are part of the tool loop, not a
- * new user turn, so they must be excluded when counting turns to protect.
+ * new user query, so they must be excluded when counting queries to protect.
  */
-function isUserTurn(msg: any): boolean {
+function isUserQuery(msg: any): boolean {
   if (msg.role !== 'user') return false
   if (Array.isArray(msg.content)) {
     return !msg.content.some((b: any) => b && b.type === 'tool_result')
@@ -147,7 +147,7 @@ export interface CompactResult {
  * Semantics to be aware of before calling:
  * - Summarizes EVERY message supplied to it. It does NOT preserve a recent
  *   message tail on its own — passing a complete transcript here replaces the
- *   whole conversation with the synthetic summary pair. To keep recent turns
+ *   whole conversation with the synthetic summary pair. To keep recent queries
  *   verbatim, route it through the protected-tail wrapper. Public callers use
  *   `compactMessagesStream()` or the session-level `compactSessionStream()`.
  * - Does NOT persist anything. Callers own persistence and must write the
@@ -276,11 +276,11 @@ export async function compactConversation(
 }
 
 /**
- * Compact a conversation while protecting the most recent turns.
+ * Compact a conversation while protecting the most recent queries.
  *
  * Splits the conversation into a "head" (summarized) and a "tail" (kept
- * verbatim). The last message and the most recent PRUNE_PROTECTED_TURNS user
- * turns are protected; everything before that is summarized via
+ * verbatim). The last message and the most recent PRUNE_PROTECTED_QUERIES user
+ * queries are protected; everything before that is summarized via
  * compactConversationStream. Reassembles [summary, ...tail, lastMessage].
  *
  * Used by both auto-compaction and manual `compact()` triggers so that both
@@ -291,7 +291,7 @@ export async function* compactConversationWithProtectedTail(
   model: string,
   messages: NormalizedMessageParam[],
   state: AutoCompactState,
-  protectedTurns: number = PRUNE_PROTECTED_TURNS,
+  protectedQueries: number = PRUNE_PROTECTED_QUERIES,
 ): AsyncGenerator<SDKCompactMessage, {
   messages: NormalizedMessageParam[]
   state: AutoCompactState
@@ -307,11 +307,11 @@ export async function* compactConversationWithProtectedTail(
 
   const userMsgIndices: number[] = []
   for (let i = 0; i < historyMsgs.length; i++) {
-    if (isUserTurn(historyMsgs[i])) {
+    if (isUserQuery(historyMsgs[i])) {
       userMsgIndices.push(i)
     }
   }
-  const protectedStart = Math.max(0, userMsgIndices.length - protectedTurns)
+  const protectedStart = Math.max(0, userMsgIndices.length - protectedQueries)
   const cutoffIndex = protectedStart < userMsgIndices.length
     ? userMsgIndices[protectedStart]
     : historyMsgs.length
@@ -408,12 +408,12 @@ function buildCompactionPrompt(messages: any[]): string {
 export function pruneMessages(messages: any[]): void {
   const userMsgIndices: number[] = []
   for (let i = 0; i < messages.length; i++) {
-    if (isUserTurn(messages[i])) {
+    if (isUserQuery(messages[i])) {
       userMsgIndices.push(i)
     }
   }
 
-  const protectedStart = Math.max(0, userMsgIndices.length - PRUNE_PROTECTED_TURNS)
+  const protectedStart = Math.max(0, userMsgIndices.length - PRUNE_PROTECTED_QUERIES)
   const protectedIndices = new Set(
     userMsgIndices.slice(protectedStart),
   )

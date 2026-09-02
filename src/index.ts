@@ -11,7 +11,7 @@
  * - Context compression (auto-compact, micro-compact)
  * - Retry with exponential backoff
  * - Git status & project context injection
- * - Multi-turn session persistence
+ * - Multi-query session persistence
  * - Permission system (allow/deny/bypass modes)
  * - Subagent spawning & multi-agent coordination
  * - Scheduling
@@ -264,7 +264,7 @@ export {
   createCompactBoundaryMessage,
   truncateText,
 } from './utils/messages.js'
-export { truncateToLastNTurns } from './utils/session-turns.js'
+export { truncateToLastNQueries } from './utils/session-queries.js'
 
 // --------------------------------------------------------------------------
 // Token Estimation & Cost
@@ -293,9 +293,6 @@ export {
   microCompactMessages,
   pruneMessages,
   createAutoCompactState,
-  PRUNE_PROTECTED_TURNS,
-  PRUNE_THRESHOLD_CHARS,
-  PROTECTED_TOOL_NAMES,
 } from './utils/compact.js'
 export type { AutoCompactState } from './utils/compact.js'
 

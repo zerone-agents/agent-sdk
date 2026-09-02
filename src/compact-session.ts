@@ -6,8 +6,8 @@
  * compact → persist.
  *
  * Semantics (identical to `Agent.compactStream()`):
- * - summarizes older history while preserving the most recent turns verbatim
- *   (default protected-turn count: PRUNE_PROTECTED_TURNS)
+ * - summarizes older history while preserving the most recent queries verbatim
+ *   (default protected-query count: PRUNE_PROTECTED_QUERIES)
  * - on success, persists messages + summary + messageCount + token counters
  *   as ONE coherent update (token counters reset to 0 by compaction, which
  *   prevents an immediate re-compact on resume)
@@ -24,7 +24,7 @@ import type { LLMProvider, NormalizedMessageParam } from './providers/types.js'
 import type { SDKCompactMessage } from './types.js'
 import { loadSession, saveSession } from './session.js'
 import { compactMessagesStream } from './compact-messages.js'
-import { PRUNE_PROTECTED_TURNS, type AutoCompactState } from './utils/compact.js'
+import { PRUNE_PROTECTED_QUERIES, type AutoCompactState } from './utils/compact.js'
 
 /** Options for {@link compactSessionStream}. */
 export interface CompactSessionOptions {
@@ -40,11 +40,11 @@ export interface CompactSessionOptions {
    */
   model?: string
   /**
-   * Number of most recent user turns (plus the final message) preserved
-   * verbatim. Defaults to PRUNE_PROTECTED_TURNS — the same default as
+   * Number of most recent user queries (plus the final message) preserved
+   * verbatim. Defaults to PRUNE_PROTECTED_QUERIES — the same default as
    * `Agent.compactStream()`.
    */
-  protectedTurns?: number
+  protectedQueries?: number
 }
 
 /** Final result of a session-level compaction. */
@@ -81,7 +81,7 @@ export async function* compactSessionStream(
   }
 
   const model = opts.model ?? session.metadata.model
-  const protectedTurns = opts.protectedTurns ?? PRUNE_PROTECTED_TURNS
+  const protectedQueries = opts.protectedQueries ?? PRUNE_PROTECTED_QUERIES
 
   // Seed the compaction state from persisted usage so the summarizer sees the
   // same starting conditions as an Agent-based compaction of this session.
@@ -103,7 +103,7 @@ export async function* compactSessionStream(
     model,
     messages: session.messages,
     state,
-    protectedTurns,
+    protectedQueries,
   })
 
   // Unsuccessful compaction (provider failure surfaced by the underlying

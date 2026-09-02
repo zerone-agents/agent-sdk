@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countSessionTurns, truncateToLastNTurns } from './session-turns.js'
+import { countSessionQueries, truncateToLastNQueries } from './session-queries.js'
 import type { NormalizedMessageParam } from '../providers/types.js'
 
 function userMsg(text: string): NormalizedMessageParam {
@@ -24,99 +24,99 @@ function toolResultMsg(id: string): NormalizedMessageParam {
   }
 }
 
-describe('truncateToLastNTurns', () => {
-  it('returns all messages when turns <= maxTurns', () => {
+describe('truncateToLastNQueries', () => {
+  it('returns all messages when queries <= maxQueries', () => {
     const messages: NormalizedMessageParam[] = [
       userMsg('hello'),
       assistantMsg('hi'),
       userMsg('bye'),
       assistantMsg('goodbye'),
     ]
-    const result = truncateToLastNTurns(messages, 5)
+    const result = truncateToLastNQueries(messages, 5)
     expect(result).toEqual(messages)
   })
 
-  it('returns all messages when turns == maxTurns', () => {
+  it('returns all messages when queries == maxQueries', () => {
     const messages: NormalizedMessageParam[] = [
       userMsg('a'),
       assistantMsg('b'),
       userMsg('c'),
       assistantMsg('d'),
     ]
-    const result = truncateToLastNTurns(messages, 2)
+    const result = truncateToLastNQueries(messages, 2)
     expect(result).toEqual(messages)
   })
 
-  it('truncates to last N turns', () => {
+  it('truncates to last N queries', () => {
     const messages: NormalizedMessageParam[] = [
-      userMsg('turn1'),
+      userMsg('query1'),
       assistantMsg('resp1'),
-      userMsg('turn2'),
+      userMsg('query2'),
       assistantMsg('resp2'),
-      userMsg('turn3'),
+      userMsg('query3'),
       assistantMsg('resp3'),
     ]
-    const result = truncateToLastNTurns(messages, 2)
+    const result = truncateToLastNQueries(messages, 2)
     expect(result).toEqual([
-      userMsg('turn2'),
+      userMsg('query2'),
       assistantMsg('resp2'),
-      userMsg('turn3'),
+      userMsg('query3'),
       assistantMsg('resp3'),
     ])
   })
 
-  it('does not split tool-use loops across turn boundaries', () => {
+  it('does not split tool-use loops across query boundaries', () => {
     const messages: NormalizedMessageParam[] = [
-      userMsg('turn1'),
+      userMsg('query1'),
       assistantMsg('resp1'),
-      userMsg('turn2'),
+      userMsg('query2'),
       assistantToolUseMsg('tu_1'),
       toolResultMsg('tu_1'),
       assistantMsg('resp2'),
-      userMsg('turn3'),
+      userMsg('query3'),
       assistantMsg('resp3'),
     ]
-    // 3 turns, keep last 2 → turn2 (including tool loop) + turn3
-    const result = truncateToLastNTurns(messages, 2)
+    // 3 queries, keep last 2 → query2 (including tool loop) + query3
+    const result = truncateToLastNQueries(messages, 2)
     expect(result).toEqual([
-      userMsg('turn2'),
+      userMsg('query2'),
       assistantToolUseMsg('tu_1'),
       toolResultMsg('tu_1'),
       assistantMsg('resp2'),
-      userMsg('turn3'),
+      userMsg('query3'),
       assistantMsg('resp3'),
     ])
   })
 
   it('returns all messages for empty array', () => {
-    const result = truncateToLastNTurns([], 5)
+    const result = truncateToLastNQueries([], 5)
     expect(result).toEqual([])
   })
 
-  it('returns all messages when maxTurns is 1 and only 1 turn exists', () => {
+  it('returns all messages when maxQueries is 1 and only 1 query exists', () => {
     const messages: NormalizedMessageParam[] = [
       userMsg('only'),
       assistantMsg('one'),
     ]
-    const result = truncateToLastNTurns(messages, 1)
+    const result = truncateToLastNQueries(messages, 1)
     expect(result).toEqual(messages)
   })
 
-  it('keeps only last turn when maxTurns is 1', () => {
+  it('keeps only last query when maxQueries is 1', () => {
     const messages: NormalizedMessageParam[] = [
       userMsg('first'),
       assistantMsg('resp1'),
       userMsg('second'),
       assistantMsg('resp2'),
     ]
-    const result = truncateToLastNTurns(messages, 1)
+    const result = truncateToLastNQueries(messages, 1)
     expect(result).toEqual([
       userMsg('second'),
       assistantMsg('resp2'),
     ])
   })
 
-  it('handles multi-turn tool-use loops correctly', () => {
+  it('handles multi-query tool-use loops correctly', () => {
     const messages: NormalizedMessageParam[] = [
       userMsg('start'),
       assistantMsg('resp'),
@@ -127,8 +127,8 @@ describe('truncateToLastNTurns', () => {
       toolResultMsg('tu_2'),
       assistantMsg('done'),
     ]
-    // 2 turns, keep last 1 → only the "task" turn with full tool loop
-    const result = truncateToLastNTurns(messages, 1)
+    // 2 queries, keep last 1 → only the "task" query with full tool loop
+    const result = truncateToLastNQueries(messages, 1)
     expect(result).toEqual([
       userMsg('task'),
       assistantToolUseMsg('tu_1'),
@@ -139,7 +139,7 @@ describe('truncateToLastNTurns', () => {
     ])
   })
 
-  it('treats mixed content user message (text + tool_result) as fresh turn', () => {
+  it('treats mixed content user message (text + tool_result) as fresh query', () => {
     const messages: NormalizedMessageParam[] = [
       userMsg('first'),
       assistantMsg('resp1'),
@@ -152,46 +152,46 @@ describe('truncateToLastNTurns', () => {
       },
       assistantMsg('resp2'),
     ]
-    // User message with both text and tool_result → has text → fresh turn
-    const result = truncateToLastNTurns(messages, 1)
+    // User message with both text and tool_result → has text → fresh query
+    const result = truncateToLastNQueries(messages, 1)
     expect(result).toHaveLength(2)
     expect(result[0].role).toBe('user')
     expect(result[1].role).toBe('assistant')
   })
 
-  it('returns all messages when maxTurns is 0', () => {
+  it('returns all messages when maxQueries is 0', () => {
     const messages: NormalizedMessageParam[] = [
       userMsg('a'),
       assistantMsg('b'),
     ]
-    const result = truncateToLastNTurns(messages, 0)
+    const result = truncateToLastNQueries(messages, 0)
     expect(result).toEqual(messages)
   })
 
-  it('returns all messages when maxTurns is negative', () => {
+  it('returns all messages when maxQueries is negative', () => {
     const messages: NormalizedMessageParam[] = [
       userMsg('a'),
       assistantMsg('b'),
     ]
-    const result = truncateToLastNTurns(messages, -3)
+    const result = truncateToLastNQueries(messages, -3)
     expect(result).toEqual(messages)
   })
 })
 
-describe('countSessionTurns', () => {
+describe('countSessionQueries', () => {
   it('counts fresh user messages only', () => {
     const messages: NormalizedMessageParam[] = [
-      userMsg('turn1'),
+      userMsg('query1'),
       assistantMsg('resp1'),
       toolResultMsg('t1'),
-      userMsg('turn2'),
+      userMsg('query2'),
       assistantMsg('resp2'),
     ]
-    expect(countSessionTurns(messages)).toBe(2)
+    expect(countSessionQueries(messages)).toBe(2)
   })
 
   it('returns 0 for empty and tool-result-only histories', () => {
-    expect(countSessionTurns([])).toBe(0)
-    expect(countSessionTurns([toolResultMsg('t1')])).toBe(0)
+    expect(countSessionQueries([])).toBe(0)
+    expect(countSessionQueries([toolResultMsg('t1')])).toBe(0)
   })
 })

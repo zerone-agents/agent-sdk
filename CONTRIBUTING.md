@@ -55,7 +55,7 @@ src/
 ├── prompts/                # System prompt builders + presets
 ├── snapshot/               # Git-based file snapshot engine for revert
 ├── cron/                   # Cron storage + jitter
-└── utils/                  # Shared helpers (file-cache, compact, session-turns, ...)
+└── utils/                  # Shared helpers (file-cache, compact, session-queries, ...)
 ```
 
 Public exports are re-exported from `src/index.ts`. Anything not exported from `index.ts` is internal and may change without notice.
@@ -117,7 +117,7 @@ src/
 
 Do **not** use `__tests__/` subdirectories — that is a Jest-era holdover and the project has migrated away from it.
 
-A test file's unit is the source file it covers. Cross-module integration tests can live wherever makes sense (often next to the higher-level module, e.g. `src/utils/session-turns-integration.test.ts`).
+A test file's unit is the source file it covers. Cross-module integration tests can live wherever makes sense (often next to the higher-level module, e.g. `src/utils/session-queries-integration.test.ts`).
 
 ### When tests need fixtures
 

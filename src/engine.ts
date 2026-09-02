@@ -36,7 +36,7 @@ import {
   DEFAULT_MAX_REQUEST_BODY_BYTES,
 } from './utils/tokens.js'
 import { enforceBodySizeLimit } from './utils/body-size.js'
-import { countSessionTurns, truncateToLastNTurns } from './utils/session-turns.js'
+import { countSessionQueries, truncateToLastNQueries } from './utils/session-queries.js'
 import {
   shouldAutoCompact,
   compactConversation,
@@ -322,17 +322,17 @@ export class QueryEngine {
         }
       }
 
-      // Session turns halved compaction: summarize the older half when over the limit
-      if (this.config.maxSessionTurns && this.config.maxSessionTurns >= 2) {
-        if (countSessionTurns(this.messages) > this.config.maxSessionTurns) {
+      // Session queries halved compaction: summarize the older half when over the limit
+      if (this.config.maxSessionQueries && this.config.maxSessionQueries >= 2) {
+        if (countSessionQueries(this.messages) > this.config.maxSessionQueries) {
           let sessionSummary = ''
-          for await (const ev of this.compactStream(Math.max(1, Math.floor(this.config.maxSessionTurns / 2)))) {
+          for await (const ev of this.compactStream(Math.max(1, Math.floor(this.config.maxSessionQueries / 2)))) {
             if (ev.type === 'compact' && ev.phase === 'end') sessionSummary = ev.summary ?? ''
             yield ev
           }
           if (!sessionSummary) {
             // Summary failed: fall back to hard truncation so context always converges
-            this.messages = truncateToLastNTurns(this.messages, this.config.maxSessionTurns)
+            this.messages = truncateToLastNQueries(this.messages, this.config.maxSessionQueries)
           }
         }
       }
@@ -801,12 +801,12 @@ export class QueryEngine {
   /**
    * Manually trigger compaction of the current conversation.
    *
-   * Summarizes older history while protecting the most recent turns, firing
+   * Summarizes older history while protecting the most recent queries, firing
    * PreCompact/PostCompact hooks. Streams `compact` events (start/progress/end)
    * so callers can surface progress (e.g. a `/compact` command). This is the
    * same algorithm used by auto-compaction, so behavior is identical.
    */
-  async *compactStream(protectedTurns?: number): AsyncGenerator<SDKCompactMessage> {
+  async *compactStream(protectedQueries?: number): AsyncGenerator<SDKCompactMessage> {
     await this.executeHooks('PreCompact')
     try {
       const gen = compactMessagesStream({
@@ -814,7 +814,7 @@ export class QueryEngine {
         model: this.config.runtime.model,
         messages: this.messages,
         state: this.compactState,
-        protectedTurns,
+        protectedQueries,
       })
       while (true) {
         const next = await gen.next()

@@ -51,7 +51,7 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 Use `compactSessionStream()` or `compactSession()` when the SDK owns the
 persisted session. Use `compactMessagesStream()` or `compactMessages()` when a
 host owns custom storage, then persist the returned `messages` and `state`
-together. Both interfaces preserve recent turns verbatim by default.
+together. Both interfaces preserve recent queries verbatim by default.
 
 The raw all-input helpers `compactConversationStream()`,
 `compactConversation()`, and `compactConversationWithProtectedTail()` are no
@@ -89,7 +89,7 @@ integrations to `compactSessionStream()` or `compactSession()`.
 | `customTools`        | `ToolDefinition[]`                      | —                      | Custom tools, merged with the built-in tool pool                     |
 | `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` / `auto` |
 | `canUseTool`         | `function`                              | —                      | Custom permission callback                                           |
-| `maxSessionTurns`    | `number`                                | —                      | Max rounds included in LLM context; older rounds trigger halved compaction |
+| `maxSessionQueries` | `number`                                | —                      | Max queries included in LLM context; older queries trigger halved compaction |
 | `maxBudgetUsd`       | `number`                                | —                      | Spending cap                                                         |
 | `thinking`           | `ThinkingConfig`                        | —                      | Extended thinking (`{ type: 'adaptive' \| 'enabled' \| 'disabled', budgetTokens? }`); disabled unless set |
 | `effort`             | `string`                                | —                      | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`; not sent unless set |

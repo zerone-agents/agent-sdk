@@ -5,7 +5,7 @@ import type { NormalizedMessageParam } from '../providers/types.js'
  * A fresh user message has either string content or array content containing
  * at least one non-tool_result block.
  */
-function isFreshUserMessage(msg: NormalizedMessageParam): boolean {
+function isFreshUserQuery(msg: NormalizedMessageParam): boolean {
   if (msg.role !== 'user') return false
   if (typeof msg.content === 'string') return true
 
@@ -16,48 +16,48 @@ function isFreshUserMessage(msg: NormalizedMessageParam): boolean {
 }
 
 /**
- * Truncate messages to the last N conversation rounds.
+ * Truncate messages to the last N user queries.
  *
- * A "round" starts at a fresh user message (one whose content is not
+ * A "query" starts at a fresh user message (one whose content is not
  * exclusively tool_result blocks) and includes all subsequent messages
  * until the next fresh user message.
  *
- * If the total number of rounds <= maxTurns, returns all messages unchanged.
- * Otherwise, returns only messages from the last maxTurns rounds.
+ * If the total number of queries <= maxQueries, returns all messages unchanged.
+ * Otherwise, returns only messages from the last maxQueries queries.
  */
-export function truncateToLastNTurns(
+export function truncateToLastNQueries(
   messages: NormalizedMessageParam[],
-  maxTurns: number,
+  maxQueries: number,
 ): NormalizedMessageParam[] {
   // No limit: treat 0 and negative as "no truncation"
-  if (maxTurns <= 0) return messages
+  if (maxQueries <= 0) return messages
 
-  // Find all turn boundaries (indices of fresh user messages)
+  // Find all query boundaries (indices of fresh user messages)
   const boundaries: number[] = []
   for (let i = 0; i < messages.length; i++) {
-    if (isFreshUserMessage(messages[i])) {
+    if (isFreshUserQuery(messages[i])) {
       boundaries.push(i)
     }
   }
 
   // No truncation needed
-  if (boundaries.length <= maxTurns) {
+  if (boundaries.length <= maxQueries) {
     return messages
   }
 
-  // Cut at the start of the (boundaries.length - maxTurns)-th turn
-  const cutIndex = boundaries[boundaries.length - maxTurns]
+  // Cut at the start of the (boundaries.length - maxQueries)-th query
+  const cutIndex = boundaries[boundaries.length - maxQueries]
   return messages.slice(cutIndex)
 }
 
 /**
- * Count conversation rounds = number of fresh user messages.
+ * Count user queries = number of fresh user messages.
  * A fresh user message is one whose content is not exclusively tool_result blocks.
  */
-export function countSessionTurns(messages: NormalizedMessageParam[]): number {
+export function countSessionQueries(messages: NormalizedMessageParam[]): number {
   let count = 0
   for (const msg of messages) {
-    if (isFreshUserMessage(msg)) count++
+    if (isFreshUserQuery(msg)) count++
   }
   return count
 }

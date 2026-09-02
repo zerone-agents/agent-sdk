@@ -151,7 +151,7 @@ interface MiscConfig {
     hooks: Array<(input: any, toolUseId: string, context: { signal: AbortSignal }) => Promise<any>>
     timeout?: number
   }>>
-  maxSessionTurns?: number
+  maxSessionQueries?: number
   cronService?: import('./cron/service.js').CronService
 }
 
@@ -377,7 +377,7 @@ export class Agent {
       toolConfig: opts.toolConfig,
       extraArgs: opts.extraArgs,
       hooks: opts.hooks,
-      maxSessionTurns: opts.maxSessionTurns,
+      maxSessionQueries: opts.maxSessionQueries,
       cronService: opts.cronService,
     }
   }
@@ -623,7 +623,7 @@ export class Agent {
       sessionId: this.sid,
       contextWindow: opts.contextWindow,
       maxRequestBodyBytes: opts.maxRequestBodyBytes,
-      maxSessionTurns: opts.maxSessionTurns,
+      maxSessionQueries: opts.maxSessionQueries,
       effort: opts.effort,
       snapshotEngine: opts.snapshotEngine ?? this.cfg.snapshotEngine,
       logger: opts.logger ?? this.cfg.logger,
@@ -761,7 +761,7 @@ export class Agent {
    * this agent, in chronological order. Never affected by compaction.
    *
    * Contrast with {@link getMessageHistory}, which returns what the engine
-   * actually sees on the next turn (post-compaction when triggered).
+   * actually sees on the next query (post-compaction when triggered).
    */
   getMessageLog(): Message[] {
     return [...this.messageLog]
@@ -788,8 +788,8 @@ export class Agent {
 
   /**
    * Engine's persistent conversation history — what the LLM actually sees on
-   * the next turn. Post-compaction (when maxSessionTurns triggers halved
-   * compaction), this is `[summary_pair, ...recent_turns]`.
+   * the next query. Post-compaction (when maxSessionQueries triggers halved
+   * compaction), this is `[summary_pair, ...recent_queries]`.
    *
    * Use this for revert/fork targeting, session persistence, or any logic
    * that needs to mirror the engine's view of the conversation.
@@ -843,7 +843,7 @@ export class Agent {
   /**
    * Manually trigger compaction of the current conversation history.
    *
-   * Summarizes older history while protecting the most recent turns, firing
+   * Summarizes older history while protecting the most recent queries, firing
    * PreCompact/PostCompact hooks. Streams `compact` events (start/progress/end)
    * so callers can surface progress (e.g. a `/compact` command). Uses the same
    * algorithm as auto-compaction. Persists the session afterwards.

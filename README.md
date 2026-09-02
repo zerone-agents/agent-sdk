@@ -99,7 +99,7 @@ const result = await agent.prompt([
 
 Plain strings remain fully supported everywhere.
 
-For the full set of patterns (multi-turn, custom tools, skills, hooks, MCP, subagents, permissions, web UI), see [Getting Started](docs/getting-started.md).
+For the full set of patterns (multi-query, custom tools, skills, hooks, MCP, subagents, permissions, web UI), see [Getting Started](docs/getting-started.md).
 
 ## Documentation
 

@@ -10,7 +10,7 @@ Full examples are in [`examples/`](../examples/) organized by category:
 | **tools/** | Custom tools, permissions, binary read, TodoWrite, Edit tool |
 | **agents/** | Subagents, task tool modes, multitask orchestration |
 | **skills/** | In-context skills, filesystem skills agent |
-| **sessions/** | Session revert, fork, turn limits |
+| **sessions/** | Session revert, fork, query limits |
 | **streaming/** | Streaming responses, streaming with tools, subtask events |
 | **mcp/** | MCP server integration, custom MCP tools |
 | **advanced/** | Hooks, OpenAI/official API compat, web search, compact, reasoning effort |
@@ -22,7 +22,7 @@ Full examples are in [`examples/`](../examples/) organized by category:
 | --- | --- |
 | [`examples/basic/01-simple-query.ts`](../examples/basic/01-simple-query.ts) | Streaming query with event handling |
 | [`examples/basic/02-multi-tool.ts`](../examples/basic/02-multi-tool.ts) | Multi-tool orchestration (Glob + Bash) |
-| [`examples/basic/03-multi-turn.ts`](../examples/basic/03-multi-turn.ts) | Multi-turn session persistence |
+| [`examples/basic/03-multi-turn.ts`](../examples/basic/03-multi-turn.ts) | Multi-query session persistence |
 | [`examples/basic/04-prompt-api.ts`](../examples/basic/04-prompt-api.ts) | Blocking `prompt()` API |
 | [`examples/basic/05-custom-system-prompt.ts`](../examples/basic/05-custom-system-prompt.ts) | Custom system prompt |
 
@@ -63,7 +63,7 @@ Full examples are in [`examples/`](../examples/) organized by category:
 | [`examples/sessions/25-revert-fork-guide.ts`](../examples/sessions/25-revert-fork-guide.ts) | Complete guide: revert vs fork patterns |
 | [`examples/sessions/26-agent-revert-api.ts`](../examples/sessions/26-agent-revert-api.ts) | Agent revert API (programmatic session revert) |
 | [`examples/sessions/27-caller-revert-flow.ts`](../examples/sessions/27-caller-revert-flow.ts) | Caller-controlled revert flow |
-| [`examples/sessions/31-session-turn-limit.ts`](../examples/sessions/31-session-turn-limit.ts) | `maxTurns` limit to bound session execution |
+| [`examples/sessions/31-session-query-limit.ts`](../examples/sessions/31-session-query-limit.ts) | `maxSessionQueries` limit to bound session context |
 
 ### Streaming
 

@@ -5,7 +5,7 @@
  *
  * Flow:
  *   1. Create temp workspace + git init
- *   2. createAgent({ snapshotEngine }) — SDK auto-tracks _snapshot per turn
+ *   2. createAgent({ snapshotEngine }) — SDK auto-tracks _snapshot per query
  *   3. Round 1: LLM creates counter.txt = "1"
  *   4. Round 2: LLM edits counter.txt = "2"
  *   5. revertSession: file back to pre-round-1 state, conversation truncated

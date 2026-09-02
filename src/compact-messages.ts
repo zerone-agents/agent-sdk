@@ -10,7 +10,7 @@ import type { LLMProvider, NormalizedMessageParam } from './providers/types.js'
 import type { SDKCompactMessage } from './types.js'
 import {
   compactConversationWithProtectedTail,
-  PRUNE_PROTECTED_TURNS,
+  PRUNE_PROTECTED_QUERIES,
   type AutoCompactState,
 } from './utils/compact.js'
 
@@ -19,8 +19,8 @@ export interface CompactMessagesOptions {
   model: string
   messages: NormalizedMessageParam[]
   state: AutoCompactState
-  /** Number of recent user turns to preserve verbatim. */
-  protectedTurns?: number
+  /** Number of recent user queries to preserve verbatim. */
+  protectedQueries?: number
 }
 
 export interface CompactMessagesResult {
@@ -45,7 +45,7 @@ export async function* compactMessagesStream(
     opts.model,
     opts.messages,
     opts.state,
-    opts.protectedTurns ?? PRUNE_PROTECTED_TURNS,
+    opts.protectedQueries ?? PRUNE_PROTECTED_QUERIES,
   )
 
   if (result.summary.length === 0) {

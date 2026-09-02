@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import { compactSessionStream, compactSession } from './compact-session.js'
 import { loadSession, saveSession, deleteSession } from './session.js'
-import { shouldAutoCompact, PRUNE_PROTECTED_TURNS, createAutoCompactState } from './utils/compact.js'
+import { shouldAutoCompact, PRUNE_PROTECTED_QUERIES, createAutoCompactState } from './utils/compact.js'
 import type { LLMProvider, StreamChunk, NormalizedMessageParam } from './providers/types.js'
 
 /**
@@ -9,13 +9,13 @@ import type { LLMProvider, StreamChunk, NormalizedMessageParam } from './provide
  *
  * Scenarios (mapping to the issue's acceptance criteria):
  * 1. missing session → throws
- * 2. protected-tail preservation (recent turns structurally intact)
+ * 2. protected-tail preservation (recent queries structurally intact)
  * 3. coherent persistence (messageCount + token counters + summary + createdAt)
  * 4. provider failure → persisted transcript/metadata unchanged
  * 5. generator cancellation → persisted transcript unchanged
  * 6. resume after compaction does not auto-compact again (stale usage cleared)
  * 7. start/progress/end event stream compatibility
- * 8. protectedTurns option + same default as Agent.compactStream()
+ * 8. protectedQueries option + same default as Agent.compactStream()
  */
 
 /** Non-streaming mock provider returning a fixed summary. */
@@ -75,15 +75,15 @@ function makeCancellableProvider(cleanup: { ran: boolean }): LLMProvider {
 }
 
 /**
- * Build a conversation with `turns` user turns (+ assistant replies), each
+ * Build a conversation with `queries` user queries (+ assistant replies), each
  * with a distinctive content string, ending with a final user message.
- * Returns messages plus the split point: with default protectedTurns=6,
- * user turn indices >= turns-6 are protected, below are summarized.
+ * Returns messages plus the split point: with default protectedQueries=4,
+ * user query indices >= queries-6 are protected, below are summarized.
  */
-function buildConversation(turns: number): NormalizedMessageParam[] {
+function buildConversation(queries: number): NormalizedMessageParam[] {
   const messages: NormalizedMessageParam[] = []
-  for (let i = 1; i <= turns; i++) {
-    messages.push({ role: 'user', content: `user turn ${i} question about topic-${i}` })
+  for (let i = 1; i <= queries; i++) {
+    messages.push({ role: 'user', content: `user query ${i} question about topic-${i}` })
     messages.push({ role: 'assistant', content: `assistant answer ${i}` })
   }
   // Final user message (always the lastMsg, always protected)
@@ -132,21 +132,21 @@ describe('compactSessionStream (issue #46)', () => {
     expect(result.compacted).toBe(true)
     expect(result.summary).toContain('SUMMARY')
 
-    // Protected region: last 4 user turns of history + final message survive
-    // VERBATIM. User turns 7..10 + 'final user message' must appear as-is.
+    // Protected region: last 4 user queries of history + final message survive
+    // VERBATIM. User queries 7..10 + 'final user message' must appear as-is.
     const persisted = await loadSession(sid)
     expect(persisted).not.toBeNull()
     const allText = JSON.stringify(persisted!.messages)
-    for (let i = 7; i <= 10; i++) { // turns 7..10 = last 4 user turns of history
-      expect(allText).toContain(`user turn ${i} question about topic-${i}`)
+    for (let i = 7; i <= 10; i++) { // queries 7..10 = last 4 user queries of history
+      expect(allText).toContain(`user query ${i} question about topic-${i}`)
       expect(allText).toContain(`assistant answer ${i}`)
     }
     expect(allText).toContain('final user message')
 
-    // Summarized region: turns 1..6 survive ONLY as summary text — the
+    // Summarized region: queries 1..6 survive ONLY as summary text — the
     // verbatim strings must be gone (head was replaced by the summary pair).
-    expect(allText).not.toContain('user turn 1 question about topic-1')
-    expect(allText).not.toContain('user turn 6 question about topic-6')
+    expect(allText).not.toContain('user query 1 question about topic-1')
+    expect(allText).not.toContain('user query 6 question about topic-6')
 
     // Structural shape: [summary user, summary assistant, ...protected tail..., final]
     const first = persisted!.messages[0] as { role: string; content: string }
@@ -374,8 +374,8 @@ describe('compactSessionStream (issue #46)', () => {
     expect(persisted!.metadata.model).toBe('session-active-model')
   })
 
-  it('honors a custom protectedTurns and defaults to the Agent.compactStream default', async () => {
-    const sid = freshSessionId('turns')
+  it('honors a custom protectedQueries and defaults to the Agent.compactStream default', async () => {
+    const sid = freshSessionId('queries')
     await saveSession(sid, buildConversation(10), {
       cwd: '/tmp/project',
       model: 'test-model',
@@ -384,20 +384,20 @@ describe('compactSessionStream (issue #46)', () => {
     const result = await compactSession({
       sessionId: sid,
       provider: makeNonStreamingProvider(),
-      protectedTurns: 2,
+      protectedQueries: 2,
     })
 
-    // Only the last 2 user turns of history + final message survive verbatim
+    // Only the last 2 user queries of history + final message survive verbatim
     const allText = JSON.stringify(result.messages)
-    expect(allText).toContain('user turn 9 question about topic-9')
-    expect(allText).toContain('user turn 10 question about topic-10')
+    expect(allText).toContain('user query 9 question about topic-9')
+    expect(allText).toContain('user query 10 question about topic-10')
     expect(allText).toContain('final user message')
-    expect(allText).not.toContain('user turn 8 question about topic-8')
+    expect(allText).not.toContain('user query 8 question about topic-8')
   })
 
-  it('exposes the same default protected-turn count as Agent.compactStream()', () => {
+  it('exposes the same default protected-query count as Agent.compactStream()', () => {
     // The default is wired through in compact-session.ts; assert the constant
     // contract so a change to either default must consciously update both.
-    expect(PRUNE_PROTECTED_TURNS).toBe(4)
+    expect(PRUNE_PROTECTED_QUERIES).toBe(4)
   })
 })

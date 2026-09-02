@@ -58,14 +58,14 @@ console.log(result.text);
 
 The `apiType` is auto-detected from model name — models containing `gpt-`, `o1`, `o3`, `o4`, `deepseek`, `qwen`, `yi-`, `glm`, `mistral`, `gemma` automatically use `openai-completions`.
 
-### Multi-turn conversation
+### Multi-query conversation
 
 ```typescript
 import { createAgent } from "@zerone-agent/agent-sdk";
 
 const agent = createAgent({
   agent: {
-    description: "Multi-turn assistant",
+    description: "Multi-query assistant",
     prompt: "You are a helpful assistant.",
     maxTurns: 5,
   },
