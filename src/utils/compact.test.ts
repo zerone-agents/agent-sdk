@@ -327,3 +327,112 @@ describe('pruneMessages — P0 range protection (behavior change #1)', () => {
     expect((msgs[3] as any).content[1].content).toBe(BIG) // mixed message's own result: in-window → KEPT
   })
 })
+
+describe('compact-time tool pruning (spec v4 §4)', () => {
+  function bigQueries(n: number): NormalizedMessageParam[] {
+    const msgs: NormalizedMessageParam[] = []
+    for (let i = 1; i <= n; i++) msgs.push(...bigToolRound(`q${i}`, `id${i}`))
+    msgs.push(assistantMsg('final')) // lastMsg = assistant
+    return msgs
+  }
+
+  it('clears big results beyond the most recent toolProtectedQueries of the tail', async () => {
+    const result = await drain(compactConversationWithProtectedTail(
+      summaryProvider(), 'm', bigQueries(6), createAutoCompactState(),
+    ))
+    // text tail = last 4 queries (q3..q6); tool window protects last 2 (q5,q6)
+    const results = result.messages.slice(2)
+      .filter((m: any) => m.role === 'user' && Array.isArray(m.content) && m.content[0]?.type === 'tool_result')
+      .map((m: any) => m.content[0].content)
+    expect(results).toHaveLength(4)          // q3..q6
+    expect(results[0]).toBe('[Old tool result content cleared]') // q3
+    expect(results[1]).toBe('[Old tool result content cleared]') // q4
+    expect(results[2]).toBe(BIG)                                    // q5
+    expect(results[3]).toBe(BIG)                                    // q6
+  })
+
+  it('toolProtectedQueries >= window disables clearing', async () => {
+    const result = await drain(compactConversationWithProtectedTail(
+      summaryProvider(), 'm', bigQueries(6), createAutoCompactState(), 4, 4,
+    ))
+    const cleared = result.messages.filter((m: any) =>
+      m.role === 'user' && Array.isArray(m.content) &&
+      m.content[0]?.type === 'tool_result' &&
+      m.content[0].content === '[Old tool result content cleared]')
+    expect(cleared).toHaveLength(0)
+  })
+
+  it('lastMsg variance is PINNED: pending user lastMsg leaves N-1 completed queries full', async () => {
+    const msgs: NormalizedMessageParam[] = []
+    for (let i = 1; i <= 5; i++) msgs.push(...bigToolRound(`q${i}`, `id${i}`))
+    msgs.push(userMsg('pending final query')) // lastMsg = pending user → occupies a slot
+    const result = await drain(compactConversationWithProtectedTail(
+      summaryProvider(), 'm', msgs, createAutoCompactState(), 4, 2,
+    ))
+    // window [q2..q5, pending] (tail keeps 4 completed queries; pending occupies
+    // a slot): last 2 slots = q5 + pending → q2/q3/q4 cleared, q5 full
+    const results = result.messages.slice(2)
+      .filter((m: any) => m.role === 'user' && Array.isArray(m.content) && m.content[0]?.type === 'tool_result')
+      .map((m: any) => m.content[0].content)
+    expect(results).toHaveLength(4)                                 // q2..q5
+    expect(results[0]).toBe('[Old tool result content cleared]') // q2
+    expect(results[1]).toBe('[Old tool result content cleared]') // q3
+    expect(results[2]).toBe('[Old tool result content cleared]') // q4
+    expect(results[3]).toBe(BIG)                                    // q5 — only 1 completed query full
+  })
+
+  it('MIXED-CONTENT lastMsg counts as a query and keeps its own result', async () => {
+    const msgs: NormalizedMessageParam[] = []
+    for (let i = 1; i <= 4; i++) msgs.push(...bigToolRound(`q${i}`, `id${i}`))
+    msgs.push({ role: 'user', content: [
+      { type: 'text', text: '继续处理这个结果' },
+      { type: 'tool_result', tool_use_id: 'idM', content: BIG },
+    ] } as unknown as NormalizedMessageParam) // lastMsg = mixed
+    const result = await drain(compactConversationWithProtectedTail(
+      summaryProvider(), 'm', msgs, createAutoCompactState(), 4, 2,
+    ))
+    // Window queries (last 2 of [q1..q4, mixed]) = q4 + mixed → q1..q3 cleared
+    const results = result.messages.slice(2)
+      .filter((m: any) => m.role === 'user' && Array.isArray(m.content) && m.content[0]?.type === 'tool_result')
+      .map((m: any) => m.content[0].content)
+    expect(results).toEqual([
+      '[Old tool result content cleared]',
+      '[Old tool result content cleared]',
+      '[Old tool result content cleared]',
+      BIG, // q4 protected
+    ])
+    const mixed = result.messages.at(-1) as any
+    expect(mixed.content[1].content).toBe(BIG) // mixed lastMsg's own result kept verbatim
+  })
+
+  it('failed compaction returns the ORIGINAL array identity, never pruned', async () => {
+    const failing: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('provider down') },
+    }
+    const msgs = bigQueries(6)
+    const before = JSON.stringify(msgs)
+    const result = await drain(compactConversationWithProtectedTail(
+      failing, 'm', msgs, createAutoCompactState(),
+    ))
+    expect(result.summary).toBe('')
+    expect(result.messages).toBe(msgs as any)      // identity — original array
+    expect(JSON.stringify(msgs)).toBe(before)      // every object unchanged
+  })
+
+  it('success leaves the CALLER objects untouched (clone-delegate)', async () => {
+    const msgs = bigQueries(6)
+    const before = JSON.stringify(msgs)
+    await drain(compactConversationWithProtectedTail(
+      summaryProvider(), 'm', msgs, createAutoCompactState(),
+    ))
+    expect(JSON.stringify(msgs)).toBe(before)      // originals never mutated
+  })
+
+  it('messages.length < 2: copy returned, summary empty, no pruning', async () => {
+    const result = await drain(compactConversationWithProtectedTail(
+      summaryProvider(), 'm', [userMsg('only')], createAutoCompactState(),
+    ))
+    expect(result.summary).toBe('')
+  })
+})

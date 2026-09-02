@@ -305,6 +305,7 @@ export async function* compactConversationWithProtectedTail(
   messages: NormalizedMessageParam[],
   state: AutoCompactState,
   protectedQueries: number = PRUNE_PROTECTED_QUERIES,
+  toolProtectedQueries: number = TOOL_PROTECTED_QUERIES,
 ): AsyncGenerator<SDKCompactMessage, {
   messages: NormalizedMessageParam[]
   state: AutoCompactState
@@ -342,11 +343,24 @@ export async function* compactConversationWithProtectedTail(
     state,
   )
 
+  // Failure / empty summary → return the caller's array UNCHANGED (identity,
+  // never re-assembled, never pruned) — compaction failure contract.
+  if (result.summary.length === 0) {
+    return { messages, state: result.state, summary: '' }
+  }
+
+  // Success → prune ONLY the recent window [...tail, lastMsg] (the leading
+  // summary pair is excluded so it cannot consume a protected slot; lastMsg IS
+  // included — a pending user query legitimately occupies a slot, spec v4 §4).
+  const prunedRecent = pruneForCompaction(
+    [...tailMsgs, lastMsg] as any[],
+    toolProtectedQueries,
+  ) as NormalizedMessageParam[]
+
   return {
     messages: [
-      ...result.compactedMessages as NormalizedMessageParam[],
-      ...tailMsgs as NormalizedMessageParam[],
-      lastMsg,
+      ...(result.compactedMessages as NormalizedMessageParam[]),
+      ...prunedRecent,
     ],
     state: result.state,
     summary: result.summary,
@@ -444,6 +458,28 @@ export function pruneMessages(
       }
     }
   }
+}
+
+/**
+ * Immutable wrapper used ONLY by the compaction path: clones the window one
+ * level deep (message spread + per-block spread — pruneMessages writes only
+ * block.content, so one level suffices), then DELEGATES to the public
+ * in-place pruneMessages on the clone. The clearing algorithm exists only in
+ * pruneMessages (spec v4.1 §3: no duplicated guardrails). Never mutates the
+ * caller's objects — the failure contract requires byte-for-byte identical
+ * inputs, and the success path shares tail/lastMsg references with the caller.
+ * Module-internal (not re-exported at root). Clone depth is pinned by the
+ * "caller objects untouched" test: a too-shallow clone would mutate caller
+ * blocks and turn it red.
+ */
+function pruneForCompaction(messages: any[], protectedQueries: number): any[] {
+  const cloned = messages.map((msg: any) =>
+    Array.isArray(msg?.content)
+      ? { ...msg, content: msg.content.map((block: any) => ({ ...block })) }
+      : msg,
+  )
+  pruneMessages(cloned, protectedQueries)
+  return cloned
 }
 
 export function microCompactMessages(
