@@ -38,7 +38,7 @@ import { resolveAgent } from './resolve-agent.js'
 import { type MCPConnection } from './mcp/client.js'
 import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
-import { resolveTransportKind } from './mcp/client.js'
+import { resolveTransportKind, sanitizeLogField } from './mcp/client.js'
 import {
   saveSession,
   loadSession,
@@ -466,11 +466,17 @@ export class Agent {
             if (connection.status === 'connected' && connection.tools.length > 0) {
               this.toolPool = [...this.toolPool, ...connection.tools]
             } else if (connection.error) {
-              console.warn(`[MCP] Skipped "${name}": ${connection.error instanceof Error ? connection.error.message : connection.error}`)
+              console.warn('[MCP] Skipped server', {
+                server: sanitizeLogField(name),
+                errorType: connection.error instanceof Error ? connection.error.name : typeof connection.error,
+              })
             }
           }
         } catch (err: any) {
-          console.error(`[MCP] Failed to connect to "${name}": ${err.message}`)
+          console.error('[MCP] Failed to connect to server', {
+            server: sanitizeLogField(name),
+            errorType: err instanceof Error ? err.name : typeof err,
+          })
         }
       }
     }
