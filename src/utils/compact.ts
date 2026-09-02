@@ -42,7 +42,10 @@ export const PROTECTED_TOOL_NAMES = new Set<string>(['Skill'])
  * window so all "last N queries" decisions agree on the same range semantics
  * (P0 fix).
  */
-export function computeProtectedBoundary(messages: any[], queries: number): number {
+function computeProtectedBoundary(
+  messages: NormalizedMessageParam[],
+  queries: number,
+): number {
   if (queries <= 0) return messages.length
   const queryStarts: number[] = []
   for (let i = 0; i < messages.length; i++) {
@@ -295,6 +298,11 @@ export async function compactConversation(
  * verbatim). The last message and the most recent PRUNE_PROTECTED_QUERIES user
  * queries are protected; everything before that is summarized via
  * compactConversationStream. Reassembles [summary, ...tail, lastMessage].
+ * The split boundary is the SHARED computeProtectedBoundary primitive (single
+ * truth, spec v4.4 §4). A cutoff of 0 means the history is fully protected
+ * (no real user query, or protectedQueries >= query count): nothing is
+ * summarizable, so the provider is NOT called and the input array comes back
+ * unchanged — same contract shape as the <2 / failure identity paths.
  *
  * Used by both auto-compaction and manual `compact()` triggers so that both
  * paths share identical behavior.
@@ -319,17 +327,10 @@ export async function* compactConversationWithProtectedTail(
   const lastMsg = messages[messages.length - 1]
   const historyMsgs = messages.slice(0, -1)
 
-  const userMsgIndices: number[] = []
-  for (let i = 0; i < historyMsgs.length; i++) {
-    if (isUserQuery(historyMsgs[i])) {
-      userMsgIndices.push(i)
-    }
-  }
-  const protectedStart = Math.max(0, userMsgIndices.length - protectedQueries)
-  const cutoffIndex = protectedStart < userMsgIndices.length
-    ? userMsgIndices[protectedStart]
-    : historyMsgs.length
-
+  // 唯一边界真值；cutoff===0 即全保护（无真实 query，或 protectedQueries>=query 数）
+  // → 无可摘要内容：不调 provider，原样恒等返回（与 <2/失败契约同形）。
+  const cutoffIndex = computeProtectedBoundary(historyMsgs, protectedQueries)
+  if (cutoffIndex === 0) return { messages, state, summary: '' }
   const headMsgs = historyMsgs.slice(0, cutoffIndex)
   const tailMsgs = historyMsgs.slice(cutoffIndex)
 
@@ -339,7 +340,7 @@ export async function* compactConversationWithProtectedTail(
   const result: CompactResult = yield* compactConversationStream(
     provider,
     model,
-    headMsgs as any[],
+    headMsgs,
     state,
   )
 
@@ -352,10 +353,10 @@ export async function* compactConversationWithProtectedTail(
   // Success → prune ONLY the recent window [...tail, lastMsg] (the leading
   // summary pair is excluded so it cannot consume a protected slot; lastMsg IS
   // included — a pending user query legitimately occupies a slot, spec v4 §4).
-  const prunedRecent = pruneForCompaction(
-    [...tailMsgs, lastMsg] as any[],
-    toolProtectedQueries,
-  ) as NormalizedMessageParam[]
+  const prunedRecent = pruneForCompaction([
+    ...tailMsgs,
+    lastMsg,
+  ], toolProtectedQueries)
 
   return {
     messages: [
@@ -436,6 +437,8 @@ function buildCompactionPrompt(messages: any[]): string {
  * Public contract unchanged (void + mutates input). Preserves tool_use blocks,
  * pairing, and Skill results. Default = PRUNE_PROTECTED_QUERIES.
  */
+// `any[]` is the published package-root signature since v2.0.0 — kept for
+// back-compat; narrowing it would break existing external callers.
 export function pruneMessages(
   messages: any[],
   protectedQueries: number = PRUNE_PROTECTED_QUERIES,
@@ -472,10 +475,13 @@ export function pruneMessages(
  * "caller objects untouched" test: a too-shallow clone would mutate caller
  * blocks and turn it red.
  */
-function pruneForCompaction(messages: any[], protectedQueries: number): any[] {
-  const cloned = messages.map((msg: any) =>
-    Array.isArray(msg?.content)
-      ? { ...msg, content: msg.content.map((block: any) => ({ ...block })) }
+function pruneForCompaction(
+  messages: NormalizedMessageParam[],
+  protectedQueries: number,
+): NormalizedMessageParam[] {
+  const cloned: NormalizedMessageParam[] = messages.map((msg) =>
+    Array.isArray(msg.content)
+      ? { ...msg, content: msg.content.map((block) => ({ ...block })) }
       : msg,
   )
   pruneMessages(cloned, protectedQueries)

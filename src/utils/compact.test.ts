@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   compactConversationWithProtectedTail,
-  computeProtectedBoundary,
   createAutoCompactState,
   PRUNE_PROTECTED_QUERIES,
   pruneMessages,
@@ -63,6 +62,64 @@ describe('compactConversationWithProtectedTail protectedQueries', () => {
     const kept = JSON.stringify(result.messages.slice(2))
     expect(kept).toContain('query4') // protectedQueries=5 → query4..query8 保留
     expect(kept).not.toContain('query3')
+  })
+
+  // Split boundary contract via the shared primitive (spec v4.4 §4): a history
+  // with NO real user query is ALL protected → nothing to summarize → the
+  // provider must NOT be called; identity return (same contract shape as the
+  // <2 / failure paths). The old hand-rolled index math sent EVERYTHING to the
+  // summarization head for this shape — the opposite of the contract.
+
+  function noQueryHistory(): NormalizedMessageParam[] {
+    return [
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r1' }] } as unknown as NormalizedMessageParam,
+      assistantMsg('a1'),
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'r2' }] } as unknown as NormalizedMessageParam,
+      assistantMsg('a2'),
+    ]
+  }
+
+  function countingProvider(): { provider: LLMProvider; calls: () => number } {
+    let calls = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage(): Promise<CreateMessageResponse> {
+        calls++
+        return {
+          content: [{ type: 'text', text: 'SUM' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        } as CreateMessageResponse
+      },
+    }
+    return { provider, calls: () => calls }
+  }
+
+  it('no-query history + default protectedQueries → provider NOT called, identity return', async () => {
+    const msgs = noQueryHistory()
+    const { provider, calls } = countingProvider()
+    const result = await drain(
+      compactConversationWithProtectedTail(provider, 'm', msgs, createAutoCompactState()),
+    )
+    expect(calls()).toBe(0)
+    expect(result.summary).toBe('')
+    expect(result.messages).toBe(msgs) // SAME array identity — never re-assembled
+  })
+
+  it('no-query history + protectedQueries=0 → provider called once, head summarized', async () => {
+    const msgs = noQueryHistory()
+    const { provider, calls } = countingProvider()
+    const result = await drain(
+      compactConversationWithProtectedTail(provider, 'm', msgs, createAutoCompactState(), 0),
+    )
+    expect(calls()).toBe(1)
+    expect(result.summary).toBe('SUM')
+    // [summary pair + lastMsg] — the whole history minus lastMsg became head.
+    const first = result.messages[0] as any
+    expect(typeof first.content).toBe('string')
+    expect(first.content).toContain('[Previous conversation summary]')
+    expect(first.content).toContain('SUM')
+    expect((result.messages[1] as any).role).toBe('assistant')
+    expect(result.messages).toHaveLength(3) // pair + empty tail + lastMsg
   })
 })
 
@@ -182,72 +239,6 @@ describe('compaction timestamps (issue #54)', () => {
   })
 })
 
-/** One query = [user prompt, assistant tool_use, user tool_result wrapper]. */
-function toolRound(prompt: string, id: string, resultText: string): NormalizedMessageParam[] {
-  return [
-    userMsg(prompt),
-    { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: {} }] } as unknown as NormalizedMessageParam,
-    { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: resultText }] } as unknown as NormalizedMessageParam,
-  ]
-}
-
-describe('computeProtectedBoundary (query-range primitive)', () => {
-  it('returns the index of the Nth-from-last real query start', () => {
-    const msgs: NormalizedMessageParam[] = []
-    for (let i = 1; i <= 6; i++) msgs.push(...toolRound(`q${i}`, `id${i}`, 'ok'))
-    // query-start indices: 0,3,6,9,12,15; last 4 → boundary at index 6
-    expect(computeProtectedBoundary(msgs, 4)).toBe(6)
-  })
-
-  it('tool_result wrapper messages do not consume a slot', () => {
-    const msgs = [...toolRound('q1', 'a', 'ok'), ...toolRound('q2', 'b', 'ok')]
-    expect(computeProtectedBoundary(msgs, 1)).toBe(3) // q2's index, not its wrapper
-  })
-
-  it('a pending user query (no results yet) legitimately occupies a slot', () => {
-    const msgs = [...toolRound('q1', 'a', 'ok'), ...toolRound('q2', 'b', 'ok'), userMsg('q3 pending')]
-    // last 1 = q3 pending (index 6); last 2 = q2 (index 3)
-    expect(computeProtectedBoundary(msgs, 1)).toBe(6)
-    expect(computeProtectedBoundary(msgs, 2)).toBe(3)
-  })
-
-  it('queries >= count protects everything (boundary 0); <= 0 protects nothing (boundary length)', () => {
-    const msgs = [...toolRound('q1', 'a', 'ok')]
-    expect(computeProtectedBoundary(msgs, 4)).toBe(0)
-    expect(computeProtectedBoundary(msgs, 0)).toBe(msgs.length)
-  })
-
-  it('no real query → boundary 0', () => {
-    const msgs: NormalizedMessageParam[] = [assistantMsg('x')]
-    expect(computeProtectedBoundary(msgs, 4)).toBe(0)
-  })
-
-  it('PRECEDENCE: queries <= 0 wins even when the window has no real query', () => {
-    // A window that is ONLY a tool_result wrapper (no real query start).
-    const wrapper: NormalizedMessageParam[] = [
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'x' }] } as unknown as NormalizedMessageParam,
-    ]
-    expect(computeProtectedBoundary(wrapper, 0)).toBe(1) // 0 = no protection → clearable
-    expect(computeProtectedBoundary(wrapper, 4)).toBe(0) // positive + no query → all protected
-  })
-
-  it('MIXED-CONTENT: a [text, tool_result] user message IS a query start', () => {
-    const msgs: NormalizedMessageParam[] = [
-      ...toolRound('q1', 'a', 'ok'),
-      { role: 'user', content: [
-        { type: 'text', text: '继续处理这个结果' },
-        { type: 'tool_result', tool_use_id: 'b', content: 'r' },
-      ] } as unknown as NormalizedMessageParam,
-      assistantMsg('resp'),
-    ]
-    // Query starts = q1 (index 0) and the MIXED message (index 3) — identical
-    // semantics to session-queries.test.ts:142. Last 1 → boundary at 3.
-    // (The deleted compact.ts variant `!some(tool_result)` would have said
-    // boundary 0 — this test pins the unified predicate.)
-    expect(computeProtectedBoundary(msgs, 1)).toBe(3)
-  })
-})
-
 it('TOOL_PROTECTED_QUERIES defaults to 2', () => {
   expect(TOOL_PROTECTED_QUERIES).toBe(2)
 })
@@ -331,6 +322,47 @@ describe('pruneMessages — P0 range protection (behavior change #1)', () => {
     expect((msgs[2] as any).content[0].content).toBe('[Old tool result content cleared]') // q1's result: older query → cleared
     expect((msgs[3] as any).content[1].content).toBe(BIG) // mixed message's own result: in-window → KEPT
   })
+
+  // Protected-window semantics of the SHARED boundary primitive, observed
+  // through this public surface (the primitive itself is module-internal).
+
+  it('window with NO real query + protectedQueries=4 → nothing cleared (all protected)', () => {
+    const msgs: NormalizedMessageParam[] = [
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: BIG }] } as unknown as NormalizedMessageParam,
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] } as unknown as NormalizedMessageParam,
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: BIG }] } as unknown as NormalizedMessageParam,
+    ]
+    pruneMessages(msgs, 4)
+    expect((msgs[0] as any).content[0].content).toBe(BIG)
+    expect((msgs[2] as any).content[0].content).toBe(BIG)
+  })
+
+  it('same no-query window + protectedQueries=0 → everything cleared (precedence observable)', () => {
+    const msgs: NormalizedMessageParam[] = [
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: BIG }] } as unknown as NormalizedMessageParam,
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] } as unknown as NormalizedMessageParam,
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: BIG }] } as unknown as NormalizedMessageParam,
+    ]
+    pruneMessages(msgs, 0)
+    expect((msgs[0] as any).content[0].content).toBe('[Old tool result content cleared]')
+    expect((msgs[2] as any).content[0].content).toBe('[Old tool result content cleared]')
+  })
+
+  it('pending user query occupies the slot: queries=1 clears q3 big result', () => {
+    const msgs: NormalizedMessageParam[] = [
+      ...bigToolRound('q1', 'id1'),
+      ...bigToolRound('q2', 'id2'),
+      ...bigToolRound('q3', 'id3'),
+      userMsg('pending question'),
+    ]
+    // starts = [0, 3, 6, 9(pending)] → queries=1 → boundary=9 → q3's result
+    // (index 8) sits OUTSIDE the window → cleared. Without the pending msg
+    // the boundary would be 6 and index 8 would keep BIG.
+    pruneMessages(msgs, 1)
+    expect((msgs[2] as any).content[0].content).toBe('[Old tool result content cleared]')
+    expect((msgs[5] as any).content[0].content).toBe('[Old tool result content cleared]')
+    expect((msgs[8] as any).content[0].content).toBe('[Old tool result content cleared]')
+  })
 })
 
 describe('compact-time tool pruning (spec v4 §4)', () => {
@@ -388,7 +420,7 @@ describe('compact-time tool pruning (spec v4 §4)', () => {
 
   it('MIXED-CONTENT lastMsg counts as a query and keeps its own result', async () => {
     const msgs: NormalizedMessageParam[] = []
-    for (let i = 1; i <= 4; i++) msgs.push(...bigToolRound(`q${i}`, `id${i}`))
+    for (let i = 1; i <= 5; i++) msgs.push(...bigToolRound(`q${i}`, `id${i}`))
     msgs.push({ role: 'user', content: [
       { type: 'text', text: '继续处理这个结果' },
       { type: 'tool_result', tool_use_id: 'idM', content: BIG },
@@ -396,7 +428,13 @@ describe('compact-time tool pruning (spec v4 §4)', () => {
     const result = await drain(compactConversationWithProtectedTail(
       summaryProvider(), 'm', msgs, createAutoCompactState(), 4, 2,
     ))
-    // Window queries (last 2 of [q1..q4, mixed]) = q4 + mixed → q1..q3 cleared
+    // 5 starts > protectedQueries=4 → NON-degenerate head (q1 summarized).
+    // Window queries (last 2 of [q2..q5, mixed]) = q5 + mixed → q2..q4
+    // cleared — q4 clears ONLY because the MIXED lastMsg counts as a query
+    // and takes a slot. (Before the split-boundary unification this test used
+    // 4 rounds: with protectedQueries=4 the whole history is protected —
+    // identity return — and the old shape only "passed" by feeding an EMPTY
+    // head to the provider, the latent bug this round fixed.)
     const results = result.messages.slice(2)
       .filter((m: any) => m.role === 'user' && Array.isArray(m.content) && m.content[0]?.type === 'tool_result')
       .map((m: any) => m.content[0].content)
@@ -404,7 +442,7 @@ describe('compact-time tool pruning (spec v4 §4)', () => {
       '[Old tool result content cleared]',
       '[Old tool result content cleared]',
       '[Old tool result content cleared]',
-      BIG, // q4 protected
+      BIG, // q5 protected
     ])
     const mixed = result.messages.at(-1) as any
     expect(mixed.content[1].content).toBe(BIG) // mixed lastMsg's own result kept verbatim

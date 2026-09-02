@@ -15,9 +15,8 @@ export function isUserQuery(msg: NormalizedMessageParam): boolean {
   if (typeof msg.content === 'string') return true
 
   // Array content: fresh if it has at least one non-tool_result block
-  return (msg.content as any[]).some(
-    (block: any) => block.type !== 'tool_result',
-  )
+  // (content narrowed to the block-array union here; every member has .type)
+  return msg.content.some((block) => block.type !== 'tool_result')
 }
 
 /**
