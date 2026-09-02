@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { connectMCPServer, TimeoutError, createMCPToolDefinition, resolveTransportKind, sanitizeLogField } from './client.js'
+import { connectMCPServer, TimeoutError, createMCPToolDefinition, resolveTransportKind, sanitizeLogField, stableErrorType } from './client.js'
 import type { McpServerConfig } from '../types.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
@@ -461,6 +461,14 @@ describe('sanitizeLogField (issue #77)', () => {
     const name = 'a'.repeat(126)
     expect(sanitizeLogField(name, 128)).toBe('"' + name + '"')
   })
+
+  it('escapes C1 controls and Unicode line/paragraph separators (issue #81)', () => {
+    // JSON.stringify leaves U+0080–U+009F and U+2028/U+2029 raw — these render
+    // as line breaks, so the single-line contract requires explicit escaping.
+    const out = sanitizeLogField('a\u0085b\u2028c\u2029d\u0090e')
+    expect(out).toBe('"a\\u0085b\\u2028c\\u2029d\\u0090e"')
+    expect(out).not.toMatch(/[\u0080-\u009f\u2028\u2029]/)
+  })
 })
 
 describe('connectMCPServer failure log sanitization (issue #77)', () => {
@@ -546,5 +554,94 @@ describe('connectMCPServer failure log sanitization (issue #77)', () => {
     } finally {
       errSpy.mockRestore()
     }
+  })
+
+  it('mutated Error.name cannot leak credentials into errorType (issue #81)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const thrown = new Error('connect refused')
+      thrown.name = 'https://user:tok81@host/api'
+      mockClient = createMockClient({ connectShouldReject: true, connectRejectError: thrown })
+
+      const result = await connectMCPServer('srv', {
+        type: 'stdio', command: 'echo',
+        retryPolicy: { timeoutMs: 100, maxRetries: 0 },
+      })
+
+      expect(result.status).toBe('error')
+      const [msg, fields] = errSpy.mock.calls[0]
+      expect(msg).toBe('[MCP] Failed to connect to server')
+      expect(fields.errorType).toBe('Error')   // mutated name collapsed to a stable constant
+      const logged = JSON.stringify(errSpy.mock.calls[0])
+      expect(logged).not.toContain('tok81')
+      expect(logged).not.toContain('https://user')
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+})
+
+describe('stableErrorType (issue #81)', () => {
+  it('passes identifier-shaped Error names through', () => {
+    expect(stableErrorType(new Error('x'))).toBe('Error')
+    const t = new Error('x')
+    t.name = 'TimeoutError'
+    expect(stableErrorType(t)).toBe('TimeoutError')
+    const c = new Error('x')
+    c.name = 'My_Err-2'
+    expect(stableErrorType(c)).toBe('My_Err-2')
+  })
+
+  it('collapses mutated or unsafe names to a stable constant', () => {
+    const a = new Error('x')
+    a.name = 'https://user:tok@host'
+    expect(stableErrorType(a)).toBe('Error')
+    const b = new Error('x')
+    b.name = 'bad\nname'
+    expect(stableErrorType(b)).toBe('Error')
+    const d = new Error('x')
+    d.name = ''
+    expect(stableErrorType(d)).toBe('Error')
+    const e = new Error('x')
+    e.name = 'x'.repeat(100)
+    expect(stableErrorType(e)).toBe('Error')
+  })
+
+  it('uses typeof for non-Error values', () => {
+    expect(stableErrorType('boom')).toBe('string')
+    expect(stableErrorType(42)).toBe('number')
+    expect(stableErrorType(undefined)).toBe('undefined')
+  })
+})
+
+describe('connectMCPServer close semantics (issue #81)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    attempt = 0
+  })
+
+  it('successful connection close() closes the underlying client exactly once', async () => {
+    mockClient = createMockClient({ tools: [{ name: 'tool1', description: 'd', inputSchema: {} }] })
+    const result = await connectMCPServer('test', {
+      type: 'stdio', command: 'echo',
+      retryPolicy: { timeoutMs: 1000, maxRetries: 0 },
+    })
+
+    expect(result.status).toBe('connected')
+    expect(mockClient.close).not.toHaveBeenCalled()
+    await result.close()
+    expect(mockClient.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('error connection close() is a safe no-op', async () => {
+    mockClient = createMockClient({ connectShouldReject: true })
+    const result = await connectMCPServer('test', {
+      type: 'stdio', command: 'echo',
+      retryPolicy: { timeoutMs: 100, maxRetries: 0 },
+    })
+
+    expect(result.status).toBe('error')
+    await expect(result.close()).resolves.toBeUndefined()
+    expect(mockClient.close).not.toHaveBeenCalled()
   })
 })

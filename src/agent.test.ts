@@ -741,3 +741,56 @@ describe('Agent MCP failure log sanitization (issue #77)', () => {
     }
   })
 })
+
+describe('Agent MCP failure errorType hardening (issue #81)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('Skipped log collapses mutated error names', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const err = new Error('handshake')
+      err.name = 'https://user:tok81@host'
+      vi.mocked(acquireMCPConnection).mockResolvedValueOnce({
+        name: 'prod-db',
+        status: 'error',
+        tools: [],
+        error: err,
+        close: async () => {},
+      } as any)
+      const agent = new Agent(makeBaseOptions({
+        mcpServers: { 'prod-db': { type: 'stdio', command: 'echo' } },
+      }))
+
+      await getPoolTools(agent)
+
+      const fields = warnSpy.mock.calls[0][1]
+      expect(fields.errorType).toBe('Error')
+      expect(JSON.stringify(warnSpy.mock.calls[0])).not.toContain('tok81')
+      expect(JSON.stringify(warnSpy.mock.calls[0])).not.toContain('https://user')
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('catch log collapses mutated error names', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const thrown = new Error('spawn failed')
+      thrown.name = 'tok81\nvia-name'
+      vi.mocked(acquireMCPConnection).mockRejectedValueOnce(thrown)
+      const agent = new Agent(makeBaseOptions({
+        mcpServers: { 'prod-db': { type: 'stdio', command: 'echo' } },
+      }))
+
+      await getPoolTools(agent)
+
+      const fields = errSpy.mock.calls[0][1]
+      expect(fields.errorType).toBe('Error')
+      expect(JSON.stringify(errSpy.mock.calls[0])).not.toContain('tok81')
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+})

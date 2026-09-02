@@ -237,8 +237,26 @@ async function connectOnce(
  * like the server name.
  */
 export function sanitizeLogField(value: string, maxLength = 128): string {
-  const s = JSON.stringify(value)
+  const s = JSON.stringify(value).replace(
+    // JSON.stringify leaves C1 controls (U+0080–U+009F) and U+2028/U+2029
+    // raw — all render as line breaks, so escape them explicitly (issue #81).
+    /[\u0080-\u009f\u2028\u2029]/g,
+    (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'),
+  )
   return s.length > maxLength ? s.slice(0, maxLength - 2) + '…"' : s
+}
+
+const STABLE_ERROR_TYPE_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
+
+/**
+ * Stable, non-sensitive error-type diagnostic for logs (issue #81).
+ * Error.name is mutable — attacker-influenced input can reach it — so only
+ * identifier-shaped names pass through; anything else collapses to 'Error'.
+ * Non-Error values report their typeof instead.
+ */
+export function stableErrorType(err: unknown): string {
+  const name = err instanceof Error ? err.name : typeof err
+  return typeof name === 'string' && STABLE_ERROR_TYPE_RE.test(name) ? name : 'Error'
 }
 
 /**
@@ -271,7 +289,7 @@ export async function connectMCPServer(
 
   console.error('[MCP] Failed to connect to server', {
     server: sanitizeLogField(name),
-    errorType: lastError!.name,
+    errorType: stableErrorType(lastError),
   })
   return {
     name,
