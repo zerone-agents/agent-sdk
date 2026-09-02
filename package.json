@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/zerone-agents/agent-sdk/issues"
   },
-  "version": "2.4.0",
+  "version": "3.0.0",
   "description": "Open-source Agent SDK. Runs the full agent loop in-process — no local CLI required. Deploy anywhere: cloud, serverless, Docker, CI/CD.",
   "type": "module",
   "main": "./dist/index.js",
