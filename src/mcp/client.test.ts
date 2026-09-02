@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { connectMCPServer, TimeoutError, createMCPToolDefinition, resolveTransportKind } from './client.js'
+import { connectMCPServer, TimeoutError, createMCPToolDefinition, resolveTransportKind, sanitizeLogField } from './client.js'
 import type { McpServerConfig } from '../types.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
@@ -53,6 +53,7 @@ function createMockClient(overrides?: {
   listToolsDelay?: number
   tools?: any[]
   connectShouldReject?: boolean | ((attempt: number) => boolean)
+  connectRejectError?: Error
   listToolsShouldReject?: boolean
 }) {
   const {
@@ -60,6 +61,7 @@ function createMockClient(overrides?: {
     listToolsDelay = 0,
     tools = [],
     connectShouldReject = false,
+    connectRejectError,
     listToolsShouldReject = false,
   } = overrides || {}
 
@@ -70,7 +72,7 @@ function createMockClient(overrides?: {
         ? connectShouldReject(attempt)
         : connectShouldReject
       if (shouldReject) {
-        throw new Error('connect failed')
+        throw connectRejectError ?? new Error('connect failed')
       }
       await delay(connectDelay, options?.signal)
     }),
@@ -435,5 +437,114 @@ describe('stdio cwd wiring (issue #14 follow-up: working-directory base)', () =>
     // constructor should be called with URL + requestInit only; no cwd leaks
     const args = (StreamableHTTPClientTransport as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(args[0]).toBeInstanceOf(URL)
+  })
+})
+
+describe('sanitizeLogField (issue #77)', () => {
+  it('wraps plain ASCII in quotes unchanged', () => {
+    expect(sanitizeLogField('my-server')).toBe('"my-server"')
+  })
+
+  it('escapes newlines and control characters to a single line', () => {
+    const out = sanitizeLogField('evil\nserver\u0007')
+    expect(out).toBe('"evil\\nserver\\u0007"')
+    expect(out).not.toMatch(/[\n\u0000-\u001f]/)
+  })
+
+  it('truncates over-length values with ellipsis, keeping the closing quote', () => {
+    const out = sanitizeLogField('x'.repeat(300), 128)
+    expect(out.length).toBe(128)
+    expect(out.endsWith('…"')).toBe(true)
+  })
+
+  it('passes values whose quoted length equals maxLength', () => {
+    const name = 'a'.repeat(126)
+    expect(sanitizeLogField(name, 128)).toBe('"' + name + '"')
+  })
+})
+
+describe('connectMCPServer failure log sanitization (issue #77)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    attempt = 0
+  })
+
+  it('final failure log omits raw error message and credentials; returned error intact', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const thrown = new Error('ETIMEDOUT https://user:sekret-token@db.internal:5432/path')
+      mockClient = createMockClient({ connectShouldReject: true, connectRejectError: thrown })
+
+      const result = await connectMCPServer('prod-db', {
+        type: 'stdio', command: 'echo',
+        retryPolicy: { timeoutMs: 100, maxRetries: 0 },
+      })
+
+      // Return-value contract unchanged: error status + the SAME Error instance
+      // (the full underlying error stays the host's to handle/sanitize).
+      expect(result.status).toBe('error')
+      expect(result.error).toBe(thrown)
+
+      // Log contract: static message + structured fields, no underlying text.
+      expect(errSpy).toHaveBeenCalledTimes(1)
+      const [msg, fields] = errSpy.mock.calls[0]
+      expect(msg).toBe('[MCP] Failed to connect to server')
+      const logged = JSON.stringify(errSpy.mock.calls[0])
+      expect(logged).not.toContain('sekret-token')
+      expect(logged).not.toContain('https://user')
+      expect(logged).not.toContain('ETIMEDOUT')
+      expect(fields.errorType).toBe('Error')
+      expect(fields.server).toBe('"prod-db"')
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it('retry warnings carry no error text or credentials; attempt counters sanitized', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mockClient = createMockClient({
+        connectShouldReject: true,
+        connectRejectError: new Error('GET https://user:tok9@host/v1 failed'),
+      })
+      await connectMCPServer('srv', {
+        type: 'stdio', command: 'echo',
+        retryPolicy: { timeoutMs: 100, maxRetries: 2 },
+      })
+
+      expect(warnSpy).toHaveBeenCalledTimes(2)
+      for (const call of warnSpy.mock.calls) {
+        const logged = JSON.stringify(call)
+        expect(logged).not.toContain('tok9')
+        expect(logged).not.toContain('https://user')
+      }
+      const [msg, fields] = warnSpy.mock.calls[0]
+      expect(msg).toBe('[MCP] Retrying connection')
+      expect(fields).toMatchObject({ server: '"srv"', attempt: 2, maxAttempts: 3 })
+      // The final failure log is equally clean
+      expect(JSON.stringify(errSpy.mock.calls[0])).not.toContain('tok9')
+    } finally {
+      warnSpy.mockRestore()
+      errSpy.mockRestore()
+    }
+  })
+
+  it('server name with newline/control chars cannot inject log lines', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mockClient = createMockClient({ connectShouldReject: true })
+      await connectMCPServer('evil\nserver\u0007', {
+        type: 'stdio', command: 'echo',
+        retryPolicy: { timeoutMs: 100, maxRetries: 0 },
+      })
+      const fields = errSpy.mock.calls[0][1]
+      expect(fields.server).toBe('"evil\\nserver\\u0007"')
+      // No raw control characters anywhere in the logged fields
+      const flat = JSON.stringify(errSpy.mock.calls[0])
+      expect(flat).not.toMatch(/[\n\u0000-\u0008\u000b\u000c\u000e-\u001f]/)
+    } finally {
+      errSpy.mockRestore()
+    }
   })
 })
