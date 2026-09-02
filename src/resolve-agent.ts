@@ -1,28 +1,69 @@
 /**
  * Agent capability resolution.
  *
- * resolveAgent() computes an agent's effective tools and skills exactly
- * once; everything downstream (engine prompt, init message, Skill tool)
- * consumes the resolved sets directly — no repeated filtering.
+ * resolveAgentCapabilities() computes an agent's effective tools and skills
+ * exactly once from a RuntimeEnvironment + AgentCapabilities pair; everything
+ * downstream (engine prompt, init message, Skill tool) consumes the resolved
+ * sets directly — no repeated filtering.
+ *
+ * Pipeline order (issue #72):
+ *   built-ins + caps.customTools + caps.connectionTools
+ *     → allow-list (built-ins only, #64) → deny-list (full pool)
+ *     → [spawn] remove Task/MultiTask
+ *     → [spawn·Explore] isReadOnly || Bash (deferred tools included)
+ *     → lazy split (FindTool catalog)
  */
 
-import type { AgentDefinition, AgentEnvironment, ResolvedAgent } from './types.js'
+import type {
+  AgentCapabilities,
+  AgentDefinition,
+  AgentEnvironment,
+  ResolvedAgent,
+  RuntimeEnvironment,
+} from './types.js'
 import { getAllBaseTools, assembleToolPool, applyAllowedTools, applyDisallowedTools } from './tools/index.js'
-import { filterSkillsByAllowlist } from './skills/registry.js'
+import { SkillRegistry, filterSkillsByAllowlist } from './skills/registry.js'
 import { createEmptyServices } from './tools/services.js'
 
-export function resolveAgent(env: AgentEnvironment, definition: AgentDefinition): ResolvedAgent {
-  // Source-based filtering contract (issue #64): the allow-list gates ONLY
-  // the built-in base tools; custom and MCP tools bypass it by design (hosts
-  // wire MCP servers explicitly — an allow-list naming base tools must not
-  // silently strip them). The deny-list applies to the whole merged pool.
-  const allowedBase = applyAllowedTools(getAllBaseTools(), definition.allowedTools)
-  const pool = assembleToolPool([...allowedBase, ...env.customTools], env.mcpTools)
-  const filtered = applyDisallowedTools(pool, definition.disallowedTools)
+export interface ResolveAgentOptions {
+  /** Spawn pipeline: removes Task/MultiTask; Explore applies the read-only safety policy. */
+  spawn?: { mode: 'General' | 'Explore' }
+  /** Root path: the Agent session's registry. Spawn builds a fresh one from capabilities.skills. */
+  skillRegistry?: SkillRegistry
+}
+
+function isReadOnlyTool(tool: { isReadOnly?: () => boolean }): boolean {
+  return tool.isReadOnly?.() === true
+}
+
+export function resolveAgentCapabilities(
+  runtime: RuntimeEnvironment,
+  capabilities: AgentCapabilities,
+  definition: AgentDefinition,
+  opts: ResolveAgentOptions = {},
+): ResolvedAgent {
+  // Source-based filtering contract (#64): allow-list gates built-ins only;
+  // custom/connection tools bypass. Deny-list applies to the merged pool.
+  const allowedBase = applyAllowedTools(getAllBaseTools(), capabilities.allowedTools)
+  let pool = assembleToolPool(
+    [...allowedBase, ...(capabilities.customTools ?? [])],
+    capabilities.connectionTools ?? [],
+  )
+  pool = applyDisallowedTools(pool, capabilities.disallowedTools)
+
+  // Spawn pipeline (issue #72): nesting ban, then Explore dynamic safety
+  // policy on the FINAL pool — deferred tools included, so write tools stay
+  // undiscoverable (absent from the FindTool catalog) in Explore mode.
+  if (opts.spawn) {
+    pool = pool.filter((t) => t.name !== 'Task' && t.name !== 'MultiTask')
+  }
+  if (opts.spawn?.mode === 'Explore') {
+    pool = pool.filter((t) => isReadOnlyTool(t) || t.name === 'Bash')
+  }
 
   // Final-pool check lives here (not in the list filters) because only
   // resolveAgent sees the full merged picture across all sources (#64).
-  if (filtered.length === 0) {
+  if (pool.length === 0) {
     console.warn(
       '[tools] agent resolved to zero tools — check allowedTools/disallowedTools ' +
         '(allow-list gates built-in tools only; deny-list applies to everything).',
@@ -33,29 +74,48 @@ export function resolveAgent(env: AgentEnvironment, definition: AgentDefinition)
   // out (allow-list miss or deny-list hit) or marked deferred itself (a
   // misconfiguration), fall back to all-eager — otherwise deferred tools
   // would be neither visible nor discoverable.
-  const lazyLoadingEnabled = filtered.some(t => t.name === 'FindTool' && !t.deferred)
+  const lazyLoadingEnabled = pool.some(t => t.name === 'FindTool' && !t.deferred)
 
-  const tools = lazyLoadingEnabled ? filtered.filter(t => !t.deferred) : filtered
-  const deferredTools = lazyLoadingEnabled ? filtered.filter(t => t.deferred) : []
-  let skills = filterSkillsByAllowlist(
-    env.skillRegistry.getUserInvocable(),
-    definition.availableSkills,
-  )
+  const tools = lazyLoadingEnabled ? pool.filter(t => !t.deferred) : pool
+  const deferredTools = lazyLoadingEnabled ? pool.filter(t => t.deferred) : []
 
-  // Cross-validation: if the Skill tool was filtered out, skills can't be
-  // invoked through the SDK. Drop them so every downstream consumer (system
-  // prompt, init event, tool-executor context, subagent resolution) stays
-  // consistent instead of advertising a tool the model cannot call.
+  // Agent-owned skill set; dropped when the Skill tool is filtered out so
+  // every downstream consumer (system prompt, init event, tool-executor
+  // context, subagent resolution) stays consistent.
+  let skills = capabilities.skills ?? []
   if (!tools.some((t) => t.name === 'Skill')) {
     skills = []
   }
+
+  const skillRegistry = opts.spawn
+    ? SkillRegistry.fromDefinitions(skills)
+    : (opts.skillRegistry ?? new SkillRegistry())
 
   return {
     definition,
     tools,
     deferredTools,
     skills,
-    services: env.toolServices ?? createEmptyServices(),
-    skillRegistry: env.skillRegistry,
+    services: runtime.toolServices,
+    skillRegistry,
   }
+}
+
+/**
+ * @deprecated Legacy two-arg signature (removed in 3.0). Bridges the old
+ * AgentEnvironment contract onto resolveAgentCapabilities — behavior identical.
+ */
+export function resolveAgent(env: AgentEnvironment, definition: AgentDefinition): ResolvedAgent {
+  return resolveAgentCapabilities(
+    { ...env, toolServices: env.toolServices ?? createEmptyServices() },
+    {
+      connectionTools: env.mcpTools,
+      customTools: env.customTools,
+      skills: filterSkillsByAllowlist(env.skillRegistry.getUserInvocable(), definition.availableSkills),
+      allowedTools: definition.capabilities?.allowedTools ?? definition.allowedTools,
+      disallowedTools: definition.capabilities?.disallowedTools ?? definition.disallowedTools,
+    },
+    definition,
+    { skillRegistry: env.skillRegistry },
+  )
 }

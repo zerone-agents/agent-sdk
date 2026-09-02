@@ -530,12 +530,15 @@ export interface AgentDefinition {
   prompt: PromptSpec
   /** Appended to the resolved system prompt */
   appendPrompt?: string
-  /** Tool allow-list (consumed by resolveAgent). */
-  allowedTools?: string[]
-  disallowedTools?: string[]
-  /** Skill allow-list (consumed by resolveAgent). */
-  availableSkills?: string[]
   maxTurns?: number
+  /** Agent-local capabilities (issue #72). Unset = empty pool (spawn) / assembled view (root). */
+  capabilities?: AgentCapabilities
+  /** @deprecated Moved to capabilities.allowedTools; removed in 3.0 */
+  allowedTools?: string[]
+  /** @deprecated Moved to capabilities.disallowedTools; removed in 3.0 */
+  disallowedTools?: string[]
+  /** Root-only: filters the runtime skill registry. Ignored at spawn — subagents use capabilities.skills. */
+  availableSkills?: string[]
 }
 
 /** Session-level shared "world" built once at runtime; all agents share it. */
@@ -552,6 +555,37 @@ export interface AgentEnvironment {
   toolServices?: ToolServices
   /** Pre-computed subprocess env for Bash/Grep tools. */
   subprocessEnv: Record<string, string | undefined>
+}
+
+/** Runtime-global environment — one per Runtime/session, inherited by every agent (issue #72). */
+export interface RuntimeEnvironment {
+  provider: import('./providers/types.js').LLMProvider
+  model: string
+  maxTokens: number
+  cwd: string
+  subprocessEnv: Record<string, string | undefined>
+  settingSources?: SettingSource[]
+  /**
+   * Runtime-level host services (askUser/config/webSearch/webFetch/cron are
+   * shared by reference). `findTool` is the ONE per-agent exception: callers
+   * own its lifetime — root reuses the Agent's session registry across
+   * queries; every spawn passes a fresh one.
+   */
+  toolServices: import('./tools/services.js').ToolServices
+}
+
+/** Agent-local capabilities — isolated per agent; NEVER inherited from parent (issue #72). */
+export interface AgentCapabilities {
+  /** Materialized MCP/connection tools. Default []. No parent fallback. */
+  connectionTools?: ToolDefinition[]
+  /** Default []. No parent fallback. */
+  customTools?: ToolDefinition[]
+  /** Agent-owned skill set. Default: root = assembled registry view; spawn = []. */
+  skills?: import('./skills/types.js').SkillDefinition[]
+  /** Allow-list gating built-in tools ONLY (issue #64 contract). */
+  allowedTools?: string[]
+  /** Deny-list applied to the full merged pool. */
+  disallowedTools?: string[]
 }
 
 /** An agent's effective capabilities, resolved exactly once by resolveAgent. */

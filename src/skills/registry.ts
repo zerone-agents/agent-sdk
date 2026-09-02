@@ -17,6 +17,13 @@ export class SkillRegistry {
 
   constructor(private base?: SkillRegistry) {}
 
+  /** Build a registry pre-populated with an agent-owned skill set (issue #72 spawn path). */
+  static fromDefinitions(skills: SkillDefinition[]): SkillRegistry {
+    const reg = new SkillRegistry()
+    for (const s of skills) reg.register(s)
+    return reg
+  }
+
   register(definition: SkillDefinition, source: SkillSource = 'programmatic'): void {
     this.own.set(definition.name, { ...definition, source })
     for (const alias of definition.aliases ?? []) {

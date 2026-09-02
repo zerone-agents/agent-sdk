@@ -19,10 +19,10 @@ vi.mock('./tools/index.js', async (importOriginal) => {
   }
 })
 
-import { resolveAgent } from './resolve-agent.js'
+import { resolveAgent, resolveAgentCapabilities } from './resolve-agent.js'
 import { resolvePrompt } from './prompts/system-prompts.js'
 import { SkillRegistry } from './skills/registry.js'
-import type { AgentEnvironment } from './types.js'
+import type { AgentEnvironment, AgentCapabilities, RuntimeEnvironment } from './types.js'
 
 function makeEnv(overrides: Partial<AgentEnvironment> = {}): AgentEnvironment {
   const skillRegistry = new SkillRegistry()
@@ -266,5 +266,87 @@ describe('per-agent seam (issue #72)', () => {
     const env = makeEnv()
     const r = resolveAgent(env, { description: 'd', prompt: 'p' })
     expect(r.skillRegistry).toBe(env.skillRegistry)
+  })
+})
+
+function makeRuntime(overrides: Partial<RuntimeEnvironment> = {}): RuntimeEnvironment {
+  return {
+    provider: { apiType: 'anthropic-messages', createMessage: vi.fn() } as any,
+    model: 'test-model',
+    maxTokens: 1000,
+    cwd: '/tmp',
+    subprocessEnv: {},
+    toolServices: {
+      askUser: null,
+      findTool: { deferredTools: [], activatedTools: new Set() },
+      config: new Map(),
+      cron: null,
+    },
+    ...overrides,
+  }
+}
+
+describe('resolveAgentCapabilities (v3 pipeline, issue #72)', () => {
+  const def = { description: 'd', prompt: 'p' }
+
+  it('merges caps pools with base tools; custom/connection bypass allow-list', () => {
+    const custom = { name: 'C1', isReadOnly: () => true, call: vi.fn() } as any
+    const conn = { name: 'mcp__x__y', isReadOnly: () => false, call: vi.fn() } as any
+    const r = resolveAgentCapabilities(
+      makeRuntime(),
+      { customTools: [custom], connectionTools: [conn], allowedTools: ['Read'] },
+      def,
+    )
+    const names = r.tools.map(t => t.name)
+    expect(names).toContain('Read')
+    expect(names).not.toContain('Bash')        // allow-list gates built-ins
+    expect(names).toContain('C1')              // custom bypasses allow-list
+    expect(names).toContain('mcp__x__y')       // connection bypasses allow-list
+  })
+
+  it('spawn removes Task/MultiTask after allow/deny', () => {
+    const r = resolveAgentCapabilities(makeRuntime(), {}, def, { spawn: { mode: 'General' } })
+    const names = r.tools.map(t => t.name)
+    expect(names).not.toContain('Task')
+    expect(names).not.toContain('MultiTask')
+  })
+
+  it('Explore keeps only readOnly tools + Bash, write tools undiscoverable in deferred catalog', () => {
+    const roDeferred = { name: 'mcp__ro__peek', isReadOnly: () => true, deferred: true, shortDescription: 's', call: vi.fn() } as any
+    const wrDeferred = { name: 'mcp__wr__mutate', isReadOnly: () => false, deferred: true, shortDescription: 's', call: vi.fn() } as any
+    const r = resolveAgentCapabilities(
+      makeRuntime(),
+      { connectionTools: [roDeferred, wrDeferred] },
+      def,
+      { spawn: { mode: 'Explore' } },
+    )
+    expect(r.tools.some(t => t.name === 'Bash')).toBe(true)
+    expect(r.tools.some(t => t.name === 'Write')).toBe(false)
+    const deferredNames = r.deferredTools.map(t => t.name)
+    expect(deferredNames).toContain('mcp__ro__peek')
+    expect(deferredNames).not.toContain('mcp__wr__mutate')
+  })
+
+  it('spawn builds fresh SkillRegistry from caps.skills; no skills without caps', () => {
+    const skill = { name: 's1', description: 'd', getPrompt: async () => [] } as any
+    const r = resolveAgentCapabilities(
+      makeRuntime(), { skills: [skill] }, def, { spawn: { mode: 'General' } },
+    )
+    expect(r.skills.map(s => s.name)).toEqual(['s1'])
+    expect(r.skillRegistry.get('s1')).toBeDefined()
+    const empty = resolveAgentCapabilities(makeRuntime(), {}, def, { spawn: { mode: 'General' } })
+    expect(empty.skills).toEqual([])
+  })
+
+  it('root uses opts.skillRegistry and caps.skills verbatim', () => {
+    const reg = new SkillRegistry()
+    const r = resolveAgentCapabilities(makeRuntime(), { skills: [] }, def, { skillRegistry: reg })
+    expect(r.skillRegistry).toBe(reg)
+  })
+
+  it('uses runtime.toolServices as resolved.services', () => {
+    const rt = makeRuntime()
+    const r = resolveAgentCapabilities(rt, {}, def)
+    expect(r.services).toBe(rt.toolServices)
   })
 })
