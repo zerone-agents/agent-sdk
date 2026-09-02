@@ -55,8 +55,9 @@ together. Both interfaces preserve recent queries verbatim by default.
 
 **Compaction options** — two independent knobs control how much of the recent
 tail survives. `toolProtectedQueries` is new across all four surfaces;
-`QueryEngine.compact`/`Agent.compact` (and their streams) gain both parameters
-— previously they accepted no arguments.
+`QueryEngine.compactStream`/`compact` and `Agent.compactStream`/`compact` gain
+both parameters; the engine stream previously accepted positional
+`protectedQueries` only.
 
 | Option                 | Default | Meaning                                                                 |
 | ---------------------- | ------- | ----------------------------------------------------------------------- |
@@ -67,7 +68,7 @@ tail survives. `toolProtectedQueries` is new across all four surfaces;
 | ---------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `compactMessagesStream(opts)` / `compactMessages(opts)`                 | `opts.protectedQueries`, `opts.toolProtectedQueries`         |
 | `compactSessionStream(opts)` / `compactSession(opts)`                   | `opts.protectedQueries`, `opts.toolProtectedQueries`         |
-| `QueryEngine.compactStream(protectedQueries?, toolProtectedQueries?)`  | positional args (previously **no arguments**)                |
+| `QueryEngine.compactStream(protectedQueries?, toolProtectedQueries?)`  | positional args (previously positional `protectedQueries` only) |
 | `QueryEngine.compact(protectedQueries?, toolProtectedQueries?)`        | positional args (previously **no arguments**)                |
 | `Agent.compactStream(opts?)` / `Agent.compact(opts?)`                  | `{ protectedQueries?, toolProtectedQueries? }` (previously **no arguments**) |
 
