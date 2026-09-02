@@ -132,21 +132,21 @@ describe('compactSessionStream (issue #46)', () => {
     expect(result.compacted).toBe(true)
     expect(result.summary).toContain('SUMMARY')
 
-    // Protected region: last 6 user turns of history + final message survive
+    // Protected region: last 4 user turns of history + final message survive
     // VERBATIM. User turns 7..10 + 'final user message' must appear as-is.
     const persisted = await loadSession(sid)
     expect(persisted).not.toBeNull()
     const allText = JSON.stringify(persisted!.messages)
-    for (let i = 5; i <= 10; i++) { // turns 5..10 = last 6 user turns of history
+    for (let i = 7; i <= 10; i++) { // turns 7..10 = last 4 user turns of history
       expect(allText).toContain(`user turn ${i} question about topic-${i}`)
       expect(allText).toContain(`assistant answer ${i}`)
     }
     expect(allText).toContain('final user message')
 
-    // Summarized region: turns 1..4 survive ONLY as summary text — the
+    // Summarized region: turns 1..6 survive ONLY as summary text — the
     // verbatim strings must be gone (head was replaced by the summary pair).
     expect(allText).not.toContain('user turn 1 question about topic-1')
-    expect(allText).not.toContain('user turn 4 question about topic-4')
+    expect(allText).not.toContain('user turn 6 question about topic-6')
 
     // Structural shape: [summary user, summary assistant, ...protected tail..., final]
     const first = persisted!.messages[0] as { role: string; content: string }
@@ -398,6 +398,6 @@ describe('compactSessionStream (issue #46)', () => {
   it('exposes the same default protected-turn count as Agent.compactStream()', () => {
     // The default is wired through in compact-session.ts; assert the constant
     // contract so a change to either default must consciously update both.
-    expect(PRUNE_PROTECTED_TURNS).toBe(6)
+    expect(PRUNE_PROTECTED_TURNS).toBe(4)
   })
 })
