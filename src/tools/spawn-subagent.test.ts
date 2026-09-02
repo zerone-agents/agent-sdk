@@ -228,3 +228,24 @@ describe('runSubagent', () => {
     expect(prompt).toContain('Do NOT modify')
   })
 })
+
+describe('buildSubagentTools MCP handling', () => {
+  it('promotes an allowed deferred MCP tool instead of dropping it', () => {
+    const mcp = {
+      name: 'mcp__knowledge--researcher__knowledge_search',
+      deferred: true,
+      isReadOnly: () => true,
+      call: vi.fn(),
+    } as any
+    const withMcp = { ...env, mcpTools: [mcp] }
+    const definition = {
+      description: 'Researcher',
+      prompt: 'Search knowledge.',
+      allowedTools: [mcp.name],
+    }
+
+    const tools = buildSubagentTools(withMcp, definition, 'General')
+    expect(tools.map((t) => t.name)).toEqual([mcp.name])
+    expect(tools[0].deferred).toBe(false)
+  })
+})

@@ -65,8 +65,14 @@ export function buildSubagentTools(
   definition: AgentDefinition,
   mode: SpawnSubagentMode,
 ): ToolDefinition[] {
-  const { tools } = resolveAgent(env, definition)
-  let pool = tools.filter((t) => t.name !== 'Task' && t.name !== 'MultiTask')
+  const { tools, deferredTools } = resolveAgent(env, definition)
+  // Subagents do not carry a deferred-tool registry of their own. Promote
+  // their allowed deferred tools to eager schemas instead of silently
+  // dropping them (the previous behavior made every default-deferred MCP tool
+  // unavailable inside Task/MultiTask runs).
+  let pool = [...tools, ...deferredTools]
+    .filter((t) => t.name !== 'Task' && t.name !== 'MultiTask')
+    .map((t) => t.deferred ? { ...t, deferred: false } : t)
   if (mode === 'Explore') {
     pool = pool.filter((t) => isReadOnlyTool(t) || t.name === 'Bash')
   }
@@ -117,7 +123,7 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     definition: { ...agentDef, prompt: buildSubagentSystemPrompt(agentDef, opts.mode) },
     tools: buildSubagentTools(opts.env, agentDef, opts.mode),
     skills: resolveAgent(opts.env, agentDef).skills,
-    deferredTools: [],  // sub-agent tools are resolved above without split; this stays empty
+    deferredTools: [], // buildSubagentTools promotes allowed deferred schemas to eager
   }
 
   const sessionId = crypto.randomUUID()
