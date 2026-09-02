@@ -85,7 +85,7 @@ integrations to `compactSessionStream()` or `compactSession()`.
 | `apiKey`             | `string`                                | `ZERONE_AGENT_API_KEY` env var | API key                                                              |
 | `baseURL`            | `string`                                | —                      | Custom API endpoint                                                  |
 | `cwd`                | `string`                                | `process.cwd()`        | Working directory                                                    |
-| `agent`             | `AgentDefinition`                       | —                      | Main agent definition: `prompt` (system prompt), `appendPrompt`, `allowedTools` (exact names or trailing-`*` prefixes — gates **built-in tools only**; custom and MCP tools bypass the allow-list; a bare `*` selects everything), `disallowedTools` (same syntax, applies to every tool including MCP, except a bare `*` is a literal no-op), `availableSkills`, `maxTurns` (default `10`). Stale wildcards, zero-match allow-lists, and zero-tool agents all log warnings |
+| `agent`             | `AgentDefinition`                       | —                      | Main agent definition: `prompt` (system prompt), `appendPrompt`, `maxTurns` (default `10`), `capabilities` (Agent-local capability bundle — see [Subagent capability isolation](#subagent-capability-isolation-30)), `availableSkills` (root-only allowlist over the runtime skill registry). Stale wildcards, zero-match allow-lists, and zero-tool agents all log warnings |
 | `customTools`        | `ToolDefinition[]`                      | —                      | Custom tools, merged with the built-in tool pool                     |
 | `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` / `auto` |
 | `canUseTool`         | `function`                              | —                      | Custom permission callback                                           |
@@ -94,7 +94,7 @@ integrations to `compactSessionStream()` or `compactSession()`.
 | `thinking`           | `ThinkingConfig`                        | —                      | Extended thinking (`{ type: 'adaptive' \| 'enabled' \| 'disabled', budgetTokens? }`); disabled unless set |
 | `effort`             | `string`                                | —                      | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`; not sent unless set |
 | `mcpServers`         | `Record<string, McpServerConfig>`       | —                      | MCP server connections                                               |
-| `subAgents`          | `Record<string, AgentDefinition>`       | —                      | Subagent definitions for Task/MultiTask                              |
+| `subAgents`          | `Record<string, AgentDefinition>`       | —                      | Subagent definitions for Task/MultiTask; each entry owns its `capabilities` — never inherited from the parent |
 | `hooks`              | `Record<string, Array<{ matcher?, hooks, timeout? }>>` | —            | Lifecycle hooks                                                      |
 | `resume`             | `string`                                | —                      | Resume session by ID                                                 |
 | `continue`           | `boolean`                               | `false`                | Continue most recent session                                         |
@@ -112,6 +112,79 @@ integrations to `compactSessionStream()` or `compactSession()`.
 > **AGENTS.md size limit**: each file is capped at 32 KiB. Files exceeding this
 > size are skipped; an `[ERROR]` message is injected into the system prompt in
 > their place.
+
+### Subagent capability isolation (3.0)
+
+Every agent operates on a **RuntimeEnvironment** (Runtime-global, inherited from
+the session) plus its own **AgentCapabilities** (Agent-local, never inherited,
+never fallen back):
+
+```ts
+interface AgentCapabilities {
+  connectionTools?: ToolDefinition[]  // materialized MCP/connection tools (default [])
+  customTools?: ToolDefinition[]      // default []
+  skills?: SkillDefinition[]          // agent-owned skill set (default [] at spawn)
+  allowedTools?: string[]             // gates built-in tools only
+  disallowedTools?: string[]          // applies to the full merged pool
+}
+```
+
+**Inherited (Runtime-global)** — provider, model, credentials, cwd, subprocess
+env, runtime services (askUser / config / webSearch / webFetch / cron are
+shared by reference), and the built-in tool implementations.
+
+**Isolated (Agent-local)** — `prompt` / `appendPrompt` / `maxTurns` plus every
+`capabilities` field. `child.X ?? parent.X` fallbacks do not exist: an unset
+capability resolves to the child's own empty value, and siblings never see each
+other's capabilities.
+
+**Resolution order** (issue #72 — the Explore filter is a dynamic safety policy
+on the final pool, not a static deny-list):
+
+```text
+built-in tools + caps.customTools + caps.connectionTools
+  → allow-list (built-ins only) → deny-list (full merged pool)
+  → [spawn] remove Task/MultiTask        ← delegation depth is fixed at 1
+  → [spawn·Explore] isReadOnly || Bash   ← write tools stay undiscoverable
+  → lazy split (FindTool catalog)
+```
+
+MCP `annotations.readOnlyHint` maps to `isReadOnly`, so read-only MCP tools
+work in Explore subagents and join the read-only concurrency batch.
+
+The `findTool` registry is per-agent: every spawn gets a fresh catalog (a
+subagent can never clobber the parent's deferred registry), while the parent's
+activations persist across queries as before.
+
+**Migration (2.x → 3.0)**
+
+| 2.x | 3.0 |
+|-----|-----|
+| `AgentEnvironment` | `RuntimeEnvironment` + `AgentCapabilities` |
+| `resolveAgent(env, def)` | `resolveAgent(runtime, capabilities, def, opts?)` |
+| `def.allowedTools` / `def.disallowedTools` | `def.capabilities.allowedTools` / `.disallowedTools` |
+| parent `customTools` / `mcpTools` flowing into subagents | explicit `entry.capabilities` (below) |
+| subagent `availableSkills` (shared-registry filter) | `capabilities.skills: [...]` (agent-owned set) |
+| `QueryEngineConfig.env` | `QueryEngineConfig.runtime` |
+
+```ts
+// 2.x: subagents implicitly inherited the parent's tool pools.
+// 3.0: capabilities are explicit and isolated.
+const agent = new Agent({
+  subAgents: {
+    researcher: {
+      description: 'Research', prompt: '...',
+      capabilities: {
+        // Host-materialized connection tools — acquireMCPConnection's
+        // refcounted pool reuses one connection across entries.
+        connectionTools: hubConnections.researcher,
+        customTools: [searchTool],
+        allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'FindTool'],
+      },
+    },
+  },
+})
+```
 
 ### MCP server transports
 
