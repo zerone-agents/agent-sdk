@@ -110,7 +110,7 @@ describe('acquireRuntimeLock fault boundaries (issue #52 review)', () => {
     await lock.release()
   })
 
-  it('a cleanup failure during acquisition does not mask the original error', async () => {
+  it('a cleanup failure during acquisition is surfaced together with the original error', async () => {
     faults.write = Object.assign(new Error('ENOSPC: no space left on device'), {
       code: 'ENOSPC',
     })
@@ -118,9 +118,17 @@ describe('acquireRuntimeLock fault boundaries (issue #52 review)', () => {
       code: 'EACCES',
     })
 
-    // The cleanup unlink failing (EACCES) must not replace the original
-    // write failure (ENOSPC) in the rejection.
-    await expect(acquireRuntimeLock(dir)).rejects.toMatchObject({ code: 'ENOSPC' })
+    // The caller must learn BOTH: the original failure AND that the partial
+    // lock file may still exist (so the wedged directory is never invisible).
+    const rejection = await acquireRuntimeLock(dir).then(
+      () => {
+        throw new Error('expected acquireRuntimeLock to reject')
+      },
+      (err: unknown) => err as Error,
+    )
+    expect(rejection.message).toMatch(/ENOSPC/)
+    expect(rejection.message).toMatch(/EACCES/)
+    expect(rejection.message).toMatch(/delete it manually/)
   })
 
   it('a failed handle close after a successful write still cleans up the lock file', async () => {
@@ -141,5 +149,30 @@ describe('acquireRuntimeLock fault boundaries (issue #52 review)', () => {
     faults.unlinkCalls = 0
     await Promise.all([lock.release(), lock.release()])
     expect(faults.unlinkCalls).toBe(1)
+  })
+
+  it('a failed concurrent release rejects for EVERY caller — no silent success', async () => {
+    const lock = await acquireRuntimeLock(dir)
+    const lockPath = path.join(dir, 'runtime.lock')
+    faults.unlink = Object.assign(new Error('EACCES: permission denied, unlink'), {
+      code: 'EACCES',
+    })
+
+    // Shared-outcome release: the unlink failure rejects for BOTH callers
+    // (round-3 review — the second caller must never resolve while the lock
+    // file still exists).
+    const results = await Promise.allSettled([lock.release(), lock.release()])
+    expect(results).toHaveLength(2)
+    expect(results.every((r) => r.status === 'rejected')).toBe(true)
+    for (const result of results) {
+      expect((result as PromiseRejectedResult).reason).toMatchObject({ code: 'EACCES' })
+    }
+    // The lock file verifiably still exists.
+    await expect(stat(lockPath)).resolves.toBeTruthy()
+
+    // The token reset on failure: after the fault clears, a retry succeeds.
+    faults.unlink = null
+    await lock.release()
+    await expect(stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
