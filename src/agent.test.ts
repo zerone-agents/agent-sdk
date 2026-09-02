@@ -4,9 +4,10 @@ import { Agent, query } from './agent.js'
 import { createSdkMcpServer } from './sdk-mcp-server.js'
 import { tool } from './tool-helper.js'
 import type { AgentOptions, McpServerConfig, AgentInput, ContentBlockParam, SDKMessage } from './types.js'
-import type { LLMProvider, CreateMessageParams, StreamChunk, NormalizedMessageParam } from './providers/types.js'
+import type { LLMProvider, CreateMessageParams, CreateMessageResponse, StreamChunk, NormalizedMessageParam } from './providers/types.js'
 import type { HookInput } from './hooks.js'
 import { loadSession, deleteSession } from './session.js'
+import { PRUNE_THRESHOLD_CHARS } from './utils/compact.js'
 
 // Mocked pool — only the acquireMCPConnection symbol is replaced; the rest
 // of the module surface (types, internal helpers) stays intact.
@@ -384,6 +385,61 @@ function makeStreamingAgent(captured: NormalizedMessageParam[]): Agent {
   const agent = new Agent(makeBaseOptions({ includePartialMessages: true }))
   ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider(captured)
   return agent
+}
+
+/** Non-streaming provider returning a fixed compaction summary. */
+function bigToolSummaryProvider(): LLMProvider {
+  return {
+    apiType: 'anthropic-messages',
+    async createMessage(): Promise<CreateMessageResponse> {
+      return {
+        content: [{ type: 'text', text: 'SUMMARY' }],
+        stopReason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 1, totalInputTokens: 1 },
+      } as any
+    },
+  }
+}
+
+/**
+ * One query = [user prompt, assistant tool_use, user tool_result wrapper].
+ * The tool_result payload is oversized (PRUNE_THRESHOLD_CHARS + 1) so that
+ * compaction-time pruning (issue #86) must clear it outside the protected
+ * tool-result window.
+ */
+function bigToolRound(prompt: string, id: string): NormalizedMessageParam[] {
+  return [
+    { role: 'user', content: prompt } as NormalizedMessageParam,
+    { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: {} }] } as unknown as NormalizedMessageParam,
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'x'.repeat(PRUNE_THRESHOLD_CHARS + 1) }] } as unknown as NormalizedMessageParam,
+  ]
+}
+
+/**
+ * Build an agent (mirroring makeStreamingAgent's pattern: constructed with
+ * makeBaseOptions, mock provider injected via bracket notation) whose history
+ * is seeded with `n` big-tool rounds plus a final assistant message.
+ * History is seeded AFTER setupDone resolves so async setup cannot overwrite
+ * it (setup() resumes a persisted session into this.history when present).
+ */
+async function makeAgentWithBigToolHistory(n: number): Promise<Agent> {
+  const agent = new Agent(makeBaseOptions())
+  ;(agent as unknown as { provider: LLMProvider }).provider = bigToolSummaryProvider()
+  await (agent as any).setupDone
+  const history: NormalizedMessageParam[] = []
+  for (let i = 1; i <= n; i++) history.push(...bigToolRound(`query ${i}`, `id-${i}`))
+  history.push({ role: 'assistant', content: 'final' } as NormalizedMessageParam)
+  ;(agent as any).history = history
+  return agent
+}
+
+/** Count user tool_result blocks whose payload was cleared by pruning. */
+function countCleared(messages: any[]): number {
+  return messages.filter((m: any) =>
+    m.role === 'user' && Array.isArray(m.content) &&
+    m.content[0]?.type === 'tool_result' &&
+    m.content[0].content === '[Old tool result content cleared]',
+  ).length
 }
 
 describe('AgentInput: rich content through public APIs (issue #60)', () => {
@@ -843,5 +899,17 @@ describe('Agent MCP failure errorType hardening (issue #81)', () => {
     } finally {
       vi.restoreAllMocks()
     }
+  })
+})
+
+describe('Agent.compact option forwarding (issue #86)', () => {
+  it('Agent.compact forwards toolProtectedQueries', async () => {
+    const agentA = await makeAgentWithBigToolHistory(6) // local helper mirroring existing setup
+    await agentA.compact({ toolProtectedQueries: 0 })
+    const clearedA = countCleared(await agentA.getMessageHistory())
+    const agentB = await makeAgentWithBigToolHistory(6)
+    await agentB.compact({ toolProtectedQueries: 6 })
+    const clearedB = countCleared(await agentB.getMessageHistory())
+    expect(clearedA).toBeGreaterThan(clearedB)
   })
 })

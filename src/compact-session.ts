@@ -24,7 +24,7 @@ import type { LLMProvider, NormalizedMessageParam } from './providers/types.js'
 import type { SDKCompactMessage } from './types.js'
 import { loadSession, saveSession } from './session.js'
 import { compactMessagesStream } from './compact-messages.js'
-import { PRUNE_PROTECTED_QUERIES, type AutoCompactState } from './utils/compact.js'
+import { PRUNE_PROTECTED_QUERIES, TOOL_PROTECTED_QUERIES, type AutoCompactState } from './utils/compact.js'
 
 /** Options for {@link compactSessionStream}. */
 export interface CompactSessionOptions {
@@ -45,6 +45,9 @@ export interface CompactSessionOptions {
    * `Agent.compactStream()`.
    */
   protectedQueries?: number
+  /** Queries within the compaction tail that keep FULL tool_result payloads.
+   *  Defaults to TOOL_PROTECTED_QUERIES (2). */
+  toolProtectedQueries?: number
 }
 
 /** Final result of a session-level compaction. */
@@ -82,6 +85,7 @@ export async function* compactSessionStream(
 
   const model = opts.model ?? session.metadata.model
   const protectedQueries = opts.protectedQueries ?? PRUNE_PROTECTED_QUERIES
+  const toolProtectedQueries = opts.toolProtectedQueries ?? TOOL_PROTECTED_QUERIES
 
   // Seed the compaction state from persisted usage so the summarizer sees the
   // same starting conditions as an Agent-based compaction of this session.
@@ -104,6 +108,7 @@ export async function* compactSessionStream(
     messages: session.messages,
     state,
     protectedQueries,
+    toolProtectedQueries,
   })
 
   // Unsuccessful compaction (provider failure surfaced by the underlying

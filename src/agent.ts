@@ -848,7 +848,7 @@ export class Agent {
    * so callers can surface progress (e.g. a `/compact` command). Uses the same
    * algorithm as auto-compaction. Persists the session afterwards.
    */
-  async *compactStream(): AsyncGenerator<SDKCompactMessage> {
+  async *compactStream(opts?: { protectedQueries?: number; toolProtectedQueries?: number }): AsyncGenerator<SDKCompactMessage> {
     await this.setupDone
     await this.executeHooks('PreCompact')
     try {
@@ -867,6 +867,8 @@ export class Agent {
         model: this.modelId,
         messages: this.history,
         state,
+        protectedQueries: opts?.protectedQueries,
+        toolProtectedQueries: opts?.toolProtectedQueries,
       })
       this.history = result.messages
       this.lastInputTokens = result.state.lastInputTokens
@@ -898,9 +900,9 @@ export class Agent {
    * Consumes `compactStream()` and returns the resulting summary. Useful when a
    * caller does not need incremental progress events.
    */
-  async compact(): Promise<{ summary: string; compacted: boolean }> {
+  async compact(opts?: { protectedQueries?: number; toolProtectedQueries?: number }): Promise<{ summary: string; compacted: boolean }> {
     let summary = ''
-    for await (const ev of this.compactStream()) {
+    for await (const ev of this.compactStream(opts)) {
       if (ev.type === 'compact' && ev.phase === 'end') {
         summary = ev.summary ?? ''
       }

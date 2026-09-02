@@ -10,6 +10,7 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createEmptyServices } from './tools/services.js'
 import { getTodos, TodoWriteTool } from './tools/todowrite.js'
+import { PRUNE_THRESHOLD_CHARS } from './utils/compact.js'
 
 // Mirrors the real @anthropic-ai/sdk APIConnectionError: a plain Error with
 // name='Error', fixed message, and the underlying failure on `cause`.
@@ -648,6 +649,58 @@ describe('maxSessionQueries halved compaction', () => {
     expect(json).not.toContain('SESSION SUMMARY')
     expect(json).not.toContain('seed query 1')
     expect(json).toContain('seed query 3')
+  })
+})
+
+describe('QueryEngine.compact option threading (issue #86)', () => {
+  /** Non-streaming provider returning a fixed compaction summary. */
+  function summaryCompactionProvider(): LLMProvider {
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage(): Promise<CreateMessageResponse> {
+        return {
+          content: [{ type: 'text', text: 'SUMMARY' }],
+          stopReason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1, totalInputTokens: 1 },
+        } as any
+      },
+    }
+  }
+
+  /**
+   * Engine seeded (via the public messages field, same as seedQueries above)
+   * with `n` big-tool rounds — oversized tool_result payloads so compaction-
+   * time pruning (issue #86) must clear them outside the protected window —
+   * plus a final assistant message. Provider only answers summaries; no
+   * streaming path is exercised by compact().
+   */
+  function makeEngineWithBigToolHistory(n: number): QueryEngine {
+    const engine = new QueryEngine(makeConfig(summaryCompactionProvider()))
+    for (let i = 1; i <= n; i++) {
+      engine.messages.push(
+        { role: 'user', content: `query ${i}` } as never,
+        { role: 'assistant', content: [{ type: 'tool_use', id: `id-${i}`, name: 'Read', input: {} }] } as never,
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: `id-${i}`, content: 'x'.repeat(PRUNE_THRESHOLD_CHARS + 1) }] } as never,
+      )
+    }
+    engine.messages.push({ role: 'assistant', content: 'final' } as never)
+    return engine
+  }
+
+  /** Count user tool_result blocks whose payload was cleared by pruning. */
+  function countCleared(messages: any[]): number {
+    return messages.filter((m: any) =>
+      m.role === 'user' && Array.isArray(m.content) &&
+      m.content[0]?.type === 'tool_result' &&
+      m.content[0].content === '[Old tool result content cleared]',
+    ).length
+  }
+
+  it('QueryEngine.compact accepts and forwards both query knobs', async () => {
+    const engine = makeEngineWithBigToolHistory(6)
+    await engine.compact(4, 4) // both positionals — previously impossible (compact() took no args)
+    const cleared = countCleared(engine.messages)
+    expect(cleared).toBe(0) // tool window >= tail → nothing cleared
   })
 })
 
