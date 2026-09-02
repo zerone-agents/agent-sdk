@@ -205,4 +205,32 @@ describe('MCP connection pool', () => {
 
     await releaseMCPConnection(conn2)
   })
+
+  it('hostile throws (revoked Proxy / throwing toString) collapse on the pool path; no dirty entry; next acquire reconnects (review R3)', async () => {
+    const { proxy, revoke } = Proxy.revocable({}, {})
+    revoke()
+    const hostileString = { toString() { throw new Error('no string for you') } }
+    vi.mocked(buildMCPClient)
+      .mockRejectedValueOnce(proxy)
+      .mockRejectedValueOnce(hostileString)
+      .mockImplementation(async () => mockBuiltClient())   // clean build for the reconnect
+
+    // Same config key throughout: every failed build caches NOTHING, so each
+    // acquire re-runs the build instead of serving a poisoned entry.
+    const c1 = await acquireMCPConnection('srv', stdioConfig())
+    expect(c1.status).toBe('error')
+    expect(c1.error).toBeInstanceOf(Error)
+    expect((c1.error as Error).message).toBe('connection attempt threw a non-stringifiable value')
+    await c1.close()   // error-connection close is a safe no-op
+
+    const c2 = await acquireMCPConnection('srv', stdioConfig())
+    expect(c2.status).toBe('error')
+    expect((c2.error as Error).message).toBe('connection attempt threw a non-stringifiable value')
+
+    const c3 = await acquireMCPConnection('srv', stdioConfig())
+    expect(c3.status).toBe('connected')
+    expect(buildMCPClient).toHaveBeenCalledTimes(3)
+
+    await releaseMCPConnection(c3)
+  })
 })
