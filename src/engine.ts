@@ -157,7 +157,7 @@ export class QueryEngine {
 
   constructor(config: QueryEngineConfig, initialUsage?: { lastInputTokens?: number; lastOutputTokens?: number }) {
     this.config = config
-    this.provider = config.env.provider
+    this.provider = config.runtime.provider
     this.compactState = createAutoCompactState()
     if (initialUsage?.lastInputTokens) {
       this.compactState.lastInputTokens = initialUsage.lastInputTokens
@@ -184,7 +184,7 @@ export class QueryEngine {
       return await this.hookRegistry.execute(event, {
         event,
         sessionId: this.sessionId,
-        cwd: this.config.env.cwd,
+        cwd: this.config.runtime.cwd,
         ...extra,
       })
     } catch {
@@ -277,8 +277,8 @@ export class QueryEngine {
       session_id: this.sessionId,
       tools: this.config.resolved.tools.map(t => t.name),
       skills: this.config.resolved.skills.map(s => s.name),
-      model: this.config.env.model,
-      cwd: this.config.env.cwd,
+      model: this.config.runtime.model,
+      cwd: this.config.runtime.cwd,
       mcp_servers: [],
       permission_mode: 'bypassPermissions',
       system_prompt: systemPrompt,
@@ -316,7 +316,7 @@ export class QueryEngine {
       }
 
       // Auto-compact if context is too large
-      if (shouldAutoCompact(this.compactState, this.config.env.model, this.config.contextWindow)) {
+      if (shouldAutoCompact(this.compactState, this.config.runtime.model, this.config.contextWindow)) {
         for await (const ev of this.compactStream()) {
           yield ev
         }
@@ -415,8 +415,8 @@ export class QueryEngine {
           const seenToolUseIndices = new Set<number>()
 
           const streamFn = () => this.provider.createMessageStream!({
-            model: this.config.env.model,
-            maxTokens: this.config.env.maxTokens,
+            model: this.config.runtime.model,
+            maxTokens: this.config.runtime.maxTokens,
             system: systemPrompt,
             messages: apiMessages,
             tools: tools.length > 0 ? tools : undefined,
@@ -515,8 +515,8 @@ export class QueryEngine {
           response = await withRetry(
             async () => {
               return this.provider.createMessage({
-                model: this.config.env.model,
-                maxTokens: Math.min(this.config.env.maxTokens, MAX_TOKENS_NON_STREAMING),
+                model: this.config.runtime.model,
+                maxTokens: Math.min(this.config.runtime.maxTokens, MAX_TOKENS_NON_STREAMING),
                 system: systemPrompt,
                 messages: apiMessages,
                 tools: tools.length > 0 ? tools : undefined,
@@ -546,7 +546,7 @@ export class QueryEngine {
           try {
             const result = await compactConversation(
               this.provider,
-              this.config.env.model,
+              this.config.runtime.model,
               this.messages as any[],
               this.compactState,
             )
@@ -584,7 +584,7 @@ export class QueryEngine {
         this.totalUsage.cache_creation_input_tokens = response.usage.cache_creation_input_tokens
         this.totalUsage.cache_read_input_tokens = response.usage.cache_read_input_tokens
         this.totalUsage.total_input_tokens = response.usage.totalInputTokens
-        this.totalCost += estimateCost(this.config.env.model, response.usage)
+        this.totalCost += estimateCost(this.config.runtime.model, response.usage)
         this.compactState.lastInputTokens = response.usage.totalInputTokens || response.usage.input_tokens
         this.compactState.lastOutputTokens = response.usage.output_tokens
       }
@@ -717,7 +717,7 @@ export class QueryEngine {
       total_cost_usd: this.totalCost,
       duration_api_ms: Math.round(this.apiTimeMs),
       usage: { ...this.totalUsage },
-      model_usage: { [this.config.env.model]: { input_tokens: this.totalUsage.input_tokens, output_tokens: this.totalUsage.output_tokens } },
+      model_usage: { [this.config.runtime.model]: { input_tokens: this.totalUsage.input_tokens, output_tokens: this.totalUsage.output_tokens } },
       cost: this.totalCost,
       truncated: streamTruncated || undefined,
     }
@@ -811,7 +811,7 @@ export class QueryEngine {
     try {
       const gen = compactMessagesStream({
         provider: this.provider,
-        model: this.config.env.model,
+        model: this.config.runtime.model,
         messages: this.messages,
         state: this.compactState,
         protectedTurns,

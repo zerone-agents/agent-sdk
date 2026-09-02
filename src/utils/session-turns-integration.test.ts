@@ -91,6 +91,14 @@ function buildConfig(
       skillRegistry: new SkillRegistry(),
       subprocessEnv: {},
     },
+    runtime: {
+      provider,
+      model: 'test-model',
+      maxTokens: 1024,
+      cwd: process.cwd(),
+      subprocessEnv: {},
+      toolServices: createEmptyServices(),
+    },
     resolved: {
       definition: { description: 'test', prompt: 'test prompt' },
       tools: [],

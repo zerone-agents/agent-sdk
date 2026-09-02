@@ -12,6 +12,7 @@ import type {
   AgentDefinition,
   AgentEnvironment,
   ResolvedAgent,
+  RuntimeEnvironment,
   SDKSubagentMessage,
   ToolDefinition,
 } from '../types.js'
@@ -32,6 +33,8 @@ const PROPAGATED_EVENT_TYPES = ['assistant', 'partial_message', 'tool_result', '
 
 export interface SpawnSubagentOptions {
   env: AgentEnvironment
+  /** Runtime-global environment (issue #72); replaces env in 3.0 */
+  runtime: RuntimeEnvironment
   subAgents: Record<string, AgentDefinition>
   agentName?: string
   fallbackAgentId: string
@@ -127,6 +130,7 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
 
   const engine = new QueryEngine({
     env: opts.env,
+    runtime: opts.runtime,
     resolved,
     agentId: agentName,
     maxTurns,

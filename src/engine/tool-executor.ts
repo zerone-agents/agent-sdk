@@ -72,7 +72,7 @@ export interface ToolPermissionResult {
 export interface ToolExecutionContext {
   config: Pick<
     QueryEngineConfig,
-    'env' | 'resolved' | 'subAgents' | 'canUseTool' | 'abortSignal' | 'agentId'
+    'env' | 'runtime' | 'resolved' | 'subAgents' | 'canUseTool' | 'abortSignal' | 'agentId'
   >
   messages: NormalizedMessageParam[]
   sessionId: string
@@ -317,6 +317,7 @@ export async function runToolsBackground(
     skillRegistry: ctx.config.resolved.skillRegistry,
     // SubagentContext
     env: ctx.config.env,
+    runtime: ctx.config.runtime,
     subAgents: ctx.config.subAgents ?? {},
     emitEvent: emitSubagentEvent
       ? (event: SDKMessage) => {

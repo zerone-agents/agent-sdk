@@ -21,7 +21,7 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
 
   // Environment block (<env> XML with model identity, platform, date, etc.)
   try {
-    const sysCtx = await getSystemContext(config.env.cwd, config.env.model)
+    const sysCtx = await getSystemContext(config.runtime.cwd, config.runtime.model)
     if (sysCtx) parts.push(sysCtx)
   } catch {
     // Context is best-effort
@@ -30,7 +30,7 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
   // Add skills — verbose XML format builds a complete cognitive map for the model
   const skillsXml = formatSkillsForSystemPrompt(
     config.resolved.skills,
-    { cwd: config.env.cwd, settingSources: config.env.settingSources },
+    { cwd: config.runtime.cwd, settingSources: config.runtime.settingSources },
   )
   if (skillsXml) {
     parts.push(skillsXml)
@@ -89,7 +89,7 @@ export async function buildEnvironmentPrompt(config: QueryEngineConfig): Promise
   }
 
   // Load AGENTS.md instructions (rendered as <instructions> XML block)
-  const agentsMdContent = await loadAgentsMd(config.env.cwd, config.env.settingSources)
+  const agentsMdContent = await loadAgentsMd(config.runtime.cwd, config.runtime.settingSources)
   if (agentsMdContent) {
     parts.push(agentsMdContent)
   }

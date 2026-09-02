@@ -33,6 +33,14 @@ function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryE
       skillRegistry,
       subprocessEnv: {},
     },
+    runtime: {
+      provider,
+      model: 'test-model',
+      maxTokens: 100,
+      cwd: process.cwd(),
+      subprocessEnv: {},
+      toolServices: createEmptyServices(),
+    },
     resolved: {
       definition: { description: 'test', prompt: 'test prompt' },
       tools,

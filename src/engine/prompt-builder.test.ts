@@ -12,6 +12,20 @@ function makeConfig(overrides: Partial<QueryEngineConfig> = {}): QueryEngineConf
       skills: [],
       settingSources: [],
     },
+    runtime: {
+      provider: {} as any,
+      model: 'test-model',
+      maxTokens: 100,
+      cwd: '/test',
+      subprocessEnv: {},
+      settingSources: [],
+      toolServices: {
+        askUser: null,
+        findTool: { deferredTools: [], activatedTools: new Set() },
+        config: new Map(),
+        cron: null,
+      },
+    },
     resolved: {
       definition: { prompt: 'You are a test agent', allowedTools: [], availableSkills: [] },
       tools: [],
@@ -78,6 +92,20 @@ describe('buildEnvironmentPrompt', () => {
         tools: [],
         skills: [],
         settingSources: ['user', 'project'],
+      },
+      runtime: {
+        provider: {} as any,
+        model: 'test-model',
+        maxTokens: 100,
+        cwd: '/test/project',
+        subprocessEnv: {},
+        settingSources: ['user', 'project'],
+        toolServices: {
+          askUser: null,
+          findTool: { deferredTools: [], activatedTools: new Set() },
+          config: new Map(),
+          cron: null,
+        },
       },
       resolved: {
         definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },

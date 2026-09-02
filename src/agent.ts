@@ -22,6 +22,8 @@ import type {
   AgentOptions,
   AgentDefinition,
   AgentEnvironment,
+  AgentCapabilities,
+  RuntimeEnvironment,
   QueryResult,
   SDKMessage,
   SDKCompactMessage,
@@ -33,7 +35,7 @@ import type {
   AgentInput,
 } from './types.js'
 import { QueryEngine } from './engine.js'
-import { resolveAgent } from './resolve-agent.js'
+import { resolveAgentCapabilities } from './resolve-agent.js'
 import { type MCPConnection } from './mcp/client.js'
 import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
@@ -46,6 +48,7 @@ import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
 import { createHookRegistry, type HookRegistry, type HookEvent, type HookInput, type HookOutput } from './hooks.js'
 import { loadSkillsFromFilesystem, SkillRegistry, defaultRegistry, registerSkill as registryRegisterSkill, unregisterSkill as registryUnregisterSkill } from './skills/index.js'
+import { filterSkillsByAllowlist } from './skills/registry.js'
 import type { SkillDefinition } from './skills/types.js'
 import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
@@ -377,14 +380,11 @@ export class Agent {
     }
   }
 
-  /** Build the session-level environment consumed by resolveAgent and the engine. */
-  private buildEnv(opts: AgentOptions, provider: LLMProvider): AgentEnvironment {
+  /** Build the Runtime-global environment shared by every agent in this session (issue #72). */
+  private buildRuntime(opts: AgentOptions, provider: LLMProvider): RuntimeEnvironment {
     // Extract fields into logical groups (Task 16+17)
     const providerConfig = this.extractProviderConfig(opts)
     const envConfig = this.extractEnvironmentConfig(opts)
-    const sessionConfig = this.extractSessionConfig(opts)
-    const permissionConfig = this.extractPermissionConfig(opts)
-    const streamingConfig = this.extractStreamingConfig(opts)
     const skillConfig = this.extractSkillConfig(opts)
     const miscConfig = this.extractMiscConfig(opts)
 
@@ -395,16 +395,12 @@ export class Agent {
     // (or a fresh default) is used as-is.
     const toolServices = resolveToolServices(opts.toolServices, miscConfig.cronService)
 
-    // Construct AgentEnvironment from the most relevant groups
     return {
       provider,
       model: providerConfig.model || this.modelId,
       maxTokens: providerConfig.maxTokens ?? DEFAULT_MAX_TOKENS,
       cwd: envConfig.cwd || process.cwd(),
-      customTools: miscConfig.customTools ?? [],
-      mcpTools: this.toolPool,
       settingSources: skillConfig.settingSources,
-      skillRegistry: this.skillRegistry,
       toolServices,
       subprocessEnv: resolveSubprocessEnv({
         toolEnv: envConfig.toolEnv,
@@ -578,8 +574,27 @@ export class Agent {
       disallowedTools: overrides?.disallowedTools ?? definition.disallowedTools,
       availableSkills: overrides?.availableSkills ?? definition.availableSkills,
     }
-    const env = this.buildEnv(opts, provider)
-    const resolved = resolveAgent(env, mergedDefinition)
+    const runtime = this.buildRuntime(opts, provider)
+    const caps = this.cfg.agent?.capabilities
+    const rootCaps: AgentCapabilities = {
+      connectionTools: this.toolPool,
+      customTools: opts.customTools ?? [],
+      skills: caps?.skills
+        ?? filterSkillsByAllowlist(this.skillRegistry.getUserInvocable(), mergedDefinition.availableSkills),
+      allowedTools: overrides?.allowedTools ?? caps?.allowedTools ?? mergedDefinition.allowedTools,
+      disallowedTools: overrides?.disallowedTools ?? caps?.disallowedTools ?? mergedDefinition.disallowedTools,
+    }
+    const resolved = resolveAgentCapabilities(runtime, rootCaps, mergedDefinition, {
+      skillRegistry: this.skillRegistry,
+    })
+    // Legacy session env (removed in 3.0): carries the parent tool pools for
+    // the SubagentContext bridge until spawn isolation lands (issue #72).
+    const env: AgentEnvironment = {
+      ...runtime,
+      customTools: rootCaps.customTools ?? [],
+      mcpTools: this.toolPool,
+      skillRegistry: this.skillRegistry,
+    }
 
     // Sync from previous engine — external modifications (e.g. revert)
     // may have changed engine.messages without updating this.history
@@ -590,6 +605,7 @@ export class Agent {
     // Create query engine with current conversation state
     const engine = new QueryEngine({
       env,
+      runtime,
       resolved,
       subAgents: opts.subAgents,
       agentId: opts.agentId ?? 'main',

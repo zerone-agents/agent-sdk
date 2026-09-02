@@ -125,6 +125,7 @@ export const MultiTaskTool: ToolDefinition = {
       const baseResult = { index, description: task.description }
       const run = await runSubagent({
         env: ctx.env,
+        runtime: ctx.runtime,
         subAgents: ctx.subAgents,
         agentName: task.subagent_name,
         fallbackAgentId: context.agentId,

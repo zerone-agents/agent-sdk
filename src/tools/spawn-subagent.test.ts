@@ -3,8 +3,10 @@ import type {
   ToolDefinition,
   AgentEnvironment,
   AgentDefinition,
+  RuntimeEnvironment,
   SDKSubagentMessage,
 } from '../types.js'
+import { createEmptyServices } from './services.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
 vi.mock('../engine.js', () => ({
@@ -55,6 +57,15 @@ const env = {
   subprocessEnv: {},
 } as AgentEnvironment
 
+const runtime = {
+  provider: {} as any,
+  model: 'test-model',
+  maxTokens: 4096,
+  cwd: '/tmp',
+  subprocessEnv: {},
+  toolServices: createEmptyServices(),
+} as RuntimeEnvironment
+
 const AGENTS: Record<string, AgentDefinition> = {
   explorer: { description: 'Explores things', prompt: 'You explore.' },
 }
@@ -64,6 +75,7 @@ let capturedConfig: any
 function baseOpts(overrides: Partial<Parameters<typeof runSubagent>[0]> = {}) {
   return {
     env,
+    runtime,
     subAgents: AGENTS,
     agentName: 'explorer',
     fallbackAgentId: 'explorer',

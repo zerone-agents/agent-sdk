@@ -7,6 +7,7 @@ import type {
   SubagentContext,
   AgentDefinition,
   AgentEnvironment,
+  RuntimeEnvironment,
 } from '../types.js'
 import { SkillRegistry } from '../skills/registry.js'
 import { createEmptyServices } from './services.js'
@@ -84,11 +85,23 @@ function makeEnv(): AgentEnvironment {
   }
 }
 
+function makeRuntime(): RuntimeEnvironment {
+  return {
+    provider: mockProvider as any,
+    model: 'claude-sonnet-4-6',
+    maxTokens: 65536,
+    cwd: '/tmp',
+    subprocessEnv: {},
+    toolServices: createEmptyServices(),
+  }
+}
+
 function makeContext(overrides: Partial<SubagentContext> = {}): SubagentContext {
   return {
     cwd: '/tmp',
     agentId: 'general',
     env: makeEnv(),
+    runtime: makeRuntime(),
     subAgents: TEST_AGENTS,
     services: createEmptyServices(),
     subprocessEnv: {},
