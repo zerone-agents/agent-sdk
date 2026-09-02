@@ -10,7 +10,7 @@ import type {
 /**
  * Minimal LLMProvider that returns a single static text response without
  * making any network calls. Pattern borrowed from
- * src/utils/session-turns-integration.test.ts:24 (RecordingProvider).
+ * src/utils/session-queries-integration.test.ts:24 (RecordingProvider).
  */
 class FakeProvider implements LLMProvider {
   readonly apiType = 'anthropic-messages' as const

@@ -264,7 +264,7 @@ export {
   createCompactBoundaryMessage,
   truncateText,
 } from './utils/messages.js'
-export { truncateToLastNTurns } from './utils/session-turns.js'
+export { truncateToLastNQueries } from './utils/session-queries.js'
 
 // --------------------------------------------------------------------------
 // Token Estimation & Cost
