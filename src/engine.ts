@@ -323,16 +323,16 @@ export class QueryEngine {
       }
 
       // Session turns halved compaction: summarize the older half when over the limit
-      if (this.config.maxSessionTurns && this.config.maxSessionTurns >= 2) {
-        if (countSessionQueries(this.messages) > this.config.maxSessionTurns) {
+      if (this.config.maxSessionQueries && this.config.maxSessionQueries >= 2) {
+        if (countSessionQueries(this.messages) > this.config.maxSessionQueries) {
           let sessionSummary = ''
-          for await (const ev of this.compactStream(Math.max(1, Math.floor(this.config.maxSessionTurns / 2)))) {
+          for await (const ev of this.compactStream(Math.max(1, Math.floor(this.config.maxSessionQueries / 2)))) {
             if (ev.type === 'compact' && ev.phase === 'end') sessionSummary = ev.summary ?? ''
             yield ev
           }
           if (!sessionSummary) {
             // Summary failed: fall back to hard truncation so context always converges
-            this.messages = truncateToLastNQueries(this.messages, this.config.maxSessionTurns)
+            this.messages = truncateToLastNQueries(this.messages, this.config.maxSessionQueries)
           }
         }
       }

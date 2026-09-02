@@ -853,12 +853,12 @@ export interface AgentOptions {
     hooks: Array<(input: any, toolUseId: string, context: { signal: AbortSignal }) => Promise<any>>
     timeout?: number
   }>>
-  /** Maximum number of conversation rounds to include in LLM context.
-   *  A "round" = one fresh user input + the complete assistant response
+  /** Maximum number of user queries to include in LLM context.
+   *  A "query" = one fresh user input + the complete assistant response
    *  (including any intermediate tool_use/tool_result loops).
    *  Session transcript still persists full history; only the API call
    *  is truncated. Undefined = no limit (current behavior). */
-  maxSessionTurns?: number
+  maxSessionQueries?: number
 }
 
 export interface QueryResult {
@@ -922,8 +922,8 @@ export interface QueryEngineConfig {
   contextWindow?: number
   /** Maximum request body size in bytes. Images are stripped from oldest messages when exceeded. */
   maxRequestBodyBytes?: number
-  /** Maximum conversation rounds to send to LLM. See AgentOptions.maxSessionTurns. */
-  maxSessionTurns?: number
+  /** Maximum user queries to send to LLM. See AgentOptions.maxSessionQueries. */
+  maxSessionQueries?: number
   /** Effort level for reasoning. See AgentOptions.effort. */
   effort?: string
   /** Snapshot engine for file system tracking (enables file revert). Optional. */

@@ -595,7 +595,7 @@ describe('executeTools streaming + tools_complete', () => {
   })
 })
 
-describe('maxSessionTurns halved compaction', () => {
+describe('maxSessionQueries halved compaction', () => {
   function makeHalveProvider(opts: { failSummary?: boolean } = {}): LLMProvider {
     return {
       apiType: 'anthropic-messages',
@@ -627,8 +627,8 @@ describe('maxSessionTurns halved compaction', () => {
     }
   }
 
-  it('compacts persistent history when session turns exceed maxSessionTurns', async () => {
-    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider()), maxSessionTurns: 2 })
+  it('compacts persistent history when session queries exceed maxSessionQueries', async () => {
+    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider()), maxSessionQueries: 2 })
     seedTurns(engine, 3) // 3 seeded turns + 1 submitted = 4 > 2
 
     await run(engine)
@@ -639,7 +639,7 @@ describe('maxSessionTurns halved compaction', () => {
   })
 
   it('falls back to hard truncation when summary fails', async () => {
-    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider({ failSummary: true })), maxSessionTurns: 2 })
+    const engine = new QueryEngine({ ...makeConfig(makeHalveProvider({ failSummary: true })), maxSessionQueries: 2 })
     seedTurns(engine, 3)
 
     await run(engine)

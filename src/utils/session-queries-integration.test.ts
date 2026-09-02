@@ -11,9 +11,9 @@ import { SkillRegistry } from '../skills/index.js'
 import { createEmptyServices } from '../tools/services.js'
 
 /**
- * Integration test: verifies that the `maxSessionTurns` engine wiring works
+ * Integration test: verifies that the `maxSessionQueries` engine wiring works
  * end-to-end with halved compaction. When the conversation exceeds
- * maxSessionTurns rounds, the engine must:
+ * maxSessionQueries user queries, the engine must:
  *   - summarize the older half via the LLM (an extra compaction API call)
  *   - rewrite the persistent transcript to [summary pair, ...recent half]
  *   - fall back to keeping the transcript bounded on every subsequent overflow
@@ -39,7 +39,7 @@ class RecordingProvider implements LLMProvider {
     )
 
     // Derive a deterministic reply from the last user text so we can assert
-    // which round the assistant response belongs to.
+    // which query the assistant response belongs to.
     const lastUserText = extractLastUserText(params.messages)
     return {
       content: [{ type: 'text', text: `Response to ${lastUserText}` }],
@@ -101,13 +101,13 @@ function buildConfig(
     canUseTool,
     includePartialMessages: false,
     agentId: 'test-agent',
-    maxSessionTurns: 2,
+    maxSessionQueries: 2,
     ...overrides,
   }
 }
 
-describe('maxSessionTurns engine wiring (integration)', () => {
-  it('compacts the older half into a summary when rounds exceed maxSessionTurns', async () => {
+describe('maxSessionQueries engine wiring (integration)', () => {
+  it('compacts the older half into a summary when rounds exceed maxSessionQueries', async () => {
     const provider = new RecordingProvider()
     const engine = new QueryEngine(buildConfig(provider))
 
@@ -128,7 +128,7 @@ describe('maxSessionTurns engine wiring (integration)', () => {
     expect(mainCalls).toHaveLength(4)
 
     // --- Assert: compaction fired at round 3 and round 4 ---
-    // After Q3 is appended, turns (3) exceed maxSessionTurns (2) → compact.
+    // After Q3 is appended, turns (3) exceed maxSessionQueries (2) → compact.
     // The summary pair counts as 1 fresh user turn, so after Q4 is appended
     // turns are 4 again → compact once more.
     expect(compactionCalls).toHaveLength(2)
@@ -158,9 +158,9 @@ describe('maxSessionTurns engine wiring (integration)', () => {
     expect(historyJson).toContain('Question 4')
   })
 
-  it('does not truncate when maxSessionTurns is unset', async () => {
+  it('does not truncate when maxSessionQueries is unset', async () => {
     const provider = new RecordingProvider()
-    const engine = new QueryEngine(buildConfig(provider, { maxSessionTurns: undefined }))
+    const engine = new QueryEngine(buildConfig(provider, { maxSessionQueries: undefined }))
 
     for (let i = 1; i <= 4; i++) {
       await drain(engine.submitMessage(`Question ${i}`))
