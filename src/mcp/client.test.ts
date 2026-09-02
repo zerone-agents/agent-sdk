@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { connectMCPServer, TimeoutError, createMCPToolDefinition, resolveTransportKind, sanitizeLogField, stableErrorType } from './client.js'
+import { connectMCPServer, TimeoutError, createMCPToolDefinition, resolveTransportKind, sanitizeLogField, stableErrorType, normalizeCaughtError } from './client.js'
 import type { McpServerConfig } from '../types.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
@@ -54,6 +54,7 @@ function createMockClient(overrides?: {
   tools?: any[]
   connectShouldReject?: boolean | ((attempt: number) => boolean)
   connectRejectError?: Error
+  connectThrowValue?: unknown
   listToolsShouldReject?: boolean
 }) {
   const {
@@ -62,12 +63,16 @@ function createMockClient(overrides?: {
     tools = [],
     connectShouldReject = false,
     connectRejectError,
+    connectThrowValue,
     listToolsShouldReject = false,
   } = overrides || {}
 
   return {
     connect: vi.fn(async (_transport: any, options?: { signal?: AbortSignal; timeout?: number }) => {
       attempt++
+      if (connectThrowValue !== undefined) {
+        throw connectThrowValue   // as-is: ANY value (e.g. a revoked Proxy), review R2
+      }
       const shouldReject = typeof connectShouldReject === 'function'
         ? connectShouldReject(attempt)
         : connectShouldReject
@@ -624,6 +629,50 @@ describe('connectMCPServer failure log sanitization (issue #77)', () => {
     } finally {
       errSpy.mockRestore()
     }
+  })
+
+  it('revoked Proxy thrown from connect cannot break the error-connection return contract (review R2)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { proxy, revoke } = Proxy.revocable({}, {})
+      revoke()
+      mockClient = createMockClient({ connectThrowValue: proxy })
+
+      const result = await connectMCPServer('srv', {
+        type: 'stdio', command: 'echo',
+        retryPolicy: { timeoutMs: 100, maxRetries: 1 },
+      })
+
+      // Still returns an error connection — never rejects
+      expect(result.status).toBe('error')
+      expect(result.error).toBeInstanceOf(Error)
+      expect((result.error as Error).message).toBe('connection attempt threw a non-stringifiable value')
+      // Final failure log still emitted with the stable errorType
+      expect(errSpy).toHaveBeenCalledTimes(1)
+      expect(errSpy.mock.calls[0][1].errorType).toBe('Error')
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+})
+
+describe('normalizeCaughtError (issue #81, review R2)', () => {
+  it('passes Error instances through unchanged', () => {
+    const e = new Error('x')
+    expect(normalizeCaughtError(e)).toBe(e)
+  })
+
+  it('wraps stringifiable non-Error thrown values', () => {
+    expect(normalizeCaughtError('boom').message).toBe('boom')
+    expect(normalizeCaughtError(42).message).toBe('42')
+  })
+
+  it('is total: revoked proxies collapse to an SDK-owned constant message', () => {
+    const { proxy, revoke } = Proxy.revocable({}, {})
+    revoke()
+    const out = normalizeCaughtError(proxy)
+    expect(out).toBeInstanceOf(Error)
+    expect(out.message).toBe('connection attempt threw a non-stringifiable value')
   })
 })
 

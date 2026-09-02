@@ -10,6 +10,7 @@ import { createHash } from 'crypto'
 import {
   buildMCPClient,
   createMCPToolDefinition,
+  normalizeCaughtError,
   type MCPConnection,
 } from './client.js'
 import type { McpServerConfig } from '../types.js'
@@ -62,7 +63,7 @@ export async function acquireMCPConnection(
         name,
         status: 'error',
         tools: [],
-        error: err instanceof Error ? err : new Error(String(err)),
+        error: normalizeCaughtError(err),
         async close() {},
       }
     }

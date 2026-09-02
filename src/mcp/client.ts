@@ -267,6 +267,22 @@ export function stableErrorType(err: unknown): string {
 }
 
 /**
+ * Total error normalization for catch blocks (issue #81, review R2).
+ * `err instanceof Error` and `String(err)` can BOTH throw (a revoked Proxy
+ * triggers their traps) — an unprotected normalization makes the catcher
+ * itself throw, breaking the error-connection return contract. The fallback
+ * message is an SDK-owned constant, never derived from the thrown value.
+ */
+export function normalizeCaughtError(err: unknown): Error {
+  try {
+    if (err instanceof Error) return err
+    return new Error(String(err))
+  } catch {
+    return new Error('connection attempt threw a non-stringifiable value')
+  }
+}
+
+/**
  * Connect to an MCP server and fetch its tools.
  */
 export async function connectMCPServer(
@@ -283,7 +299,7 @@ export async function connectMCPServer(
     try {
       return await connectOnce(name, config, timeoutMs, externalSignal)
     } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err))
+      lastError = normalizeCaughtError(err)
       if (attempt < maxRetries) {
         console.warn('[MCP] Retrying connection', {
           server: sanitizeLogField(name),
