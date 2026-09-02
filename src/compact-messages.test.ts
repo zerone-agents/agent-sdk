@@ -4,9 +4,9 @@ import { compactMessages, compactMessagesStream } from './compact-messages.js'
 import { createAutoCompactState } from './utils/compact.js'
 import type { LLMProvider, NormalizedMessageParam, StreamChunk } from './providers/types.js'
 
-function buildConversation(turns: number): NormalizedMessageParam[] {
+function buildConversation(queries: number): NormalizedMessageParam[] {
   const messages: NormalizedMessageParam[] = []
-  for (let index = 1; index <= turns; index++) {
+  for (let index = 1; index <= queries; index++) {
     messages.push({ role: 'user', content: `user-${index}` })
     messages.push({ role: 'assistant', content: `assistant-${index}` })
   }

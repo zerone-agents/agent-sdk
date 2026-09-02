@@ -36,29 +36,29 @@ async function drain(gen: ReturnType<typeof compactConversationWithProtectedTail
 
 describe('compactConversationWithProtectedTail protectedQueries', () => {
   // 8 轮对话（最后一条是 assistant，作为被保护的 lastMsg）
-  const eightTurns: NormalizedMessageParam[] = []
+  const eightQueries: NormalizedMessageParam[] = []
   for (let i = 1; i <= 8; i++) {
-    eightTurns.push(userMsg(`turn${i}`), assistantMsg(`resp${i}`))
+    eightQueries.push(userMsg(`query${i}`), assistantMsg(`resp${i}`))
   }
 
   it('defaults to PRUNE_PROTECTED_QUERIES tail when arg omitted', async () => {
     const result = await drain(compactConversationWithProtectedTail(
-      summaryProvider(), 'm', eightTurns, createAutoCompactState(),
+      summaryProvider(), 'm', eightQueries, createAutoCompactState(),
     ))
     expect(result.summary).toBe('SUMMARY')
     // [summary-user, summary-assistant, ...tail, lastMsg]
     const kept = JSON.stringify(result.messages.slice(2))
-    expect(kept).toContain(`turn${8 - PRUNE_PROTECTED_QUERIES + 1}`) // turn5 when 4
-    expect(kept).not.toContain('turn1')
+    expect(kept).toContain(`query${8 - PRUNE_PROTECTED_QUERIES + 1}`) // query5 when 4
+    expect(kept).not.toContain('query1')
   })
 
   it('keeps more tail when protectedQueries is larger', async () => {
     const result = await drain(compactConversationWithProtectedTail(
-      summaryProvider(), 'm', eightTurns, createAutoCompactState(), 5,
+      summaryProvider(), 'm', eightQueries, createAutoCompactState(), 5,
     ))
     const kept = JSON.stringify(result.messages.slice(2))
-    expect(kept).toContain('turn4') // protectedQueries=5 → turn4..turn8 保留
-    expect(kept).not.toContain('turn3')
+    expect(kept).toContain('query4') // protectedQueries=5 → query4..query8 保留
+    expect(kept).not.toContain('query3')
   })
 })
 
@@ -128,11 +128,11 @@ describe('buildCompactionPrompt content rules', () => {
 })
 
 describe('compaction timestamps (issue #54)', () => {
-  function stampedTurns(n: number): NormalizedMessageParam[] {
+  function stampedQueries(n: number): NormalizedMessageParam[] {
     const out: NormalizedMessageParam[] = []
     for (let i = 1; i <= n; i++) {
       out.push(
-        { role: 'user', content: `turn${i}`, id: `u${i}`, timestamp: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString() },
+        { role: 'user', content: `query${i}`, id: `u${i}`, timestamp: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString() },
         { role: 'assistant', content: `resp${i}`, id: `a${i}`, timestamp: new Date(Date.UTC(2026, 0, 1, 0, i, 30)).toISOString() },
       )
     }
@@ -141,7 +141,7 @@ describe('compaction timestamps (issue #54)', () => {
 
   it('summary pair shares one timestamp and both messages have ids', async () => {
     const result = await drain(compactConversationWithProtectedTail(
-      summaryProvider(), 'm', stampedTurns(8), createAutoCompactState(),
+      summaryProvider(), 'm', stampedQueries(8), createAutoCompactState(),
     ))
     const [summaryUser, summaryAssistant] = result.messages
     expect(summaryUser.id).toBeTruthy()
@@ -151,13 +151,13 @@ describe('compaction timestamps (issue #54)', () => {
   })
 
   it('protected tail timestamps are preserved verbatim', async () => {
-    const turns = stampedTurns(8)
+    const queries = stampedQueries(8)
     const result = await drain(compactConversationWithProtectedTail(
-      summaryProvider(), 'm', turns, createAutoCompactState(),
+      summaryProvider(), 'm', queries, createAutoCompactState(),
     ))
     const kept = result.messages.slice(2)
-    // [.. pair, ...tailMsgs, lastMsg] is a contiguous suffix of `turns`
-    const originalKept = turns.slice(turns.length - kept.length)
+    // [.. pair, ...tailMsgs, lastMsg] is a contiguous suffix of `queries`
+    const originalKept = queries.slice(queries.length - kept.length)
     expect(kept.map((m) => m.timestamp)).toEqual(originalKept.map((m) => m.timestamp))
   })
 
@@ -168,10 +168,10 @@ describe('compaction timestamps (issue #54)', () => {
         throw new Error('summary provider down')
       },
     }
-    const turns = stampedTurns(8)
-    const before = turns.map((m) => m.timestamp)
+    const queries = stampedQueries(8)
+    const before = queries.map((m) => m.timestamp)
     const result = await drain(compactConversationWithProtectedTail(
-      failing, 'm', turns, createAutoCompactState(),
+      failing, 'm', queries, createAutoCompactState(),
     ))
     expect(result.summary).toBe('')
     expect(result.messages.map((m) => m.timestamp)).toEqual(before)

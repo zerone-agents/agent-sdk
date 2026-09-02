@@ -322,7 +322,7 @@ export class QueryEngine {
         }
       }
 
-      // Session turns halved compaction: summarize the older half when over the limit
+      // Session queries halved compaction: summarize the older half when over the limit
       if (this.config.maxSessionQueries && this.config.maxSessionQueries >= 2) {
         if (countSessionQueries(this.messages) > this.config.maxSessionQueries) {
           let sessionSummary = ''
@@ -801,7 +801,7 @@ export class QueryEngine {
   /**
    * Manually trigger compaction of the current conversation.
    *
-   * Summarizes older history while protecting the most recent turns, firing
+   * Summarizes older history while protecting the most recent queries, firing
    * PreCompact/PostCompact hooks. Streams `compact` events (start/progress/end)
    * so callers can surface progress (e.g. a `/compact` command). This is the
    * same algorithm used by auto-compaction, so behavior is identical.

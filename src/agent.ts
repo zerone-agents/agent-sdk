@@ -761,7 +761,7 @@ export class Agent {
    * this agent, in chronological order. Never affected by compaction.
    *
    * Contrast with {@link getMessageHistory}, which returns what the engine
-   * actually sees on the next turn (post-compaction when triggered).
+   * actually sees on the next query (post-compaction when triggered).
    */
   getMessageLog(): Message[] {
     return [...this.messageLog]
@@ -843,7 +843,7 @@ export class Agent {
   /**
    * Manually trigger compaction of the current conversation history.
    *
-   * Summarizes older history while protecting the most recent turns, firing
+   * Summarizes older history while protecting the most recent queries, firing
    * PreCompact/PostCompact hooks. Streams `compact` events (start/progress/end)
    * so callers can surface progress (e.g. a `/compact` command). Uses the same
    * algorithm as auto-compaction. Persists the session afterwards.

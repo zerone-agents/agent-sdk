@@ -128,9 +128,9 @@ describe('maxSessionQueries engine wiring (integration)', () => {
     expect(mainCalls).toHaveLength(4)
 
     // --- Assert: compaction fired at round 3 and round 4 ---
-    // After Q3 is appended, turns (3) exceed maxSessionQueries (2) → compact.
-    // The summary pair counts as 1 fresh user turn, so after Q4 is appended
-    // turns are 4 again → compact once more.
+    // After Q3 is appended, queries (3) exceed maxSessionQueries (2) → compact.
+    // The summary pair counts as 1 fresh user query, so after Q4 is appended
+    // queries are 4 again → compact once more.
     expect(compactionCalls).toHaveLength(2)
 
     // --- Assert: the last main call starts with the summary pair ---
@@ -138,12 +138,12 @@ describe('maxSessionQueries engine wiring (integration)', () => {
     const lastCall = mainCalls[3]
     expect(lastCall[0].role).toBe('user')
     expect(lastCall[0].content).toContain('[Previous conversation summary]')
-    // The raw pre-compaction turns are gone as standalone messages.
+    // The raw pre-compaction queries are gone as standalone messages.
     const mainCallJson = JSON.stringify(lastCall)
     expect(mainCallJson).not.toContain('"content":"Question 1"')
 
     // --- Assert: early rounds ran without compaction ---
-    // 1st call: single user message; 2nd call: 2 turns <= 2 → full history.
+    // 1st call: single user message; 2nd call: 2 queries <= 2 → full history.
     expect(mainCalls[0]).toHaveLength(1)
     expect(extractLastUserText(mainCalls[0])).toBe('Question 1')
     expect(mainCalls[1]).toHaveLength(3)

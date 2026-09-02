@@ -147,7 +147,7 @@ export interface CompactResult {
  * Semantics to be aware of before calling:
  * - Summarizes EVERY message supplied to it. It does NOT preserve a recent
  *   message tail on its own — passing a complete transcript here replaces the
- *   whole conversation with the synthetic summary pair. To keep recent turns
+ *   whole conversation with the synthetic summary pair. To keep recent queries
  *   verbatim, route it through the protected-tail wrapper. Public callers use
  *   `compactMessagesStream()` or the session-level `compactSessionStream()`.
  * - Does NOT persist anything. Callers own persistence and must write the

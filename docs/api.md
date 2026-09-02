@@ -51,7 +51,7 @@ export ZERONE_AGENT_MODEL=anthropic/claude-sonnet-4
 Use `compactSessionStream()` or `compactSession()` when the SDK owns the
 persisted session. Use `compactMessagesStream()` or `compactMessages()` when a
 host owns custom storage, then persist the returned `messages` and `state`
-together. Both interfaces preserve recent turns verbatim by default.
+together. Both interfaces preserve recent queries verbatim by default.
 
 The raw all-input helpers `compactConversationStream()`,
 `compactConversation()`, and `compactConversationWithProtectedTail()` are no

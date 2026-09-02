@@ -19,7 +19,7 @@ export interface CompactMessagesOptions {
   model: string
   messages: NormalizedMessageParam[]
   state: AutoCompactState
-  /** Number of recent user turns to preserve verbatim. */
+  /** Number of recent user queries to preserve verbatim. */
   protectedQueries?: number
 }
 

@@ -6,7 +6,7 @@
  * summarized by the LLM and the summary replaces it in the persistent
  * transcript, while the most recent half is kept verbatim.
  *
- * The example runs 5 turns of conversation. Each turn asks the agent to
+ * The example runs 5 queries of conversation. Each query asks the agent to
  * remember a number. With maxSessionQueries: 2, queries beyond the limit are
  * compacted into a summary — so the agent can still recall earlier numbers
  * from the summary even though their raw messages are gone.
@@ -18,7 +18,7 @@
  * - If the summary call fails, the engine falls back to hard truncation
  * - maxSessionQueries can be set at agent creation or overridden per-query
  *
- * Run: npx tsx examples/sessions/31-session-turn-limit.ts
+ * Run: npx tsx examples/sessions/31-session-query-limit.ts
  */
 import { createAgent, truncateToLastNQueries } from '../../src/index.js'
 import type { NormalizedMessageParam } from '../../src/providers/types.js'
@@ -28,11 +28,11 @@ async function main() {
 
   const agent = createAgent({
     model: process.env.ZERONE_AGENT_MODEL || 'claude-sonnet-4-6',
-    agent: { description: 'Session turn limit agent', prompt: { type: 'preset', preset: 'default' }, maxTurns: 3 },
+    agent: { description: 'Session query limit agent', prompt: { type: 'preset', preset: 'default' }, maxTurns: 3 },
     maxSessionQueries: 2,
   })
 
-  const turns = [
+  const queries = [
     'Remember the number 42. Just say "OK, I will remember 42." and nothing else.',
     'Remember the number 17. Just say "OK, I will remember 17." and nothing else.',
     'Remember the number 99. Just say "OK, I will remember 99." and nothing else.',
@@ -40,9 +40,9 @@ async function main() {
     'What numbers have I asked you to remember? List them all.',
   ]
 
-  for (let i = 0; i < turns.length; i++) {
-    console.log(`> Turn ${i + 1}: ${turns[i]}`)
-    const result = await agent.prompt(turns[i], {
+  for (let i = 0; i < queries.length; i++) {
+    console.log(`> Query ${i + 1}: ${queries[i]}`)
+    const result = await agent.prompt(queries[i], {
       // Dynamically override maxSessionQueries per query
       maxSessionQueries: i < 4 ? 2 : 3,
     })
@@ -74,11 +74,11 @@ async function main() {
   // hard-truncation fallback used when the summary call fails.
   console.log('\n--- truncateToLastNQueries() utility demo (fallback path) ---')
   const sampleMessages: NormalizedMessageParam[] = [
-    { role: 'user', content: 'turn 1' },
+    { role: 'user', content: 'query 1' },
     { role: 'assistant', content: 'response 1' },
-    { role: 'user', content: 'turn 2' },
+    { role: 'user', content: 'query 2' },
     { role: 'assistant', content: 'response 2' },
-    { role: 'user', content: 'turn 3' },
+    { role: 'user', content: 'query 3' },
     { role: 'assistant', content: 'response 3' },
   ]
   const last2 = truncateToLastNQueries(sampleMessages, 2)

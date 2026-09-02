@@ -479,7 +479,7 @@ describe('AgentInput snapshot integrity (issue #60 review)', () => {
     ]
   }
 
-  it('caller mutation after the first user event cannot corrupt the turn (provider + messageLog)', async () => {
+  it('caller mutation after the first user event cannot corrupt the query (provider + messageLog)', async () => {
     const captured: NormalizedMessageParam[] = []
     const agent = makeStreamingAgent(captured)
 
@@ -536,7 +536,7 @@ describe('AgentInput snapshot integrity (issue #60 review)', () => {
     }
   })
 
-  it('UserPromptSubmit hook mutating ctx.toolInput in place cannot corrupt the turn', async () => {
+  it('UserPromptSubmit hook mutating ctx.toolInput in place cannot corrupt the query', async () => {
     const sessionId = `agent-input-hookmut-${crypto.randomUUID()}`
     const captured: NormalizedMessageParam[] = []
     const agent = new Agent(makeBaseOptions({
