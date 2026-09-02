@@ -34,7 +34,7 @@ async function drain(gen: ReturnType<typeof compactConversationWithProtectedTail
   }
 }
 
-describe('compactConversationWithProtectedTail protectedTurns', () => {
+describe('compactConversationWithProtectedTail protectedQueries', () => {
   // 8 轮对话（最后一条是 assistant，作为被保护的 lastMsg）
   const eightTurns: NormalizedMessageParam[] = []
   for (let i = 1; i <= 8; i++) {
@@ -52,12 +52,12 @@ describe('compactConversationWithProtectedTail protectedTurns', () => {
     expect(kept).not.toContain('turn1')
   })
 
-  it('keeps more tail when protectedTurns is larger', async () => {
+  it('keeps more tail when protectedQueries is larger', async () => {
     const result = await drain(compactConversationWithProtectedTail(
       summaryProvider(), 'm', eightTurns, createAutoCompactState(), 5,
     ))
     const kept = JSON.stringify(result.messages.slice(2))
-    expect(kept).toContain('turn4') // protectedTurns=5 → turn4..turn8 保留
+    expect(kept).toContain('turn4') // protectedQueries=5 → turn4..turn8 保留
     expect(kept).not.toContain('turn3')
   })
 })

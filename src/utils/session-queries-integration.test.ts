@@ -134,7 +134,7 @@ describe('maxSessionTurns engine wiring (integration)', () => {
     expect(compactionCalls).toHaveLength(2)
 
     // --- Assert: the last main call starts with the summary pair ---
-    // and keeps only the recent half verbatim (protectedTurns = 1 round).
+    // and keeps only the recent half verbatim (protectedQueries = 1 round).
     const lastCall = mainCalls[3]
     expect(lastCall[0].role).toBe('user')
     expect(lastCall[0].content).toContain('[Previous conversation summary]')

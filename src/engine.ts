@@ -806,7 +806,7 @@ export class QueryEngine {
    * so callers can surface progress (e.g. a `/compact` command). This is the
    * same algorithm used by auto-compaction, so behavior is identical.
    */
-  async *compactStream(protectedTurns?: number): AsyncGenerator<SDKCompactMessage> {
+  async *compactStream(protectedQueries?: number): AsyncGenerator<SDKCompactMessage> {
     await this.executeHooks('PreCompact')
     try {
       const gen = compactMessagesStream({
@@ -814,7 +814,7 @@ export class QueryEngine {
         model: this.config.runtime.model,
         messages: this.messages,
         state: this.compactState,
-        protectedTurns,
+        protectedQueries,
       })
       while (true) {
         const next = await gen.next()

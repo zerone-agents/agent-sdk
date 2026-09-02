@@ -44,7 +44,7 @@ export interface CompactSessionOptions {
    * verbatim. Defaults to PRUNE_PROTECTED_QUERIES — the same default as
    * `Agent.compactStream()`.
    */
-  protectedTurns?: number
+  protectedQueries?: number
 }
 
 /** Final result of a session-level compaction. */
@@ -81,7 +81,7 @@ export async function* compactSessionStream(
   }
 
   const model = opts.model ?? session.metadata.model
-  const protectedTurns = opts.protectedTurns ?? PRUNE_PROTECTED_QUERIES
+  const protectedQueries = opts.protectedQueries ?? PRUNE_PROTECTED_QUERIES
 
   // Seed the compaction state from persisted usage so the summarizer sees the
   // same starting conditions as an Agent-based compaction of this session.
@@ -103,7 +103,7 @@ export async function* compactSessionStream(
     model,
     messages: session.messages,
     state,
-    protectedTurns,
+    protectedQueries,
   })
 
   // Unsuccessful compaction (provider failure surfaced by the underlying

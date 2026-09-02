@@ -20,7 +20,7 @@ export interface CompactMessagesOptions {
   messages: NormalizedMessageParam[]
   state: AutoCompactState
   /** Number of recent user turns to preserve verbatim. */
-  protectedTurns?: number
+  protectedQueries?: number
 }
 
 export interface CompactMessagesResult {
@@ -45,7 +45,7 @@ export async function* compactMessagesStream(
     opts.model,
     opts.messages,
     opts.state,
-    opts.protectedTurns ?? PRUNE_PROTECTED_QUERIES,
+    opts.protectedQueries ?? PRUNE_PROTECTED_QUERIES,
   )
 
   if (result.summary.length === 0) {

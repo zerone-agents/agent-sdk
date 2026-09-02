@@ -15,7 +15,7 @@ import type { LLMProvider, StreamChunk, NormalizedMessageParam } from './provide
  * 5. generator cancellation → persisted transcript unchanged
  * 6. resume after compaction does not auto-compact again (stale usage cleared)
  * 7. start/progress/end event stream compatibility
- * 8. protectedTurns option + same default as Agent.compactStream()
+ * 8. protectedQueries option + same default as Agent.compactStream()
  */
 
 /** Non-streaming mock provider returning a fixed summary. */
@@ -77,7 +77,7 @@ function makeCancellableProvider(cleanup: { ran: boolean }): LLMProvider {
 /**
  * Build a conversation with `turns` user turns (+ assistant replies), each
  * with a distinctive content string, ending with a final user message.
- * Returns messages plus the split point: with default protectedTurns=6,
+ * Returns messages plus the split point: with default protectedQueries=4,
  * user turn indices >= turns-6 are protected, below are summarized.
  */
 function buildConversation(turns: number): NormalizedMessageParam[] {
@@ -374,7 +374,7 @@ describe('compactSessionStream (issue #46)', () => {
     expect(persisted!.metadata.model).toBe('session-active-model')
   })
 
-  it('honors a custom protectedTurns and defaults to the Agent.compactStream default', async () => {
+  it('honors a custom protectedQueries and defaults to the Agent.compactStream default', async () => {
     const sid = freshSessionId('turns')
     await saveSession(sid, buildConversation(10), {
       cwd: '/tmp/project',
@@ -384,7 +384,7 @@ describe('compactSessionStream (issue #46)', () => {
     const result = await compactSession({
       sessionId: sid,
       provider: makeNonStreamingProvider(),
-      protectedTurns: 2,
+      protectedQueries: 2,
     })
 
     // Only the last 2 user turns of history + final message survive verbatim

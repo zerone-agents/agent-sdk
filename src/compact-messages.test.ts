@@ -41,7 +41,7 @@ describe('compactMessages', () => {
       model: 'test-model',
       messages,
       state,
-      protectedTurns: 2,
+      protectedQueries: 2,
     })
 
     expect(result.compacted).toBe(true)
@@ -77,7 +77,7 @@ describe('compactMessages', () => {
       model: 'test-model',
       messages: buildConversation(5),
       state: createAutoCompactState(),
-      protectedTurns: 2,
+      protectedQueries: 2,
     })
 
     expect((await stream.next()).value).toMatchObject({ phase: 'start' })
