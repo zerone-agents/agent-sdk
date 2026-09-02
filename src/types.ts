@@ -534,28 +534,8 @@ export interface AgentDefinition {
   maxTurns?: number
   /** Agent-local capabilities (issue #72). Unset = empty pool (spawn) / assembled view (root). */
   capabilities?: AgentCapabilities
-  /** @deprecated Moved to capabilities.allowedTools; removed in 3.0 */
-  allowedTools?: string[]
-  /** @deprecated Moved to capabilities.disallowedTools; removed in 3.0 */
-  disallowedTools?: string[]
   /** Root-only: filters the runtime skill registry. Ignored at spawn — subagents use capabilities.skills. */
   availableSkills?: string[]
-}
-
-/** Session-level shared "world" built once at runtime; all agents share it. */
-export interface AgentEnvironment {
-  provider: import('./providers/types.js').LLMProvider
-  model: string
-  maxTokens: number
-  cwd: string
-  customTools: ToolDefinition[]
-  mcpTools: ToolDefinition[]
-  settingSources?: SettingSource[]
-  skillRegistry: import('./skills/registry.js').SkillRegistry
-  /** Per-agent tool services for state isolation */
-  toolServices?: ToolServices
-  /** Pre-computed subprocess env for Bash/Grep tools. */
-  subprocessEnv: Record<string, string | undefined>
 }
 
 /** Runtime-global environment — one per Runtime/session, inherited by every agent (issue #72). */

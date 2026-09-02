@@ -175,6 +175,7 @@ export type {
 // --------------------------------------------------------------------------
 
 export { resolveAgent } from './resolve-agent.js'
+export type { ResolveAgentOptions } from './resolve-agent.js'
 export {
   runSubagent,
   DEFAULT_SUBAGENT_MAX_TURNS,
@@ -400,7 +401,8 @@ export type {
   ToolResult,
 
   // Agent environment & resolution
-  AgentEnvironment,
+  RuntimeEnvironment,
+  AgentCapabilities,
   ResolvedAgent,
   PromptSpec,
   SkillSource,

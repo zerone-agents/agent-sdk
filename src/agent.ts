@@ -34,7 +34,7 @@ import type {
   AgentInput,
 } from './types.js'
 import { QueryEngine } from './engine.js'
-import { resolveAgentCapabilities } from './resolve-agent.js'
+import { resolveAgent } from './resolve-agent.js'
 import { type MCPConnection } from './mcp/client.js'
 import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
@@ -58,8 +58,11 @@ import { resolveSubprocessEnv } from './utils/subprocess-env.js'
 import { resolveToolServices } from './tools/services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
-export type QueryOverrides = Partial<AgentOptions> &
-  Partial<Pick<AgentDefinition, 'allowedTools' | 'disallowedTools' | 'availableSkills'>>
+export type QueryOverrides = Partial<AgentOptions> & {
+  allowedTools?: string[]
+  disallowedTools?: string[]
+  availableSkills?: string[]
+}
 
 // --------------------------------------------------------------------------
 // Internal config groups (Task 16: organize 55 AgentOptions fields into 7 groups)
@@ -569,8 +572,6 @@ export class Agent {
     const definition = this.rootDefinition(opts)
     const mergedDefinition: AgentDefinition = {
       ...definition,
-      allowedTools: overrides?.allowedTools ?? definition.allowedTools,
-      disallowedTools: overrides?.disallowedTools ?? definition.disallowedTools,
       availableSkills: overrides?.availableSkills ?? definition.availableSkills,
     }
     const runtime = this.buildRuntime(opts, provider)
@@ -580,10 +581,10 @@ export class Agent {
       customTools: opts.customTools ?? [],
       skills: caps?.skills
         ?? filterSkillsByAllowlist(this.skillRegistry.getUserInvocable(), mergedDefinition.availableSkills),
-      allowedTools: overrides?.allowedTools ?? caps?.allowedTools ?? mergedDefinition.allowedTools,
-      disallowedTools: overrides?.disallowedTools ?? caps?.disallowedTools ?? mergedDefinition.disallowedTools,
+      allowedTools: overrides?.allowedTools ?? caps?.allowedTools,
+      disallowedTools: overrides?.disallowedTools ?? caps?.disallowedTools,
     }
-    const resolved = resolveAgentCapabilities(runtime, rootCaps, mergedDefinition, {
+    const resolved = resolveAgent(runtime, rootCaps, mergedDefinition, {
       skillRegistry: this.skillRegistry,
     })
 

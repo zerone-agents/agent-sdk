@@ -17,7 +17,7 @@ import type {
   SDKSubagentMessage,
 } from '../types.js'
 import { QueryEngine } from '../engine.js'
-import { resolveAgentCapabilities } from '../resolve-agent.js'
+import { resolveAgent } from '../resolve-agent.js'
 import { resolvePrompt } from '../prompts/system-prompts.js'
 
 export const DEFAULT_SUBAGENT_MAX_TURNS = 10
@@ -108,7 +108,7 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
       findTool: { deferredTools: [], activatedTools: new Set() },
     },
   }
-  const resolved = resolveAgentCapabilities(
+  const resolved = resolveAgent(
     childRuntime,
     agentDef.capabilities ?? {},
     { ...agentDef, prompt: buildSubagentSystemPrompt(agentDef, opts.mode) },

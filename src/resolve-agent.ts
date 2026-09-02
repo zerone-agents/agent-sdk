@@ -1,10 +1,10 @@
 /**
  * Agent capability resolution.
  *
- * resolveAgentCapabilities() computes an agent's effective tools and skills
- * exactly once from a RuntimeEnvironment + AgentCapabilities pair; everything
- * downstream (engine prompt, init message, Skill tool) consumes the resolved
- * sets directly — no repeated filtering.
+ * resolveAgent() computes an agent's effective tools and skills exactly once
+ * from a RuntimeEnvironment + AgentCapabilities pair; everything downstream
+ * (engine prompt, init message, Skill tool) consumes the resolved sets
+ * directly — no repeated filtering.
  *
  * Pipeline order (issue #72):
  *   built-ins + caps.customTools + caps.connectionTools
@@ -17,13 +17,11 @@
 import type {
   AgentCapabilities,
   AgentDefinition,
-  AgentEnvironment,
   ResolvedAgent,
   RuntimeEnvironment,
 } from './types.js'
 import { getAllBaseTools, assembleToolPool, applyAllowedTools, applyDisallowedTools } from './tools/index.js'
-import { SkillRegistry, filterSkillsByAllowlist } from './skills/registry.js'
-import { createEmptyServices } from './tools/services.js'
+import { SkillRegistry } from './skills/registry.js'
 
 export interface ResolveAgentOptions {
   /** Spawn pipeline: removes Task/MultiTask; Explore applies the read-only safety policy. */
@@ -36,7 +34,7 @@ function isReadOnlyTool(tool: { isReadOnly?: () => boolean }): boolean {
   return tool.isReadOnly?.() === true
 }
 
-export function resolveAgentCapabilities(
+export function resolveAgent(
   runtime: RuntimeEnvironment,
   capabilities: AgentCapabilities,
   definition: AgentDefinition,
@@ -99,23 +97,4 @@ export function resolveAgentCapabilities(
     services: runtime.toolServices,
     skillRegistry,
   }
-}
-
-/**
- * @deprecated Legacy two-arg signature (removed in 3.0). Bridges the old
- * AgentEnvironment contract onto resolveAgentCapabilities — behavior identical.
- */
-export function resolveAgent(env: AgentEnvironment, definition: AgentDefinition): ResolvedAgent {
-  return resolveAgentCapabilities(
-    { ...env, toolServices: env.toolServices ?? createEmptyServices() },
-    {
-      connectionTools: env.mcpTools,
-      customTools: env.customTools,
-      skills: filterSkillsByAllowlist(env.skillRegistry.getUserInvocable(), definition.availableSkills),
-      allowedTools: definition.capabilities?.allowedTools ?? definition.allowedTools,
-      disallowedTools: definition.capabilities?.disallowedTools ?? definition.disallowedTools,
-    },
-    definition,
-    { skillRegistry: env.skillRegistry },
-  )
 }
