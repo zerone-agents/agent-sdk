@@ -793,4 +793,55 @@ describe('Agent MCP failure errorType hardening (issue #81)', () => {
       vi.restoreAllMocks()
     }
   })
+
+  it('Skipped log cannot leak identifier-shaped credentials (review R1)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const err = new Error('handshake')
+      err.name = 'sk_live_SUPERSECRET_123'
+      vi.mocked(acquireMCPConnection).mockResolvedValueOnce({
+        name: 'prod-db',
+        status: 'error',
+        tools: [],
+        error: err,
+        close: async () => {},
+      } as any)
+      const agent = new Agent(makeBaseOptions({
+        mcpServers: { 'prod-db': { type: 'stdio', command: 'echo' } },
+      }))
+
+      await getPoolTools(agent)
+
+      expect(warnSpy.mock.calls[0][1].errorType).toBe('Error')
+      expect(JSON.stringify(warnSpy.mock.calls[0])).not.toContain('sk_live')
+      expect(JSON.stringify(warnSpy.mock.calls[0])).not.toContain('SUPERSECRET')
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('throwing name getter does not break agent setup logging (review R1)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const err = new Error('handshake')
+      Object.defineProperty(err, 'name', { get() { throw new Error('getter boom') } })
+      vi.mocked(acquireMCPConnection).mockResolvedValueOnce({
+        name: 'prod-db',
+        status: 'error',
+        tools: [],
+        error: err,
+        close: async () => {},
+      } as any)
+      const agent = new Agent(makeBaseOptions({
+        mcpServers: { 'prod-db': { type: 'stdio', command: 'echo' } },
+      }))
+
+      await getPoolTools(agent)
+
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      expect(warnSpy.mock.calls[0][1].errorType).toBe('Error')
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
 })

@@ -579,32 +579,75 @@ describe('connectMCPServer failure log sanitization (issue #77)', () => {
       errSpy.mockRestore()
     }
   })
-})
 
-describe('stableErrorType (issue #81)', () => {
-  it('passes identifier-shaped Error names through', () => {
-    expect(stableErrorType(new Error('x'))).toBe('Error')
-    const t = new Error('x')
-    t.name = 'TimeoutError'
-    expect(stableErrorType(t)).toBe('TimeoutError')
-    const c = new Error('x')
-    c.name = 'My_Err-2'
-    expect(stableErrorType(c)).toBe('My_Err-2')
+  it('identifier-shaped credentials in Error.name cannot leak (review R1)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const thrown = new Error('connect refused')
+      thrown.name = 'sk_live_SUPERSECRET_123'
+      mockClient = createMockClient({ connectShouldReject: true, connectRejectError: thrown })
+
+      const result = await connectMCPServer('srv', {
+        type: 'stdio', command: 'echo',
+        retryPolicy: { timeoutMs: 100, maxRetries: 0 },
+      })
+
+      expect(result.status).toBe('error')
+      const fields = errSpy.mock.calls[0][1]
+      expect(fields.errorType).toBe('Error')
+      const logged = JSON.stringify(errSpy.mock.calls[0])
+      expect(logged).not.toContain('sk_live')
+      expect(logged).not.toContain('SUPERSECRET')
+    } finally {
+      errSpy.mockRestore()
+    }
   })
 
-  it('collapses mutated or unsafe names to a stable constant', () => {
+  it('throwing name getter cannot break the error-connection return contract (review R1)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const thrown = new Error('connect refused')
+      Object.defineProperty(thrown, 'name', { get() { throw new Error('getter boom') } })
+      mockClient = createMockClient({ connectShouldReject: true, connectRejectError: thrown })
+
+      const result = await connectMCPServer('srv', {
+        type: 'stdio', command: 'echo',
+        retryPolicy: { timeoutMs: 100, maxRetries: 0 },
+      })
+
+      // The function STILL returns the error connection with the original error
+      expect(result.status).toBe('error')
+      expect(result.error).toBe(thrown)
+      // And the log still emitted with the stable fallback
+      expect(errSpy).toHaveBeenCalledTimes(1)
+      expect(errSpy.mock.calls[0][1].errorType).toBe('Error')
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+})
+
+describe('stableErrorType (issue #81, review R1)', () => {
+  it('maps SDK-known classes to SDK-owned constants; forged names are not trusted', () => {
+    expect(stableErrorType(new Error('x'))).toBe('Error')
+    const t = new Error('x')
+    t.name = 'TimeoutError'   // forged name — only real instanceof wins
+    expect(stableErrorType(t)).toBe('Error')
+    expect(stableErrorType(new TimeoutError('t'))).toBe('TimeoutError')
+  })
+
+  it('cannot leak identifier-shaped credentials carried in Error.name', () => {
     const a = new Error('x')
-    a.name = 'https://user:tok@host'
+    a.name = 'sk_live_SUPERSECRET_123'   // passes any identifier shape check
     expect(stableErrorType(a)).toBe('Error')
-    const b = new Error('x')
-    b.name = 'bad\nname'
-    expect(stableErrorType(b)).toBe('Error')
-    const d = new Error('x')
-    d.name = ''
-    expect(stableErrorType(d)).toBe('Error')
-    const e = new Error('x')
-    e.name = 'x'.repeat(100)
-    expect(stableErrorType(e)).toBe('Error')
+  })
+
+  it('is total: throwing name getters and instanceof traps cannot break logging', () => {
+    const g = new Error('x')
+    Object.defineProperty(g, 'name', { get() { throw new Error('getter boom') } })
+    expect(stableErrorType(g)).toBe('Error')
+    const trap = new Proxy({}, { getPrototypeOf() { throw new Error('trap') } })
+    expect(stableErrorType(trap)).toBe('Error')
   })
 
   it('uses typeof for non-Error values', () => {

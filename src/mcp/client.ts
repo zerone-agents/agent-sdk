@@ -246,17 +246,24 @@ export function sanitizeLogField(value: string, maxLength = 128): string {
   return s.length > maxLength ? s.slice(0, maxLength - 2) + '…"' : s
 }
 
-const STABLE_ERROR_TYPE_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
-
 /**
- * Stable, non-sensitive error-type diagnostic for logs (issue #81).
- * Error.name is mutable — attacker-influenced input can reach it — so only
- * identifier-shaped names pass through; anything else collapses to 'Error'.
- * Non-Error values report their typeof instead.
+ * Stable, non-sensitive error-type diagnostic for logs (issue #81, review R1).
+ * NEVER derives the logged string from error-controlled data: Error.name is
+ * mutable (an identifier-shaped credential like sk_live_… passes any shape
+ * check) and can even be a throwing getter — which would break the
+ * error-connection return contract when log-argument evaluation throws.
+ * Maps to SDK-owned constants via instanceof against SDK-known classes; the
+ * try/catch additionally guards instanceof traps (Proxy getPrototypeOf can
+ * throw too), making this helper total.
  */
 export function stableErrorType(err: unknown): string {
-  const name = err instanceof Error ? err.name : typeof err
-  return typeof name === 'string' && STABLE_ERROR_TYPE_RE.test(name) ? name : 'Error'
+  try {
+    if (err instanceof TimeoutError) return 'TimeoutError'
+    if (err instanceof Error) return 'Error'
+    return typeof err
+  } catch {
+    return 'Error'
+  }
 }
 
 /**
