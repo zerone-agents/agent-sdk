@@ -53,6 +53,39 @@ persisted session. Use `compactMessagesStream()` or `compactMessages()` when a
 host owns custom storage, then persist the returned `messages` and `state`
 together. Both interfaces preserve recent queries verbatim by default.
 
+**Compaction options** — two independent knobs control how much of the recent
+tail survives. Both are **new and additive in this release**: the compaction
+entry points accepted no configuration before, and omitting the options
+reproduces exactly the previous defaults.
+
+| Option                 | Default | Meaning                                                                 |
+| ---------------------- | ------- | ----------------------------------------------------------------------- |
+| `protectedQueries`     | `4`     | Most recent user queries kept verbatim (head summarized, tail kept).    |
+| `toolProtectedQueries` | `2`     | Queries inside that tail that keep **full** `tool_result` payloads; older tail results are cleared. |
+
+| Entry point                                                            | Shape                                                        |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `compactMessagesStream(opts)` / `compactMessages(opts)`                 | `opts.protectedQueries`, `opts.toolProtectedQueries`         |
+| `compactSessionStream(opts)` / `compactSession(opts)`                   | `opts.protectedQueries`, `opts.toolProtectedQueries`         |
+| `QueryEngine.compactStream(protectedQueries?, toolProtectedQueries?)`  | positional args (previously **no arguments**)                |
+| `QueryEngine.compact(protectedQueries?, toolProtectedQueries?)`        | positional args (previously **no arguments**)                |
+| `Agent.compactStream(opts?)` / `Agent.compact(opts?)`                  | `{ protectedQueries?, toolProtectedQueries? }` (previously **no arguments**) |
+
+Set `toolProtectedQueries` ≥ tail size to disable tool-result pruning
+entirely. The new parameters are purely additive — omitting them preserves the
+historical defaults (4 verbatim queries, of which the last 2 keep full tool
+results).
+
+#### Compaction behavior changes
+
+1. `pruneMessages` now actually protects the last `PRUNE_PROTECTED_QUERIES`
+   (4) queries' large tool results — previously it cleared all oversized
+   results regardless of recency.
+2. Compaction now prunes large tool results beyond the last 2 queries of the
+   surviving tail; set `toolProtectedQueries` ≥ tail size to disable. A
+   pending final user query occupies one protected slot (completed-tool
+   retention 2 → 1 in that state).
+
 The raw all-input helpers `compactConversationStream()`,
 `compactConversation()`, and `compactConversationWithProtectedTail()` are no
 longer exported from the package root. Migrate custom-storage integrations to

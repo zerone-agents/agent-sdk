@@ -252,6 +252,11 @@ it('TOOL_PROTECTED_QUERIES defaults to 2', () => {
   expect(TOOL_PROTECTED_QUERIES).toBe(2)
 })
 
+it('protected-query defaults (contract)', () => {
+  expect(PRUNE_PROTECTED_QUERIES).toBe(4)
+  expect(TOOL_PROTECTED_QUERIES).toBe(2)
+})
+
 const BIG = 'x'.repeat(PRUNE_THRESHOLD_CHARS + 1)
 
 function bigToolRound(prompt: string, id: string, name = 'Read'): NormalizedMessageParam[] {
