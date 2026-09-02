@@ -21,7 +21,8 @@
 import type {
   AgentOptions,
   AgentDefinition,
-  AgentEnvironment,
+  AgentCapabilities,
+  RuntimeEnvironment,
   QueryResult,
   SDKMessage,
   SDKCompactMessage,
@@ -46,6 +47,7 @@ import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
 import { createHookRegistry, type HookRegistry, type HookEvent, type HookInput, type HookOutput } from './hooks.js'
 import { loadSkillsFromFilesystem, SkillRegistry, defaultRegistry, registerSkill as registryRegisterSkill, unregisterSkill as registryUnregisterSkill } from './skills/index.js'
+import { filterSkillsByAllowlist } from './skills/registry.js'
 import type { SkillDefinition } from './skills/types.js'
 import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
@@ -56,8 +58,11 @@ import { resolveSubprocessEnv } from './utils/subprocess-env.js'
 import { resolveToolServices } from './tools/services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
-export type QueryOverrides = Partial<AgentOptions> &
-  Partial<Pick<AgentDefinition, 'allowedTools' | 'disallowedTools' | 'availableSkills'>>
+export type QueryOverrides = Partial<AgentOptions> & {
+  allowedTools?: string[]
+  disallowedTools?: string[]
+  availableSkills?: string[]
+}
 
 // --------------------------------------------------------------------------
 // Internal config groups (Task 16: organize 55 AgentOptions fields into 7 groups)
@@ -377,14 +382,11 @@ export class Agent {
     }
   }
 
-  /** Build the session-level environment consumed by resolveAgent and the engine. */
-  private buildEnv(opts: AgentOptions, provider: LLMProvider): AgentEnvironment {
+  /** Build the Runtime-global environment shared by every agent in this session (issue #72). */
+  private buildRuntime(opts: AgentOptions, provider: LLMProvider): RuntimeEnvironment {
     // Extract fields into logical groups (Task 16+17)
     const providerConfig = this.extractProviderConfig(opts)
     const envConfig = this.extractEnvironmentConfig(opts)
-    const sessionConfig = this.extractSessionConfig(opts)
-    const permissionConfig = this.extractPermissionConfig(opts)
-    const streamingConfig = this.extractStreamingConfig(opts)
     const skillConfig = this.extractSkillConfig(opts)
     const miscConfig = this.extractMiscConfig(opts)
 
@@ -395,16 +397,12 @@ export class Agent {
     // (or a fresh default) is used as-is.
     const toolServices = resolveToolServices(opts.toolServices, miscConfig.cronService)
 
-    // Construct AgentEnvironment from the most relevant groups
     return {
       provider,
       model: providerConfig.model || this.modelId,
       maxTokens: providerConfig.maxTokens ?? DEFAULT_MAX_TOKENS,
       cwd: envConfig.cwd || process.cwd(),
-      customTools: miscConfig.customTools ?? [],
-      mcpTools: this.toolPool,
       settingSources: skillConfig.settingSources,
-      skillRegistry: this.skillRegistry,
       toolServices,
       subprocessEnv: resolveSubprocessEnv({
         toolEnv: envConfig.toolEnv,
@@ -570,16 +568,31 @@ export class Agent {
       })
     }
 
-    // Resolve the root agent's effective capabilities exactly once per query
+    // Resolve the root agent's effective capabilities exactly once per query.
+    // Root capability rule (issue #72 / PR #73 review): capabilities come from
+    // the PER-QUERY effective definition (rootDefinition reads the query
+    // override first, falling back to constructor config), and they UNION
+    // with the top-level sources — the mcpServers pool and customTools —
+    // top-level first, so assembleToolPool's later-wins dedup makes a
+    // same-name capability entry override its top-level twin.
     const definition = this.rootDefinition(opts)
     const mergedDefinition: AgentDefinition = {
       ...definition,
-      allowedTools: overrides?.allowedTools ?? definition.allowedTools,
-      disallowedTools: overrides?.disallowedTools ?? definition.disallowedTools,
       availableSkills: overrides?.availableSkills ?? definition.availableSkills,
     }
-    const env = this.buildEnv(opts, provider)
-    const resolved = resolveAgent(env, mergedDefinition)
+    const runtime = this.buildRuntime(opts, provider)
+    const caps = definition.capabilities
+    const rootCaps: AgentCapabilities = {
+      connectionTools: [...this.toolPool, ...(caps?.connectionTools ?? [])],
+      customTools: [...(opts.customTools ?? []), ...(caps?.customTools ?? [])],
+      skills: caps?.skills
+        ?? filterSkillsByAllowlist(this.skillRegistry.getUserInvocable(), mergedDefinition.availableSkills),
+      allowedTools: overrides?.allowedTools ?? caps?.allowedTools,
+      disallowedTools: overrides?.disallowedTools ?? caps?.disallowedTools,
+    }
+    const resolved = resolveAgent(runtime, rootCaps, mergedDefinition, {
+      skillRegistry: this.skillRegistry,
+    })
 
     // Sync from previous engine — external modifications (e.g. revert)
     // may have changed engine.messages without updating this.history
@@ -589,7 +602,7 @@ export class Agent {
 
     // Create query engine with current conversation state
     const engine = new QueryEngine({
-      env,
+      runtime,
       resolved,
       subAgents: opts.subAgents,
       agentId: opts.agentId ?? 'main',

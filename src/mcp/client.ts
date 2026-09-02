@@ -278,7 +278,12 @@ export async function connectMCPServer(
  */
 export function createMCPToolDefinition(
   serverName: string,
-  mcpTool: { name: string; description?: string; inputSchema?: any },
+  mcpTool: {
+    name: string
+    description?: string
+    inputSchema?: any
+    annotations?: { readOnlyHint?: boolean }
+  },
   client: any,
   options?: { deferred?: boolean },
 ): ToolDefinition {
@@ -295,7 +300,10 @@ export function createMCPToolDefinition(
     // Default deferred=true unless caller overrides (sub-project 2 default).
     deferred: options?.deferred ?? true,
     inputSchema: mcpTool.inputSchema || { type: 'object', properties: {} },
-    isReadOnly: () => false,
+    // Protocol metadata mapping (issue #72): MCP annotations.readOnlyHint
+    // drives the SDK-side read-only policy (Explore subagent filtering,
+    // read-only concurrency batching).
+    isReadOnly: () => mcpTool.annotations?.readOnlyHint === true,
     isConcurrencySafe: () => false,
     isEnabled: () => true,
     async prompt() {

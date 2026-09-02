@@ -8,6 +8,7 @@ import type {
 } from '../providers/types.js'
 import type { QueryEngineConfig, CanUseToolFn } from '../types.js'
 import { SkillRegistry } from '../skills/index.js'
+import { createEmptyServices } from '../tools/services.js'
 
 /**
  * Integration test: verifies that the `maxSessionTurns` engine wiring works
@@ -80,21 +81,21 @@ function buildConfig(
 ): QueryEngineConfig {
   const canUseTool: CanUseToolFn = async () => ({ behavior: 'allow' })
   return {
-    env: {
+    runtime: {
       provider,
       model: 'test-model',
       maxTokens: 1024,
       cwd: process.cwd(),
-      customTools: [],
-      mcpTools: [],
-      skillRegistry: new SkillRegistry(),
       subprocessEnv: {},
+      toolServices: createEmptyServices(),
     },
     resolved: {
       definition: { description: 'test', prompt: 'test prompt' },
       tools: [],
       deferredTools: [],
       skills: [],
+      services: createEmptyServices(),
+      skillRegistry: new SkillRegistry(),
     },
     maxTurns: 1,
     canUseTool,

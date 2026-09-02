@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type {
   ToolDefinition,
-  AgentEnvironment,
   AgentDefinition,
+  RuntimeEnvironment,
   SDKSubagentMessage,
 } from '../types.js'
+import { createEmptyServices } from './services.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
 vi.mock('../engine.js', () => ({
@@ -22,6 +23,10 @@ const MOCK_TOOLS: ToolDefinition[] = [
   { name: 'Edit', isReadOnly: () => false, call: vi.fn() } as any,
   { name: 'Task', isReadOnly: () => false, call: vi.fn() } as any,
   { name: 'MultiTask', isReadOnly: () => false, call: vi.fn() } as any,
+  // FindTool (eager) enables the lazy split so deferred catalog semantics are
+  // exercisable; Skill keeps caps.skills alive through cross-validation (#72).
+  { name: 'FindTool', isReadOnly: () => true, call: vi.fn() } as any,
+  { name: 'Skill', isReadOnly: () => true, call: vi.fn() } as any,
 ]
 
 // resolveAgent (via buildSubagentTools) consumes getAllBaseTools +
@@ -40,20 +45,17 @@ vi.mock('./index.js', async (importOriginal) => {
 const { QueryEngine } = await import('../engine.js')
 const {
   runSubagent,
-  buildSubagentTools,
   DEFAULT_SUBAGENT_MAX_TURNS,
 } = await import('./spawn-subagent.js')
 
-const env = {
+const runtime = {
   provider: {} as any,
   model: 'test-model',
   maxTokens: 4096,
   cwd: '/tmp',
-  customTools: [],
-  mcpTools: [],
-  skillRegistry: { getUserInvocable: () => [] } as any,
   subprocessEnv: {},
-} as AgentEnvironment
+  toolServices: createEmptyServices(),
+} as RuntimeEnvironment
 
 const AGENTS: Record<string, AgentDefinition> = {
   explorer: { description: 'Explores things', prompt: 'You explore.' },
@@ -63,7 +65,7 @@ let capturedConfig: any
 
 function baseOpts(overrides: Partial<Parameters<typeof runSubagent>[0]> = {}) {
   return {
-    env,
+    runtime,
     subAgents: AGENTS,
     agentName: 'explorer',
     fallbackAgentId: 'explorer',
@@ -191,24 +193,6 @@ describe('runSubagent', () => {
     })
   })
 
-  it('builds the tool pool: General drops Task/MultiTask; Explore keeps only read-only + Bash', () => {
-    const general = buildSubagentTools(env, AGENTS.explorer, 'General').map((t) => t.name)
-    expect(general).not.toContain('Task')
-    expect(general).not.toContain('MultiTask')
-    expect(general).toContain('Write')
-    expect(general).toContain('Bash')
-
-    const explore = buildSubagentTools(env, AGENTS.explorer, 'Explore').map((t) => t.name)
-    expect(explore).toContain('Read')
-    expect(explore).toContain('Glob')
-    expect(explore).toContain('Grep')
-    expect(explore).toContain('Bash')
-    expect(explore).not.toContain('Write')
-    expect(explore).not.toContain('Edit')
-    expect(explore).not.toContain('Task')
-    expect(explore).not.toContain('MultiTask')
-  })
-
   it('appends the Explore restriction notice to the system prompt passed to the engine', async () => {
     ;(QueryEngine as any).mockImplementation(function (this: any, config: any) {
       capturedConfig = config
@@ -226,5 +210,88 @@ describe('runSubagent', () => {
     expect(prompt).toContain('You explore.')
     expect(prompt).toContain('Explore mode')
     expect(prompt).toContain('Do NOT modify')
+  })
+})
+
+describe('spawn isolation (issue #72)', () => {
+  const CHILD_A_MCP = {
+    name: 'mcp__a__op', isReadOnly: () => true, call: vi.fn(),
+    deferred: true, shortDescription: 'a op',
+  } as any
+  const CHILD_A_WRITE = { name: 'mcp__a__mutate', isReadOnly: () => false, call: vi.fn() } as any
+  const CHILD_A_CUSTOM = { name: 'child_a_custom', isReadOnly: () => true, call: vi.fn() } as any
+  const CHILD_A_WRITE_CUSTOM = { name: 'child_a_write_custom', isReadOnly: () => false, call: vi.fn() } as any
+  const CHILD_A_SKILL = { name: 'child_a_skill', description: 'd', getPrompt: async () => [] } as any
+
+  const ISO_AGENTS: Record<string, AgentDefinition> = {
+    'child-a': {
+      description: 'a', prompt: 'child-a prompt',
+      capabilities: {
+        connectionTools: [CHILD_A_MCP, CHILD_A_WRITE],
+        customTools: [CHILD_A_CUSTOM, CHILD_A_WRITE_CUSTOM],
+        skills: [CHILD_A_SKILL],
+      },
+    },
+    'child-b': { description: 'b', prompt: 'child-b prompt' },
+  }
+
+  function captureEngine() {
+    ;(QueryEngine as any).mockImplementation(function (this: any, config: any) {
+      capturedConfig = config
+      this.submitMessage = async function* () {
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
+      }
+    })
+  }
+
+  it('child-a resolves ONLY its own capabilities; deferred in own catalog; fresh findTool', async () => {
+    captureEngine()
+    await runSubagent(baseOpts({ agentName: 'child-a', subAgents: ISO_AGENTS }))
+    const r = capturedConfig.resolved
+    const names = [...r.tools, ...r.deferredTools].map((t: any) => t.name)
+    // Own capability tools and nothing else beyond the shared built-ins
+    // (order: eager pool first, then the deferred catalog)
+    expect(names.filter((n: string) => n.startsWith('mcp__') || n.includes('_custom')))
+      .toEqual(['child_a_custom', 'child_a_write_custom', 'mcp__a__mutate', 'mcp__a__op'])
+    // Own deferred connection tool lands in the child's FindTool catalog
+    expect(r.deferredTools.map((t: any) => t.name)).toEqual(['mcp__a__op'])
+    // Skills isolated to the child's own set
+    expect(r.skills.map((s: any) => s.name)).toEqual(['child_a_skill'])
+    expect(r.skillRegistry.get('child_a_skill')).toBeDefined()
+    // Fresh findTool registry per spawn — never the runtime's (parent's)
+    expect(r.services.findTool).not.toBe(runtime.toolServices.findTool)
+    expect(r.services.findTool.deferredTools).toEqual([])  // the engine seeds it at query start
+    // Prompt contract: host-provided child prompt, no parent fallback
+    expect(r.definition.prompt).toContain('child-a prompt')
+    // Nesting ban
+    expect(names).not.toContain('Task')
+    expect(names).not.toContain('MultiTask')
+  })
+
+  it('child-b with no capabilities inherits nothing and does not fall back', async () => {
+    captureEngine()
+    await runSubagent(baseOpts({ agentName: 'child-b', subAgents: ISO_AGENTS }))
+    const r = capturedConfig.resolved
+    const names = [...r.tools, ...r.deferredTools].map((t: any) => t.name)
+    expect(names.filter((n: string) => n.startsWith('mcp__') || n.includes('_custom'))).toEqual([])
+    expect(r.skills).toEqual([])
+    expect(r.deferredTools).toEqual([])
+    expect(names).not.toContain('Task')
+    expect(names).not.toContain('MultiTask')
+  })
+
+  it('Explore child-a keeps readOnly + Bash only; write MCP/Custom filtered from pool AND catalog', async () => {
+    captureEngine()
+    await runSubagent(baseOpts({ agentName: 'child-a', subAgents: ISO_AGENTS, mode: 'Explore' }))
+    const r = capturedConfig.resolved
+    const names = [...r.tools, ...r.deferredTools].map((t: any) => t.name)
+    expect(names).toContain('Bash')
+    expect(names).toContain('Read')
+    expect(names).not.toContain('Write')
+    expect(names).not.toContain('mcp__a__mutate')        // write MCP filtered
+    expect(names).not.toContain('child_a_write_custom')  // write custom filtered
+    expect(names).toContain('child_a_custom')            // read-only custom survives
+    expect(names).toContain('mcp__a__op')                // read-only deferred stays discoverable
+    expect(r.deferredTools.map((t: any) => t.name)).toEqual(['mcp__a__op'])
   })
 })

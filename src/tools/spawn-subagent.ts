@@ -1,19 +1,20 @@
 /**
  * Subagent spawn factory — shared by TaskTool and MultiTaskTool.
  *
- * Intentional design decisions (see spec 2026-07-27-tools-skills-params-refactor-design.md):
+ * Intentional design decisions (issue #72; spec 2026-09-02-subagent-capability-isolation-design.md):
+ * - Agent-local capabilities isolation: the child resolves ONLY its entry's
+ *   `capabilities` (connectionTools/customTools/skills/policy) on top of the
+ *   Runtime-global environment — never the parent's pools. No fallback.
  * - Subagent canUseTool is allow-all: we do NOT want permission prompts
  *   interrupting a Task phase.
- * - Task and MultiTask are removed from the subagent tool pool at build
- *   time: nesting is forbidden by design.
+ * - Task and MultiTask are removed by the resolveAgentCapabilities spawn
+ *   pipeline: nesting (delegation depth > 1) is forbidden by design.
  */
 
 import type {
   AgentDefinition,
-  AgentEnvironment,
-  ResolvedAgent,
+  RuntimeEnvironment,
   SDKSubagentMessage,
-  ToolDefinition,
 } from '../types.js'
 import { QueryEngine } from '../engine.js'
 import { resolveAgent } from '../resolve-agent.js'
@@ -31,7 +32,8 @@ const FALLBACK_PROMPT = 'You are a helpful assistant. Complete the given task us
 const PROPAGATED_EVENT_TYPES = ['assistant', 'partial_message', 'tool_result', 'system', 'result']
 
 export interface SpawnSubagentOptions {
-  env: AgentEnvironment
+  /** Runtime-global environment inherited from the parent session (issue #72). */
+  runtime: RuntimeEnvironment
   subAgents: Record<string, AgentDefinition>
   agentName?: string
   fallbackAgentId: string
@@ -52,25 +54,6 @@ export interface SubagentRun {
   sessionId: string
   maxTurnsHit: boolean
   maxTurns: number
-}
-
-function isReadOnlyTool(tool: ToolDefinition): boolean {
-  const ro = typeof tool.isReadOnly === 'function' ? tool.isReadOnly() : tool.isReadOnly
-  return ro === true
-}
-
-/** Tools for a spawned subagent: resolved pool minus Task/MultiTask, Explore further restricted to read-only + Bash. */
-export function buildSubagentTools(
-  env: AgentEnvironment,
-  definition: AgentDefinition,
-  mode: SpawnSubagentMode,
-): ToolDefinition[] {
-  const { tools } = resolveAgent(env, definition)
-  let pool = tools.filter((t) => t.name !== 'Task' && t.name !== 'MultiTask')
-  if (mode === 'Explore') {
-    pool = pool.filter((t) => isReadOnlyTool(t) || t.name === 'Bash')
-  }
-  return pool
 }
 
 /** System prompt for a spawned subagent; Explore mode appends the restriction notice. */
@@ -113,17 +96,29 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
   }
 
   const maxTurns = agentDef.maxTurns ?? DEFAULT_SUBAGENT_MAX_TURNS
-  const resolved: ResolvedAgent = {
-    definition: { ...agentDef, prompt: buildSubagentSystemPrompt(agentDef, opts.mode) },
-    tools: buildSubagentTools(opts.env, agentDef, opts.mode),
-    skills: resolveAgent(opts.env, agentDef).skills,
-    deferredTools: [],  // sub-agent tools are resolved above without split; this stays empty
+
+  // Agent-local capabilities isolation (issue #72): the child pool is the
+  // entry's capabilities — never the parent's. No fallback, no inheritance.
+  // findTool is fresh per spawn so a subagent can never clobber the parent's
+  // (or a sibling's) deferred catalog.
+  const childRuntime: RuntimeEnvironment = {
+    ...opts.runtime,
+    toolServices: {
+      ...opts.runtime.toolServices,
+      findTool: { deferredTools: [], activatedTools: new Set() },
+    },
   }
+  const resolved = resolveAgent(
+    childRuntime,
+    agentDef.capabilities ?? {},
+    { ...agentDef, prompt: buildSubagentSystemPrompt(agentDef, opts.mode) },
+    { spawn: { mode: opts.mode } },
+  )
 
   const sessionId = crypto.randomUUID()
 
   const engine = new QueryEngine({
-    env: opts.env,
+    runtime: childRuntime,
     resolved,
     agentId: agentName,
     maxTurns,

@@ -364,7 +364,8 @@ export interface SkillContext extends ToolContext {
 
 /** Context available to subagent-spawning tools (Task/MultiTask). */
 export interface SubagentContext extends ToolContext {
-  env: AgentEnvironment
+  /** Runtime-global environment inherited from the parent session (issue #72). */
+  runtime: RuntimeEnvironment
   subAgents: Record<string, AgentDefinition>
   /**
    * Emit an event to the parent agent's streaming output.
@@ -530,28 +531,42 @@ export interface AgentDefinition {
   prompt: PromptSpec
   /** Appended to the resolved system prompt */
   appendPrompt?: string
-  /** Tool allow-list (consumed by resolveAgent). */
-  allowedTools?: string[]
-  disallowedTools?: string[]
-  /** Skill allow-list (consumed by resolveAgent). */
-  availableSkills?: string[]
   maxTurns?: number
+  /** Agent-local capabilities (issue #72). Unset = empty pool (spawn) / assembled view (root). */
+  capabilities?: AgentCapabilities
+  /** Root-only: filters the runtime skill registry. Ignored at spawn — subagents use capabilities.skills. */
+  availableSkills?: string[]
 }
 
-/** Session-level shared "world" built once at runtime; all agents share it. */
-export interface AgentEnvironment {
+/** Runtime-global environment — one per Runtime/session, inherited by every agent (issue #72). */
+export interface RuntimeEnvironment {
   provider: import('./providers/types.js').LLMProvider
   model: string
   maxTokens: number
   cwd: string
-  customTools: ToolDefinition[]
-  mcpTools: ToolDefinition[]
-  settingSources?: SettingSource[]
-  skillRegistry: import('./skills/registry.js').SkillRegistry
-  /** Per-agent tool services for state isolation */
-  toolServices?: ToolServices
-  /** Pre-computed subprocess env for Bash/Grep tools. */
   subprocessEnv: Record<string, string | undefined>
+  settingSources?: SettingSource[]
+  /**
+   * Runtime-level host services (askUser/config/webSearch/webFetch/cron are
+   * shared by reference). `findTool` is the ONE per-agent exception: callers
+   * own its lifetime — root reuses the Agent's session registry across
+   * queries; every spawn passes a fresh one.
+   */
+  toolServices: import('./tools/services.js').ToolServices
+}
+
+/** Agent-local capabilities — isolated per agent; NEVER inherited from parent (issue #72). */
+export interface AgentCapabilities {
+  /** Materialized MCP/connection tools. Default []. No parent fallback. */
+  connectionTools?: ToolDefinition[]
+  /** Default []. No parent fallback. */
+  customTools?: ToolDefinition[]
+  /** Agent-owned skill set. Default: root = assembled registry view; spawn = []. */
+  skills?: import('./skills/types.js').SkillDefinition[]
+  /** Allow-list gating built-in tools ONLY (issue #64 contract). */
+  allowedTools?: string[]
+  /** Deny-list applied to the full merged pool. */
+  disallowedTools?: string[]
 }
 
 /** An agent's effective capabilities, resolved exactly once by resolveAgent. */
@@ -560,6 +575,10 @@ export interface ResolvedAgent {
   tools: ToolDefinition[]
   deferredTools: ToolDefinition[]
   skills: import('./skills/types.js').SkillDefinition[]
+  /** Per-agent tool services; the findTool registry is owned by this agent (issue #72). */
+  services: import('./tools/services.js').ToolServices
+  /** Per-agent skill registry view (consumed by the Skill tool and prompts). */
+  skillRegistry: import('./skills/registry.js').SkillRegistry
 }
 
 export interface ThinkingConfig {
@@ -880,8 +899,8 @@ export interface QueryResult {
 // --------------------------------------------------------------------------
 
 export interface QueryEngineConfig {
-  /** Session-level shared "world" (provider, model, cwd, tool pools, skill registry) */
-  env: AgentEnvironment
+  /** Runtime-global environment shared by every agent in the session (issue #72). */
+  runtime: RuntimeEnvironment
   /** The agent's effective capabilities, resolved once by resolveAgent */
   resolved: ResolvedAgent
   /** Subagent definitions available to Task/MultiTask */

@@ -21,22 +21,23 @@ class FakeAPIConnectionError extends Error {
 }
 
 function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryEngineConfig {
+  const skillRegistry = new SkillRegistry()
   return {
-    env: {
+    runtime: {
       provider,
       model: 'test-model',
       maxTokens: 100,
       cwd: process.cwd(),
-      customTools: [],
-      mcpTools: [],
-      skillRegistry: new SkillRegistry(),
       subprocessEnv: {},
+      toolServices: createEmptyServices(),
     },
     resolved: {
       definition: { description: 'test', prompt: 'test prompt' },
       tools,
       deferredTools: [],
       skills: [],
+      services: createEmptyServices(),
+      skillRegistry,
     },
     maxTurns: 5,
     canUseTool: async () => ({ behavior: 'allow' }),
@@ -1066,15 +1067,13 @@ describe('QueryEngine per-turn tool activation', () => {
     const baseConfig = makeConfig(provider)
     const config: QueryEngineConfig = {
       ...baseConfig,
-      env: {
-        ...baseConfig.env,
-        toolServices: createEmptyServices(),
-      },
       resolved: {
         definition: { description: 'test', prompt: 'test' },
         tools: [makeFindToolStandIn()],
         deferredTools: [makeDeferredCronListTool()],
         skills: [],
+        services: createEmptyServices(),
+        skillRegistry: new SkillRegistry(),
       } as any,
     } as any
 
@@ -1115,15 +1114,13 @@ describe('QueryEngine per-turn tool activation', () => {
     const baseConfig = makeConfig(provider)
     const config: QueryEngineConfig = {
       ...baseConfig,
-      env: {
-        ...baseConfig.env,
-        toolServices: createEmptyServices(),
-      },
       resolved: {
         definition: { description: 'test', prompt: 'test' },
         tools: [makeFindToolStandIn()],
         deferredTools: [makeDeferredCronListTool()],
         skills: [],
+        services: createEmptyServices(),
+        skillRegistry: new SkillRegistry(),
       } as any,
     } as any
 

@@ -4,13 +4,19 @@ import type { QueryEngineConfig } from '../types.js'
 
 function makeConfig(overrides: Partial<QueryEngineConfig> = {}): QueryEngineConfig {
   return {
-    env: {
-      cwd: '/test',
-      model: 'test-model',
+    runtime: {
       provider: {} as any,
-      tools: [],
-      skills: [],
+      model: 'test-model',
+      maxTokens: 100,
+      cwd: '/test',
+      subprocessEnv: {},
       settingSources: [],
+      toolServices: {
+        askUser: null,
+        findTool: { deferredTools: [], activatedTools: new Set() },
+        config: new Map(),
+        cron: null,
+      },
     },
     resolved: {
       definition: { prompt: 'You are a test agent', allowedTools: [], availableSkills: [] },
@@ -71,13 +77,19 @@ describe('buildEnvironmentPrompt', () => {
 
   it('includes <sources> block when settingSources is non-empty', async () => {
     const config = makeConfig({
-      env: {
-        cwd: '/test/project',
-        model: 'test-model',
+      runtime: {
         provider: {} as any,
-        tools: [],
-        skills: [],
+        model: 'test-model',
+        maxTokens: 100,
+        cwd: '/test/project',
+        subprocessEnv: {},
         settingSources: ['user', 'project'],
+        toolServices: {
+          askUser: null,
+          findTool: { deferredTools: [], activatedTools: new Set() },
+          config: new Map(),
+          cron: null,
+        },
       },
       resolved: {
         definition: { prompt: 'Base', allowedTools: [], availableSkills: [] },

@@ -61,7 +61,7 @@ export const TaskTool: ToolDefinition = {
     }
 
     const run = await runSubagent({
-      env: ctx.env,
+      runtime: ctx.runtime,
       subAgents: ctx.subAgents,
       agentName: input.subagent_name,
       fallbackAgentId: context.agentId,

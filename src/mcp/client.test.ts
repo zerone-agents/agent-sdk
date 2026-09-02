@@ -186,6 +186,26 @@ describe('createMCPToolDefinition', () => {
     expect(tool.shortDescription).toContain('srv')
   })
 
+  it('maps annotations.readOnlyHint=true to isReadOnly (issue #72)', () => {
+    const tool = createMCPToolDefinition(
+      'srv',
+      { name: 'peek', annotations: { readOnlyHint: true } } as any,
+      {} as any,
+    )
+    expect(tool.isReadOnly?.()).toBe(true)
+  })
+
+  it('defaults isReadOnly to false without readOnlyHint (issue #72)', () => {
+    const write = createMCPToolDefinition(
+      'srv',
+      { name: 'mutate', annotations: { readOnlyHint: false } } as any,
+      {} as any,
+    )
+    expect(write.isReadOnly?.()).toBe(false)
+    const plain = createMCPToolDefinition('srv', { name: 'plain' } as any, {} as any)
+    expect(plain.isReadOnly?.()).toBe(false)
+  })
+
   it('preserves the full description in tool.description (no truncation)', () => {
     const long = 'Y'.repeat(500)
     const tool = createMCPToolDefinition('srv', { name: 't1', description: long }, {} as any)

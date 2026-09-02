@@ -579,3 +579,108 @@ describe('AgentInput snapshot integrity (issue #60 review)', () => {
     }
   })
 })
+
+describe('root capabilities seam (issue #72, PR #73 review)', () => {
+  // Public-seam observation: capture the tool schemas the PROVIDER receives
+  // on createMessage — exactly the model-visible resolved eager pool.
+  function captureToolsProvider() {
+    const seenTools: any[][] = []
+    const provider = {
+      apiType: 'anthropic-messages' as const,
+      createMessage: vi.fn(async (params: any) => {
+        seenTools.push(params.tools ?? [])
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: 'end_turn',
+        }
+      }),
+      createMessageStream: async function* () { /* not used */ },
+    }
+    return { provider, seenTools }
+  }
+
+  const capTool = (name: string, description = `${name} desc`) => ({
+    name,
+    description,
+    inputSchema: { type: 'object' as const, properties: {} },
+    call: async () => ({ type: 'tool_result' as const, tool_use_id: '', content: 'ok' }),
+  })
+
+  it('agent.capabilities.customTools union with top-level customTools', async () => {
+    const { provider, seenTools } = captureToolsProvider()
+    const agent = new Agent(makeBaseOptions({
+      customTools: [capTool('top_custom') as any],
+      agent: {
+        description: 'root', prompt: 'p',
+        capabilities: { customTools: [capTool('cap_custom') as any] },
+      },
+    }))
+    ;(agent as any).provider = provider
+    await agent.prompt('hi')
+    const names = seenTools[0].map((t: any) => t.name)
+    expect(names).toContain('top_custom')
+    expect(names).toContain('cap_custom')
+  })
+
+  it('agent.capabilities.connectionTools union with the mcpServers pool', async () => {
+    const { provider, seenTools } = captureToolsProvider()
+    const sdk = createSdkMcpServer({ name: 'mylocal', tools: [greetTool()], deferred: false })
+    const agent = new Agent(makeBaseOptions({
+      mcpServers: { mylocal: sdk },
+      agent: {
+        description: 'root', prompt: 'p',
+        capabilities: { connectionTools: [capTool('mcp__cap__op') as any] },
+      },
+    }))
+    ;(agent as any).provider = provider
+    await agent.prompt('hi')
+    const names = seenTools[0].map((t: any) => t.name)
+    expect(names).toContain('mcp__mylocal__greet')   // top-level mcpServers pool
+    expect(names).toContain('mcp__cap__op')          // capabilities.connectionTools
+  })
+
+  it('same-name capability tool overrides its top-level twin (later-wins dedup)', async () => {
+    const { provider, seenTools } = captureToolsProvider()
+    const agent = new Agent(makeBaseOptions({
+      customTools: [capTool('dup', 'top-level twin') as any],
+      agent: {
+        description: 'root', prompt: 'p',
+        capabilities: { customTools: [capTool('dup', 'capability twin') as any] },
+      },
+    }))
+    ;(agent as any).provider = provider
+    await agent.prompt('hi')
+    const dups = seenTools[0].filter((t: any) => t.name === 'dup')
+    expect(dups).toHaveLength(1)
+    expect(dups[0].description).toBe('capability twin')
+  })
+
+  it('per-query agent definition capabilities honored (no cfg/definition disconnect)', async () => {
+    const { provider, seenTools } = captureToolsProvider()
+    const agent = new Agent(makeBaseOptions())  // constructor has NO agent definition
+    ;(agent as any).provider = provider
+    await agent.prompt('hi', {
+      agent: {
+        description: 'q', prompt: 'p',
+        capabilities: { customTools: [capTool('per_query_custom') as any] },
+      },
+    })
+    const names = seenTools[0].map((t: any) => t.name)
+    expect(names).toContain('per_query_custom')
+  })
+
+  it('top-level sources unchanged without capabilities (no regression)', async () => {
+    const { provider, seenTools } = captureToolsProvider()
+    const sdk = createSdkMcpServer({ name: 'mylocal', tools: [greetTool()], deferred: false })
+    const agent = new Agent(makeBaseOptions({
+      mcpServers: { mylocal: sdk },
+      customTools: [capTool('top_custom') as any],
+    }))
+    ;(agent as any).provider = provider
+    await agent.prompt('hi')
+    const names = seenTools[0].map((t: any) => t.name)
+    expect(names).toContain('mcp__mylocal__greet')
+    expect(names).toContain('top_custom')
+  })
+})

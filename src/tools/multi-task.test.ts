@@ -3,9 +3,8 @@ import type {
   ToolDefinition,
   SubagentContext,
   AgentDefinition,
-  AgentEnvironment,
+  RuntimeEnvironment,
 } from '../types.js'
-import { SkillRegistry } from '../skills/registry.js'
 import { createEmptyServices } from './services.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
@@ -56,25 +55,23 @@ const TEST_AGENTS: Record<string, AgentDefinition> = {
   general: {
     description: 'General agent',
     prompt: 'You are a general assistant.',
-    allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+    capabilities: { allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'] },
   },
   researcher: {
     description: 'Research agent',
     prompt: 'You are a research assistant.',
-    allowedTools: ['Read', 'Glob', 'Grep', 'WebSearch'],
+    capabilities: { allowedTools: ['Read', 'Glob', 'Grep', 'WebSearch'] },
   },
 }
 
-function makeEnv(): AgentEnvironment {
+function makeRuntime(): RuntimeEnvironment {
   return {
-    provider: mockProvider as any,
-    model: 'claude-sonnet-4-6',
-    maxTokens: 65536,
+    provider: {} as any,
+    model: 'test-model',
+    maxTokens: 4096,
     cwd: '/tmp',
-    customTools: [],
-    mcpTools: [],
-    skillRegistry: new SkillRegistry(),
     subprocessEnv: {},
+    toolServices: createEmptyServices(),
   }
 }
 
@@ -82,7 +79,7 @@ function makeContext(overrides: Partial<SubagentContext> = {}): SubagentContext 
   return {
     cwd: '/tmp',
     agentId: 'general',
-    env: makeEnv(),
+    runtime: makeRuntime(),
     subAgents: TEST_AGENTS,
     services: createEmptyServices(),
     subprocessEnv: {},
@@ -226,9 +223,9 @@ describe('MultiTaskTool', () => {
       expect(config.agentId).toBe('general')
     })
 
-    it('passes env.model to subagent engine', async () => {
-      const env = makeEnv()
-      env.model = 'gpt-4o'
+    it('passes runtime.model to the subagent engine', async () => {
+      const rt = makeRuntime()
+      rt.model = 'gpt-4o'
       await MultiTaskTool.call({
         tasks: [
           {
@@ -237,10 +234,10 @@ describe('MultiTaskTool', () => {
             subagent_type: 'General',
           },
         ],
-      }, makeContext({ env }))
+      }, makeContext({ runtime: rt }))
 
       const config = vi.mocked(QueryEngine).mock.calls[0][0] as any
-      expect(config.env.model).toBe('gpt-4o')
+      expect(config.runtime.model).toBe('gpt-4o')
     })
   })
 

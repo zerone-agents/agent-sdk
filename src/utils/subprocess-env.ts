@@ -1,7 +1,7 @@
 /**
  * Resolve the environment passed to tool subprocesses (Bash, Grep).
  *
- * Called once per agent build; result is cached on AgentEnvironment and
+ * Called once per agent build; result is cached on RuntimeEnvironment and
  * forwarded to ToolContext.subprocessEnv for every tool invocation.
  *
  * @param opts.toolEnv         Explicit env vars for subprocesses.
