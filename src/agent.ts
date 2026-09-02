@@ -568,17 +568,23 @@ export class Agent {
       })
     }
 
-    // Resolve the root agent's effective capabilities exactly once per query
+    // Resolve the root agent's effective capabilities exactly once per query.
+    // Root capability rule (issue #72 / PR #73 review): capabilities come from
+    // the PER-QUERY effective definition (rootDefinition reads the query
+    // override first, falling back to constructor config), and they UNION
+    // with the top-level sources — the mcpServers pool and customTools —
+    // top-level first, so assembleToolPool's later-wins dedup makes a
+    // same-name capability entry override its top-level twin.
     const definition = this.rootDefinition(opts)
     const mergedDefinition: AgentDefinition = {
       ...definition,
       availableSkills: overrides?.availableSkills ?? definition.availableSkills,
     }
     const runtime = this.buildRuntime(opts, provider)
-    const caps = this.cfg.agent?.capabilities
+    const caps = definition.capabilities
     const rootCaps: AgentCapabilities = {
-      connectionTools: this.toolPool,
-      customTools: opts.customTools ?? [],
+      connectionTools: [...this.toolPool, ...(caps?.connectionTools ?? [])],
+      customTools: [...(opts.customTools ?? []), ...(caps?.customTools ?? [])],
       skills: caps?.skills
         ?? filterSkillsByAllowlist(this.skillRegistry.getUserInvocable(), mergedDefinition.availableSkills),
       allowedTools: overrides?.allowedTools ?? caps?.allowedTools,

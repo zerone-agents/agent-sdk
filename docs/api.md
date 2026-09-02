@@ -138,6 +138,19 @@ shared by reference), and the built-in tool implementations.
 capability resolves to the child's own empty value, and siblings never see each
 other's capabilities.
 
+**Root agent merge rule** — the root agent's `capabilities` come from the
+per-query effective definition (a `query()` override wins over constructor
+config). Tool sources UNION with the top-level options, top-level first:
+
+```text
+connectionTools = [...mcpServers pool,         ...capabilities.connectionTools]
+customTools     = [...AgentOptions.customTools, ...capabilities.customTools]
+```
+
+A same-name capability entry overrides its top-level twin (later-wins dedup).
+`capabilities.skills` replaces the registry view; an unset capability field
+falls back to the top-level behavior — never the other way around.
+
 **Resolution order** (issue #72 — the Explore filter is a dynamic safety policy
 on the final pool, not a static deny-list):
 
