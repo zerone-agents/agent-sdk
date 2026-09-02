@@ -737,3 +737,32 @@ describe('connectMCPServer close semantics (issue #81)', () => {
     expect(mockClient.close).not.toHaveBeenCalled()
   })
 })
+
+describe('stdio stderr policy (issue #87)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    attempt = 0
+    mockClient = createMockClient()
+  })
+
+  it('forwards stderr to StdioClientTransport when set', async () => {
+    await connectMCPServer('srv', {
+      type: 'stdio', command: 'echo',
+      stderr: 'ignore',
+      retryPolicy: { timeoutMs: 100, maxRetries: 0 },
+    })
+
+    expect(vi.mocked(StdioClientTransport).mock.calls[0][0])
+      .toMatchObject({ stderr: 'ignore' })
+  })
+
+  it('omits the stderr key entirely when unset (preserves upstream inherit default)', async () => {
+    await connectMCPServer('srv', {
+      type: 'stdio', command: 'echo',
+      retryPolicy: { timeoutMs: 100, maxRetries: 0 },
+    })
+
+    expect(vi.mocked(StdioClientTransport).mock.calls[0][0])
+      .not.toHaveProperty('stderr')
+  })
+})

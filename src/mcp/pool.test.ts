@@ -233,4 +233,19 @@ describe('MCP connection pool', () => {
 
     await releaseMCPConnection(c3)
   })
+
+  it('stderr policy participates in the pool key (no cross-policy sharing)', async () => {
+    const built1 = mockBuiltClient()
+    const built2 = mockBuiltClient()
+    vi.mocked(buildMCPClient)
+      .mockResolvedValueOnce(built1)
+      .mockResolvedValueOnce(built2)
+
+    const c1 = await acquireMCPConnection('srv', stdioConfig())
+    const c2 = await acquireMCPConnection('srv', { ...stdioConfig(), stderr: 'ignore' })
+
+    expect(buildMCPClient).toHaveBeenCalledTimes(2)
+    await releaseMCPConnection(c1)
+    await releaseMCPConnection(c2)
+  })
 })

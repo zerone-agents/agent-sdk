@@ -239,6 +239,19 @@ specify `cwd` explicitly — so a server like `{ command: 'npx', args: ['my-serv
 runs in the agent's workspace rather than the host process's directory. This
 does not affect `sse` / Streamable HTTP transports.
 
+#### stdio stderr policy
+
+`McpStdioConfig` accepts an optional `stderr` field forwarded to the spawned
+server process (issue #87):
+
+| Value      | Behavior |
+| ---------- | -------- |
+| omitted    | Upstream MCP SDK default `"inherit"` — child stderr goes to the host process's stderr |
+| `"ignore"` | Child stderr is discarded (for hosts with strict output boundaries) |
+
+`"pipe"` is intentionally not exposed — the SDK offers no stderr consumer
+(tracked in #78). The field participates in the connection pool key.
+
 ### Environment variables
 
 | Variable                 | Description                                              |

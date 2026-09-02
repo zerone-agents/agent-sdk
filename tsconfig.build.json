@@ -8,6 +8,7 @@
     "**/*.test.tsx",
     "src/mcp/type-contracts.ts",
     "src/cron/type-contracts.ts",
-    "src/type-contracts.ts"
+    "src/type-contracts.ts",
+    "src/mcp/fixtures"
   ]
 }

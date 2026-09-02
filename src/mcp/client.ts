@@ -125,6 +125,7 @@ async function createTransport(name: string, config: McpServerConfig) {
       args?: string[]
       env?: Record<string, string>
       cwd?: string
+      stderr?: 'inherit' | 'ignore'
     }
     const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js')
     return new StdioClientTransport({
@@ -134,6 +135,9 @@ async function createTransport(name: string, config: McpServerConfig) {
       // Only pass cwd when explicitly set; otherwise let the MCP SDK fall
       // back to its own default (process.cwd() at spawn time).
       ...(stdioConfig.cwd ? { cwd: stdioConfig.cwd } : {}),
+      // Same conditional-spread pattern: when omitted the key is not passed
+      // at all, preserving the upstream default ("inherit").
+      ...(stdioConfig.stderr ? { stderr: stdioConfig.stderr } : {}),
     })
   }
 

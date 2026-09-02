@@ -464,6 +464,19 @@ export interface McpStdioConfig {
    * this directory.
    */
   cwd?: string
+  /**
+   * stderr policy for the spawned MCP server process.
+   *
+   * - omitted: upstream MCP SDK default `"inherit"` — child stderr goes to
+   *   the host process's stderr (pre-3.0.3 behavior, unchanged).
+   * - `"ignore"`: child stderr is discarded. Hosts with strict output
+   *   boundaries (e.g. agent-runtime) should set this.
+   *
+   * `"pipe"` is intentionally not exposed: the SDK offers no stderr
+   * consumer, so piping without draining risks buffer backpressure.
+   * A controlled consumption / logger-callback contract is tracked in #78.
+   */
+  stderr?: 'inherit' | 'ignore'
   retryPolicy?: McpRetryPolicy
   /**
    * Override the global MCP deferred default for this server's tools.
