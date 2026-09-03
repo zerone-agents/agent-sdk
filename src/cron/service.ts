@@ -5,13 +5,14 @@ import {
   dispatchCronSubmission,
 } from './coordinator.js'
 import {
-  consoleDiagnosticSink,
+  resolveCronDiagnosticSink,
   emitCronEvent,
   noopEventSink,
   reportCronDiagnostic,
   type CronDiagnosticSink,
   type CronEventSink,
 } from './events.js'
+import type { DiagnosticsSink } from '../utils/diagnostics.js'
 import type { ExecutionStore } from './execution-store.js'
 import type { CronExecutor } from './executor.js'
 import { CronRuntime } from './runtime.js'
@@ -112,6 +113,8 @@ export interface CreateCronServiceOptions {
   events?: CronEventSink
   /** Diagnostics channel: sink/replay failures reported here, never thrown. */
   onDiagnostic?: CronDiagnosticSink
+  /** #78: richer diagnostics sink — takes precedence over onDiagnostic. */
+  diagnostics?: DiagnosticsSink
   executionTimeoutMs?: number
   maxTasks?: number
   clock?: CronClock
@@ -144,7 +147,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     events = noopEventSink,
     maxTasks = DEFAULT_MAX_CRON_TASKS,
   } = options
-  const onDiagnostic = options.onDiagnostic ?? consoleDiagnosticSink
+  const onDiagnostic = resolveCronDiagnosticSink(options)
 
   // Wrap the sink once so EVERY emit — the coordinator's and the service's
   // own — reports sink failures through the diagnostics channel instead of
@@ -182,12 +185,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
           .catch((err) => {
             // Best-effort: a throwing diagnostics sink must not turn this
             // detached handler into an unhandled rejection.
-            reportCronDiagnostic(
-              onDiagnostic,
-              `scheduled submit failed for ${task.id}: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            )
+            reportCronDiagnostic(onDiagnostic, `scheduled submit failed for ${task.id}`, err)
           })
       },
     },
@@ -520,12 +518,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
         // never an unhandled rejection (same contract as the scheduler's
         // fire-and-forget submissions).
         submitted.completion.catch((err) => {
-          reportCronDiagnostic(
-            onDiagnostic,
-            `enqueued execution failed for ${task.id}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          )
+          reportCronDiagnostic(onDiagnostic, `enqueued execution failed for ${task.id}`, err)
         })
         return submitted.claimed
       })

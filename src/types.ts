@@ -354,6 +354,9 @@ export interface ToolContext {
    *  from AgentOptions.toolEnv + toolEnvInherit. Tools should pass this
    *  directly to spawn() / crossSpawn() as the env option. */
   subprocessEnv: Record<string, string | undefined>
+  /** Diagnostics sink surfaced to tools (#78) — subagent launchers forward
+   *  it so child engines inherit the parent's diagnostics channel. */
+  diagnostics?: import('./utils/diagnostics.js').DiagnosticsSink
 }
 
 /** Context available to the Skill tool: resolved skill set + registry. */
@@ -845,10 +848,12 @@ export interface AgentOptions {
   /** Debug log file. */
   debugFile?: string
   /**
-   * Host-provided logger for engine/tool-executor output. Replaces the
-   * default console logger; `logLevel` is ignored when this is set.
+   * Host-provided diagnostics sink (or legacy Logger — auto-adapted: warn
+   * degrades to error, cause dropped). Owns ALL SDK diagnostic output:
+   * engine/hooks/snapshot/tools/MCP/skills (#78). `logLevel` still controls
+   * the default sink's debug/trace filtering.
    */
-  logger?: import('./utils/logger.js').Logger
+  logger?: import('./utils/logger.js').Logger | import('./utils/diagnostics.js').DiagnosticsSink
   /**
    * Minimum log level for the default console logger.
    * Default: 'debug' (silent — only `error` prints; tool metadata and

@@ -501,8 +501,11 @@ describe('createCronService', () => {
 
     await h.timer.advance(60_000 + 6_000) // crosses slot 1 -> submit rejects
     await vi.waitFor(() => {
+      // #78 R1: sanitized skeleton (no err text in the message) + raw error
+      // on the cause channel.
       expect(onDiagnostic).toHaveBeenCalledWith(
-        expect.stringMatching(new RegExp(`scheduled submit failed for ${task.id}: claim failed`)),
+        expect.stringMatching(new RegExp(`^scheduled submit failed for ${task.id}$`)),
+        expect.objectContaining({ message: 'claim failed' }),
       )
     })
 

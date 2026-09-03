@@ -109,3 +109,55 @@ describe('SnapshotEngine timeout', () => {
     expect(call).toBe(2)
   })
 })
+
+describe('SnapshotEngine timeout diagnostics (#78)', () => {
+  let worktree: string
+
+  beforeEach(async () => {
+    worktree = await mkdtemp(join(tmpdir(), 'snap-diag-test-'))
+  })
+
+  afterEach(async () => {
+    await rm(worktree, { recursive: true, force: true })
+    await rm(worktree + '-snapshot', { recursive: true, force: true }).catch(() => {})
+  })
+
+  it('timeout warn sanitized on injected sink (no err.message leak)', async () => {
+    const { execFile } = await import('child_process')
+    ;(execFile as any).mockImplementation((_cmd: string, _args: string[], opts: any, cb: any) => {
+      const timer = setTimeout(() => {
+        const err = Object.assign(new Error('ETIMEDOUT-leaked-detail'), { killed: true, code: 'ETIMEDOUT' })
+        cb(err, { stdout: '', stderr: '' })
+      }, opts.timeout)
+      return { kill: vi.fn((signal?: string) => clearTimeout(timer)) }
+    })
+    const events: Array<{ level: string; msg: string; fields?: unknown; cause?: unknown }> = []
+    const sink = {
+      debug: () => {}, trace: () => {},
+      warn: (msg: string, fields?: unknown, cause?: unknown) => events.push({ level: 'warn', msg, fields, cause }),
+      error: (msg: string, fields?: unknown, cause?: unknown) => events.push({ level: 'error', msg, fields, cause }),
+      child: () => sink,
+    }
+    const engine = new SnapshotEngine({
+      worktree,
+      snapshotDir: worktree + '-snapshot',
+      timeoutMs: 50,
+      diagnostics: sink as any,
+    })
+    let thrown: unknown
+    await engine.init().catch((e: unknown) => { thrown = e })
+    expect(thrown).toBeInstanceOf(SnapshotTimeoutError)
+    const timeout = thrown instanceof SnapshotTimeoutError ? thrown : undefined
+    expect(timeout?.message).toContain('timed out after 50ms')
+    const cause = timeout?.cause
+    expect(cause).toBeInstanceOf(Error)
+    if (!(cause instanceof Error)) throw new Error('expected Error cause')
+    expect(cause.message).toBe('ETIMEDOUT-leaked-detail') // R1: original preserved
+    const e = events[0]
+    expect(e.level).toBe('warn')
+    expect(e.msg).toContain('timed out after 50ms')
+    expect(e.msg).not.toContain('ETIMEDOUT-leaked-detail')
+    expect(e.fields).toEqual({ errorType: 'Error' })
+    expect((e.cause as Error).message).toBe('ETIMEDOUT-leaked-detail') // R1: warn carries the raw error
+  })
+})

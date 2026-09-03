@@ -20,6 +20,8 @@ import { QueryEngine } from '../engine.js'
 import { resolveAgent } from '../resolve-agent.js'
 import { resolvePrompt } from '../prompts/system-prompts.js'
 
+import type { DiagnosticsSink } from '../utils/diagnostics.js'
+
 export const DEFAULT_SUBAGENT_MAX_TURNS = 10
 
 export type SpawnSubagentMode = 'Explore' | 'General'
@@ -44,6 +46,8 @@ export interface SpawnSubagentOptions {
   taskIndex: number
   abortSignal?: AbortSignal
   emitEvent?: (event: SDKSubagentMessage) => void
+  /** #78: diagnostics sink inherited by the child engine as its logger. */
+  diagnostics?: DiagnosticsSink
 }
 
 export interface SubagentRun {
@@ -112,7 +116,7 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     childRuntime,
     agentDef.capabilities ?? {},
     { ...agentDef, prompt: buildSubagentSystemPrompt(agentDef, opts.mode) },
-    { spawn: { mode: opts.mode } },
+    { spawn: { mode: opts.mode }, diagnostics: opts.diagnostics },
   )
 
   const sessionId = crypto.randomUUID()
@@ -128,6 +132,7 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     includePartialMessages: true,
     sessionId,
     abortSignal: opts.abortSignal,
+    logger: opts.diagnostics, // #78: child inherits the diagnostics channel
   })
 
   // subtask_completed is emitted exactly once for every post-spawn terminal state.

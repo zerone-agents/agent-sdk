@@ -115,8 +115,15 @@ export type HookConfig = Record<string, HookDefinition[]>
 /**
  * Hook registry for managing and executing hooks.
  */
+import { createDiagnosticsSink, stableErrorType, type DiagnosticsSink } from './utils/diagnostics.js'
+
 export class HookRegistry {
   private hooks: Map<HookEvent, HookDefinition[]> = new Map()
+  private diagnostics: DiagnosticsSink
+
+  constructor(diagnostics?: DiagnosticsSink) {
+    this.diagnostics = diagnostics ?? createDiagnosticsSink()
+  }
 
   /**
    * Register hooks from configuration.
@@ -178,7 +185,7 @@ export class HookRegistry {
         }
       } catch (err: any) {
         // Log but don't fail on hook errors
-        console.error(`[Hook] ${event} hook failed: ${err.message}`)
+        this.diagnostics.error(`[Hook] ${event} hook failed`, { errorType: stableErrorType(err) }, err)
       }
     }
 
@@ -256,8 +263,8 @@ async function executeShellHook(
 /**
  * Create a default hook registry.
  */
-export function createHookRegistry(config?: HookConfig): HookRegistry {
-  const registry = new HookRegistry()
+export function createHookRegistry(config?: HookConfig, diagnostics?: DiagnosticsSink): HookRegistry {
+  const registry = new HookRegistry(diagnostics)
   if (config) {
     registry.registerFromConfig(config)
   }

@@ -913,3 +913,114 @@ describe('Agent.compact option forwarding (issue #86)', () => {
     expect(clearedA).toBeGreaterThan(clearedB)
   })
 })
+
+// ---------------------------------------------------------------------------
+// #78: diagnostics sink
+// ---------------------------------------------------------------------------
+function makeCollectingSink() {
+  const events: Array<{ level: string; msg: string; fields?: unknown; cause?: unknown }> = []
+  const sink = {
+    debug: () => {}, trace: () => {},
+    warn: (msg: string, fields?: unknown) => events.push({ level: 'warn', msg, fields }),
+    error: (msg: string, fields?: unknown, cause?: unknown) => events.push({ level: 'error', msg, fields, cause }),
+    child: () => sink,
+  }
+  return { events, sink }
+}
+
+describe('Agent diagnostics sink (#78)', () => {
+  const bogusServer = { transport: { type: 'stdio' as const, command: 'definitely-not-a-command-d78', args: [] } }
+
+  it('AgentOptions.logger sink receives sanitized MCP connect failure with cause', async () => {
+    const { events, sink } = makeCollectingSink()
+    const agent = new Agent(makeBaseOptions({ logger: sink, mcpServers: { srv: bogusServer } }))
+    await (agent as any).setupDone
+    const e = events.find((x) => x.msg === '[MCP] Failed to connect to server')
+    expect(e).toBeDefined()
+    expect(e!.fields).toMatchObject({ server: '"srv"', errorType: 'Error' })
+    expect(e!.cause).toBeInstanceOf(Error)
+  })
+
+  it('default path: MCP failure prints sanitized fields only (byte rule)', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const agent = new Agent(makeBaseOptions({ mcpServers: { srv: bogusServer } }))
+      await (agent as any).setupDone
+      expect(spy).toHaveBeenCalledWith('[MCP] Failed to connect to server', { server: '"srv"', errorType: 'Error' })
+      expect((spy.mock.calls[0] as unknown[])).toHaveLength(2)
+    } finally { vi.restoreAllMocks() }
+  })
+
+  // NOTE (#78): the skills sites (:522/:977) get the IDENTICAL
+  // sink.error(msg, {errorType}, cause) transformation as :476 above, but
+  // cannot be triggered deterministically — loadSkillsFromFilesystem never
+  // rejects (errors are collected into its result array); the catch is a
+  // last-resort guard only. Coverage rides on the MCP test's proven pattern.
+})
+
+describe('Agent diagnostics isolation (#78)', () => {
+  it('tool-resolution diagnostics reach the injected sink (R1)', async () => {
+    const { events, sink } = makeCollectingSink()
+    const agent = new Agent(makeBaseOptions({ logger: sink, includePartialMessages: true }))
+    ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider([])
+    for await (const _ev of agent.query('hello', { allowedTools: ['Nonexistent*'] })) {
+      // drain — resolution happens per query; the sink must see the warns
+    }
+    expect(events.some((x) => x.msg.includes('agent resolved to zero tools'))).toBe(true)
+    expect(events.some((x) => x.msg.includes('[tools] allowedTools entry "Nonexistent*"'))).toBe(true)
+  })
+
+  it('query-level logger stays engine-scoped: receives tool-executor trace only (R5)', async () => {
+    const { events: ctorEvents, sink: ctorSink } = makeCollectingSink()
+    const traceEvents: string[] = []
+    const querySink = {
+      debug: () => {}, trace: (m: string) => traceEvents.push(m),
+      warn: () => {}, error: () => {}, child: () => querySink,
+    }
+    let pass = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        if (pass++ === 0) {
+          yield { type: 'tool_use', index: 1, id: 'tu_r5', name: 'echo-tool-r5', input: '{}' }
+          yield { type: 'done', index: -1 }
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' }
+          yield { type: 'done', index: -1 }
+        }
+      },
+    }
+    const agent = new Agent(makeBaseOptions({
+      logger: ctorSink,
+      includePartialMessages: true,
+      customTools: [{
+        name: 'echo-tool-r5',
+        description: 'd',
+        inputSchema: { type: 'object', properties: {} },
+        async call() { return { type: 'tool_result' as const, tool_use_id: '', content: 'ok', is_error: false } },
+      }],
+    }))
+    ;(agent as unknown as { provider: LLMProvider }).provider = provider
+    for await (const _ev of agent.query('hello', { logger: querySink })) {
+      // drain — the engine-scoped query logger receives the executor trace
+    }
+    expect(traceEvents.some((m) => m.includes('executeSingleTool(echo-tool-r5)'))).toBe(true)
+    expect(ctorEvents.length).toBe(0) // the agent-wide construction sink is untouched
+  })
+
+  it('two agents with distinct sinks never crosstalk', async () => {
+    const bogus = { transport: { type: 'stdio' as const, command: 'definitely-not-a-command-d78', args: [] } }
+    const a = makeCollectingSink()
+    const b = makeCollectingSink()
+    const agentA = new Agent(makeBaseOptions({ logger: a.sink, mcpServers: { srvA: bogus } }))
+    const agentB = new Agent(makeBaseOptions({ logger: b.sink, mcpServers: { srvB: bogus } }))
+    await (agentA as any).setupDone
+    await (agentB as any).setupDone
+    expect(a.events).toHaveLength(1)
+    expect(b.events).toHaveLength(1)
+    expect(a.events[0].fields).toMatchObject({ server: '"srvA"' })
+    expect(b.events[0].fields).toMatchObject({ server: '"srvB"' })
+    expect(a.events[0].cause).not.toBe(b.events[0].cause)
+  })
+})

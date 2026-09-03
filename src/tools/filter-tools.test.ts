@@ -184,3 +184,18 @@ describe('applyAllowedTools zero-match diagnostics (review round 1)', () => {
     expect(warns.some((w) => w.includes('matched none of the 7'))).toBe(true)
   })
 })
+
+describe('dead-wildcard diagnostics reach injected sink (#78)', () => {
+  it('applyAllowedTools dead wildcard warn routed byte-identical', () => {
+    const events: Array<{ level: string; msg: string }> = []
+    const sink = {
+      debug: () => {}, trace: () => {},
+      warn: (msg: string) => events.push({ level: 'warn', msg }),
+      error: (msg: string) => events.push({ level: 'error', msg }),
+      child: () => sink,
+    }
+    applyAllowedTools([tool('Read')], ['Nope*'], sink as any)
+    expect(events[0].msg).toContain('[tools] allowedTools entry "Nope*" matches no tools')
+    expect(events[0].level).toBe('warn')
+  })
+})

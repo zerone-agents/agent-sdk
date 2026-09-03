@@ -71,6 +71,7 @@ export const TaskTool: ToolDefinition = {
       toolUseId,
       taskIndex: 0,
       abortSignal: context.abortSignal,
+      diagnostics: context.diagnostics, // #78: child inherits diagnostics
       emitEvent: ctx.emitEvent
         ? (event) => ctx.emitEvent?.(event)
         : undefined,

@@ -6,6 +6,7 @@
  */
 
 import type { ToolDefinition } from '../types.js'
+import { createDiagnosticsSink, type DiagnosticsSink } from '../utils/diagnostics.js'
 
 // File I/O
 import { BashTool } from './bash.js'
@@ -132,10 +133,15 @@ function matchesToolList(parsed: ParsedToolList, name: string): boolean {
 }
 
 /** Warn once per wildcard entry that matches no tool (stale pattern). */
-function warnDeadWildcardEntries(scope: string, parsed: ParsedToolList, toolNames: string[]): void {
+function warnDeadWildcardEntries(
+  scope: string,
+  parsed: ParsedToolList,
+  toolNames: string[],
+  diagnostics: DiagnosticsSink = createDiagnosticsSink(),
+): void {
   for (const { entry, prefix } of parsed.wildcards) {
     if (!toolNames.some((n) => n.startsWith(prefix))) {
-      console.warn(
+      diagnostics.warn(
         `[tools] ${scope} entry "${entry}" matches no tools — stale pattern or wrong server name?`,
       )
     }
@@ -156,6 +162,7 @@ function warnDeadWildcardEntries(scope: string, parsed: ParsedToolList, toolName
 export function applyAllowedTools(
   tools: ToolDefinition[],
   allowedTools?: string[],
+  diagnostics: DiagnosticsSink = createDiagnosticsSink(),
 ): ToolDefinition[] {
   if (!allowedTools || allowedTools.length === 0) return tools
 
@@ -163,7 +170,7 @@ export function applyAllowedTools(
 
   // Diagnostics run even when a bare '*' selects everything — other entries
   // alongside it can still be stale patterns (review round 3).
-  warnDeadWildcardEntries('allowedTools', parsed, tools.map((t) => t.name))
+  warnDeadWildcardEntries('allowedTools', parsed, tools.map((t) => t.name), diagnostics)
 
   // Allow-side bare '*' selects everything (deny-side stays a literal —
   // see parseToolList). Other entries alongside '*' are redundant matches.
@@ -172,7 +179,7 @@ export function applyAllowedTools(
   const kept = tools.filter((t) => matchesToolList(parsed, t.name))
 
   if (kept.length === 0 && tools.length > 0) {
-    console.warn(
+    diagnostics.warn(
       `[tools] allowedTools [${allowedTools.join(', ')}] matched none of the ${tools.length} built-in tools — ` +
         `all built-ins were filtered out. The allow-list applies to built-in tools only; ` +
         `custom and MCP tools bypass it (entries are exact names or trailing-* prefixes).`,
@@ -195,12 +202,13 @@ export function applyDisallowedTools(
   tools: ToolDefinition[],
   disallowedTools?: string[],
   diagnosticPool: ToolDefinition[] = tools,
+  diagnostics?: DiagnosticsSink,
 ): ToolDefinition[] {
   if (!disallowedTools || disallowedTools.length === 0) return tools
 
   const parsed = parseToolList(disallowedTools)
 
-  warnDeadWildcardEntries('disallowedTools', parsed, diagnosticPool.map((t) => t.name))
+  warnDeadWildcardEntries('disallowedTools', parsed, diagnosticPool.map((t) => t.name), diagnostics)
 
   return tools.filter((t) => !matchesToolList(parsed, t.name))
 }

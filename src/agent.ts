@@ -38,7 +38,8 @@ import { resolveAgent } from './resolve-agent.js'
 import { type MCPConnection } from './mcp/client.js'
 import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
-import { resolveTransportKind, sanitizeLogField, stableErrorType } from './mcp/client.js'
+import { resolveTransportKind } from './mcp/client.js'
+import { adaptToDiagnosticsSink, createDiagnosticsSink, sanitizeLogField, stableErrorType, type DiagnosticsSink } from './utils/diagnostics.js'
 import {
   saveSession,
   loadSession,
@@ -58,6 +59,13 @@ import { resolveSubprocessEnv } from './utils/subprocess-env.js'
 import { resolveToolServices } from './tools/services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
+/**
+ * Per-query overrides. NOTE (#78 R5): `logger` here is the PRE-EXISTING
+ * engine-scoped query logger — it receives only that query's engine /
+ * tool-executor output, exactly as before #78. The agent-wide diagnostics
+ * sink is a separate, construction-only concept (`AgentOptions.logger`);
+ * a query-level logger never re-binds it.
+ */
 export type QueryOverrides = Partial<AgentOptions> & {
   allowedTools?: string[]
   disallowedTools?: string[]
@@ -174,6 +182,7 @@ export class Agent {
   private abortCtrl: AbortController | null = null
   private currentEngine: QueryEngine | null = null
   private hookRegistry: HookRegistry
+  private sink: DiagnosticsSink
   private lastInputTokens = 0
   private lastOutputTokens = 0
 
@@ -193,13 +202,22 @@ export class Agent {
     this.apiType = this.resolveApiType()
 
     // Create LLM provider
+    // #78: one adapted sink owns ALL agent diagnostics (engine/hooks/
+    // snapshot/tools/MCP/skills). Plain Loggers degrade (warn→error, cause
+    // dropped); logLevel drives the default sink's debug/trace filtering.
+    // Initialized before every consumer (provider/hooks/snapshot/resolve).
+    this.sink = adaptToDiagnosticsSink(
+      this.cfg.logger ?? createDiagnosticsSink({ level: this.cfg.logLevel }),
+    )
+
     this.provider = createProvider(this.apiType, {
       apiKey: this.apiCredentials.key,
       baseURL: this.apiCredentials.baseUrl,
+      diagnostics: this.sink,
     })
 
     // Build hook registry from options
-    this.hookRegistry = createHookRegistry()
+    this.hookRegistry = createHookRegistry(undefined, this.sink)
     if (this.cfg.hooks) {
       // Convert AgentOptions hooks format to HookConfig
       for (const [event, defs] of Object.entries(this.cfg.hooks)) {
@@ -466,17 +484,17 @@ export class Agent {
             if (connection.status === 'connected' && connection.tools.length > 0) {
               this.toolPool = [...this.toolPool, ...connection.tools]
             } else if (connection.error) {
-              console.warn('[MCP] Skipped server', {
+              this.sink.warn('[MCP] Skipped server', {
                 server: sanitizeLogField(name),
                 errorType: stableErrorType(connection.error),
-              })
+              }, connection.error)
             }
           }
         } catch (err: any) {
-          console.error('[MCP] Failed to connect to server', {
+          this.sink.error('[MCP] Failed to connect to server', {
             server: sanitizeLogField(name),
             errorType: stableErrorType(err),
-          })
+          }, err)
         }
       }
     }
@@ -505,6 +523,7 @@ export class Agent {
           worktree,
           timeoutMs: this.cfg.snapshotTimeoutMs,
           signal: this.cfg.abortSignal,
+          diagnostics: this.sink,
         })
         await this.cfg.snapshotEngine.init()
       }
@@ -519,7 +538,7 @@ export class Agent {
         }, this.skillRegistry)
       } catch (error) {
         // Don't fail agent startup
-        console.error('Failed to load filesystem skills:', error)
+        this.sink.error('Failed to load filesystem skills', { errorType: stableErrorType(error) }, error)
       }
     }
   }
@@ -571,6 +590,7 @@ export class Agent {
       provider = createProvider(resolvedApiType, {
         apiKey: overrides.apiKey ?? this.apiCredentials.key,
         baseURL: overrides.baseURL ?? this.apiCredentials.baseUrl,
+        diagnostics: this.sink, // #78: construction-time sink (logger is construction-only, R4)
       })
     }
 
@@ -598,6 +618,7 @@ export class Agent {
     }
     const resolved = resolveAgent(runtime, rootCaps, mergedDefinition, {
       skillRegistry: this.skillRegistry,
+      diagnostics: this.sink,
     })
 
     // Sync from previous engine — external modifications (e.g. revert)
@@ -607,6 +628,7 @@ export class Agent {
     }
 
     // Create query engine with current conversation state
+    const engineLogger = opts.logger ?? this.cfg.logger // #78 R5: engine-scoped
     const engine = new QueryEngine({
       runtime,
       resolved,
@@ -626,7 +648,11 @@ export class Agent {
       maxSessionQueries: opts.maxSessionQueries,
       effort: opts.effort,
       snapshotEngine: opts.snapshotEngine ?? this.cfg.snapshotEngine,
-      logger: opts.logger ?? this.cfg.logger,
+      // #78 R5: engine-scoped query logger (pre-existing capability):
+      // overrides.logger → that query's engine only; else the construction
+      // sink; else undefined so the engine builds its own '[engine]'-
+      // prefixed logger (byte-preserving).
+      logger: engineLogger !== undefined ? adaptToDiagnosticsSink(engineLogger) : undefined,
       logLevel: opts.logLevel ?? this.cfg.logLevel,
     }, { lastInputTokens: this.lastInputTokens, lastOutputTokens: this.lastOutputTokens })
     this.currentEngine = engine
@@ -974,7 +1000,7 @@ export class Agent {
           extraUserSkillDirs: this.cfg.extraUserSkillDirs,
         }, this.skillRegistry)
       } catch (error) {
-        console.error('Failed to reload filesystem skills:', error)
+        this.sink.error('Failed to reload filesystem skills', { errorType: stableErrorType(error) }, error)
       }
     }
 
