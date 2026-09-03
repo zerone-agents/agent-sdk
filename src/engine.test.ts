@@ -1532,3 +1532,57 @@ describe('QueryEngine message timestamps (issue #54)', () => {
     }
   })
 })
+
+describe('per-turn prune in an active session (#92)', () => {
+  // Behavior-change #1 regression pin at the ENGINE level (per-turn call site
+  // engine.ts:592): an active session of 6 real user queries, each with an
+  // oversized tool round, must retain the recent PRUNE_PROTECTED_QUERIES (4)
+  // results and clear only the older ones. The pre-P0 index-set bug cleared
+  // ALL oversized results regardless of recency — this test fails if the
+  // range protection regresses.
+  it('retains the recent 4 big tool results, clears the older 2', async () => {
+    const bigTool: ToolDefinition = {
+      name: 'bigdata',
+      description: 'returns a huge string',
+      inputSchema: { type: 'object', properties: {} },
+      async call() {
+        return { type: 'tool_result', tool_use_id: '', content: 'X'.repeat(PRUNE_THRESHOLD_CHARS + 1) }
+      },
+    }
+    let pass = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        if (pass % 2 === 0) {
+          yield { type: 'tool_use', index: 1, id: `tu_${pass}`, name: 'bigdata', input: '{}' }
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' }
+        }
+        yield { type: 'done', index: -1 }
+        pass++
+      },
+    }
+    const engine = new QueryEngine({ ...makeConfig(provider, [bigTool]), maxSessionQueries: 999 })
+    for (let i = 0; i < 6; i++) {
+      await run(engine) // each run = one real user query with one big-tool round
+    }
+    const messages = engine.getMessages()
+    // #92 review: typed extraction via the discriminated union — no `any`
+    // (tool_result blocks narrow by `type`, content narrows by `typeof`).
+    const results: string[] = []
+    for (const m of messages) {
+      if (m.role !== 'user' || !Array.isArray(m.content)) continue
+      const first = m.content[0]
+      if (first?.type === 'tool_result' && typeof first.content === 'string') {
+        results.push(first.content)
+      }
+    }
+    expect(results).toHaveLength(6)
+    expect(results[0]).toBe('[Old tool result content cleared]') // q1
+    expect(results[1]).toBe('[Old tool result content cleared]') // q2
+    for (let i = 2; i < 6; i++) {
+      expect(results[i]).toBe('X'.repeat(PRUNE_THRESHOLD_CHARS + 1)) // q3..q6 retained
+    }
+  })
+})
