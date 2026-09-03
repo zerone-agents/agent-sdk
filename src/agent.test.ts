@@ -959,6 +959,17 @@ describe('Agent diagnostics sink (#78)', () => {
 })
 
 describe('Agent diagnostics isolation (#78)', () => {
+  it('tool-resolution diagnostics reach the injected sink (R1)', async () => {
+    const { events, sink } = makeCollectingSink()
+    const agent = new Agent(makeBaseOptions({ logger: sink, includePartialMessages: true }))
+    ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider([])
+    for await (const _ev of agent.query('hello', { allowedTools: ['Nonexistent*'] })) {
+      // drain — resolution happens per query; the sink must see the warns
+    }
+    expect(events.some((x) => x.msg.includes('agent resolved to zero tools'))).toBe(true)
+    expect(events.some((x) => x.msg.includes('[tools] allowedTools entry "Nonexistent*"'))).toBe(true)
+  })
+
   it('two agents with distinct sinks never crosstalk', async () => {
     const bogus = { transport: { type: 'stdio' as const, command: 'definitely-not-a-command-d78', args: [] } }
     const a = makeCollectingSink()

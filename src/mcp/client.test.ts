@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { connectMCPServer, TimeoutError, createMCPToolDefinition, resolveTransportKind, sanitizeLogField, stableErrorType, normalizeCaughtError } from './client.js'
+import { connectMCPServer, createMCPToolDefinition, resolveTransportKind } from './client.js'
+import { TimeoutError, sanitizeLogField, stableErrorType, normalizeCaughtError } from '../utils/diagnostics.js'
 import type { McpServerConfig } from '../types.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'

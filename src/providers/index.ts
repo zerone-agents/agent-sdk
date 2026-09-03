@@ -21,7 +21,7 @@ import { OpenAIProvider } from './openai.js'
  */
 export function createProvider(
   apiType: ApiType,
-  opts: { apiKey?: string; baseURL?: string },
+  opts: { apiKey?: string; baseURL?: string; diagnostics?: import('../utils/diagnostics.js').DiagnosticsSink },
 ): LLMProvider {
   switch (apiType) {
     case 'anthropic-messages':

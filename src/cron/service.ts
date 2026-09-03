@@ -185,12 +185,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
           .catch((err) => {
             // Best-effort: a throwing diagnostics sink must not turn this
             // detached handler into an unhandled rejection.
-            reportCronDiagnostic(
-              onDiagnostic,
-              `scheduled submit failed for ${task.id}: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            )
+            reportCronDiagnostic(onDiagnostic, `scheduled submit failed for ${task.id}`, err)
           })
       },
     },
@@ -523,12 +518,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
         // never an unhandled rejection (same contract as the scheduler's
         // fire-and-forget submissions).
         submitted.completion.catch((err) => {
-          reportCronDiagnostic(
-            onDiagnostic,
-            `enqueued execution failed for ${task.id}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          )
+          reportCronDiagnostic(onDiagnostic, `enqueued execution failed for ${task.id}`, err)
         })
         return submitted.claimed
       })

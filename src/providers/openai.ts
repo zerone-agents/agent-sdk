@@ -130,12 +130,16 @@ interface OpenAIChatResponse {
 // Provider
 // --------------------------------------------------------------------------
 
+import { createDiagnosticsSink, type DiagnosticsSink } from '../utils/diagnostics.js'
+
 export class OpenAIProvider implements LLMProvider {
   readonly apiType = 'openai-completions' as const
   private apiKey: string
   private baseURL: string
 
-  constructor(opts: { apiKey?: string; baseURL?: string }) {
+  private diagnostics: DiagnosticsSink
+  constructor(opts: { apiKey?: string; baseURL?: string; diagnostics?: DiagnosticsSink }) {
+    this.diagnostics = opts.diagnostics ?? createDiagnosticsSink()
     this.apiKey = opts.apiKey || ''
     this.baseURL = (opts.baseURL || 'https://api.openai.com/v1').replace(/\/$/, '')
   }
@@ -438,7 +442,7 @@ export class OpenAIProvider implements LLMProvider {
 
       const missing = msg.tool_calls.filter(tc => !respondedIds.has(tc.id))
       if (missing.length > 0) {
-        console.log(`[OpenAI] ensureToolCallResponses: inserting ${missing.length} placeholder(s) for missing tool_call_ids: ${missing.map(tc => tc.id).join(', ')}`)
+        this.diagnostics.debug(`[OpenAI] ensureToolCallResponses: inserting ${missing.length} placeholder(s) for missing tool_call_ids: ${missing.map(tc => tc.id).join(', ')}`)
         const placeholders: OpenAIChatMessage[] = missing.map(tc => ({
           role: 'tool' as const,
           tool_call_id: tc.id,

@@ -10,9 +10,9 @@ import { createHash } from 'crypto'
 import {
   buildMCPClient,
   createMCPToolDefinition,
-  normalizeCaughtError,
   type MCPConnection,
 } from './client.js'
+import { normalizeCaughtError } from '../utils/diagnostics.js'
 import type { McpServerConfig } from '../types.js'
 
 const GRACE_MS = Number(process.env.ZERONE_AGENT_MCP_GRACE_MS ?? 30_000)

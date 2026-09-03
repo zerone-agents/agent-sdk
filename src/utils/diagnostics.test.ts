@@ -55,6 +55,11 @@ describe('createDiagnosticsSink (default byte rules)', () => {
     expect(console.error).toHaveBeenCalledWith('m', { errorType: 'Error' })
     expect((console.error as any).mock.calls[0]).toHaveLength(2)
   })
+  it('warn NEVER prints cause (R1)', () => {
+    createDiagnosticsSink().warn('m', { x: 1 }, new Error('secret-token'))
+    expect(console.warn).toHaveBeenCalledWith('m', { x: 1 })
+    expect((console.warn as any).mock.calls[0]).toHaveLength(2)
+  })
   it('no prefix injection', () => {
     createDiagnosticsSink().warn('[cron] tick')
     expect(console.warn).toHaveBeenCalledWith('[cron] tick')
@@ -77,11 +82,6 @@ describe('promoted trio + TimeoutError', () => {
     expect(sanitizeLogField('a'.repeat(200)).length).toBeLessThanOrEqual(130)
     expect(normalizeCaughtError('str') instanceof Error).toBe(true)
   })
-  it('shim: trio + TimeoutError still importable from mcp/client.js', async () => {
-    const shim = await import('../mcp/client.js')
-    expect(typeof shim.sanitizeLogField).toBe('function')
-    expect(typeof shim.stableErrorType).toBe('function')
-    expect(typeof shim.normalizeCaughtError).toBe('function')
-    expect(new shim.TimeoutError('t') instanceof TimeoutError).toBe(true)
-  })
+  // NOTE (#78 R1): no compat re-export from mcp/client.js — per CONTRIBUTING
+  // "No backwards-compat shims"; internal consumers import directly from here.
 })

@@ -131,11 +131,11 @@ describe('SnapshotEngine timeout diagnostics (#78)', () => {
       }, opts.timeout)
       return { kill: vi.fn((signal?: string) => clearTimeout(timer)) }
     })
-    const events: Array<{ level: string; msg: string; fields?: unknown }> = []
+    const events: Array<{ level: string; msg: string; fields?: unknown; cause?: unknown }> = []
     const sink = {
       debug: () => {}, trace: () => {},
-      warn: (msg: string, fields?: unknown) => events.push({ level: 'warn', msg, fields }),
-      error: (msg: string, fields?: unknown) => events.push({ level: 'error', msg, fields }),
+      warn: (msg: string, fields?: unknown, cause?: unknown) => events.push({ level: 'warn', msg, fields, cause }),
+      error: (msg: string, fields?: unknown, cause?: unknown) => events.push({ level: 'error', msg, fields, cause }),
       child: () => sink,
     }
     const engine = new SnapshotEngine({
@@ -144,11 +144,16 @@ describe('SnapshotEngine timeout diagnostics (#78)', () => {
       timeoutMs: 50,
       diagnostics: sink as any,
     })
-    await expect(engine.init()).rejects.toThrow(SnapshotTimeoutError)
+    let thrown: any
+    await engine.init().catch((e) => { thrown = e })
+    expect(thrown).toBeInstanceOf(SnapshotTimeoutError)
+    expect(thrown.message).toContain('timed out after 50ms')
+    expect((thrown.cause as Error).message).toBe('ETIMEDOUT-leaked-detail') // R1: original preserved
     const e = events[0]
     expect(e.level).toBe('warn')
     expect(e.msg).toContain('timed out after 50ms')
     expect(e.msg).not.toContain('ETIMEDOUT-leaked-detail')
     expect(e.fields).toEqual({ errorType: 'Error' })
+    expect((e.cause as Error).message).toBe('ETIMEDOUT-leaked-detail') // R1: warn carries the raw error
   })
 })

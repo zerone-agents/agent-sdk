@@ -195,17 +195,19 @@ export class Agent {
     this.apiType = this.resolveApiType()
 
     // Create LLM provider
-    this.provider = createProvider(this.apiType, {
-      apiKey: this.apiCredentials.key,
-      baseURL: this.apiCredentials.baseUrl,
-    })
-
     // #78: one adapted sink owns ALL agent diagnostics (engine/hooks/
     // snapshot/tools/MCP/skills). Plain Loggers degrade (warn→error, cause
     // dropped); logLevel drives the default sink's debug/trace filtering.
+    // Initialized before every consumer (provider/hooks/snapshot/resolve).
     this.sink = adaptToDiagnosticsSink(
       this.cfg.logger ?? createDiagnosticsSink({ level: this.cfg.logLevel }),
     )
+
+    this.provider = createProvider(this.apiType, {
+      apiKey: this.apiCredentials.key,
+      baseURL: this.apiCredentials.baseUrl,
+      diagnostics: this.sink,
+    })
 
     // Build hook registry from options
     this.hookRegistry = createHookRegistry(undefined, this.sink)
@@ -478,7 +480,7 @@ export class Agent {
               this.sink.warn('[MCP] Skipped server', {
                 server: sanitizeLogField(name),
                 errorType: stableErrorType(connection.error),
-              })
+              }, connection.error)
             }
           }
         } catch (err: any) {
@@ -608,6 +610,7 @@ export class Agent {
     }
     const resolved = resolveAgent(runtime, rootCaps, mergedDefinition, {
       skillRegistry: this.skillRegistry,
+      diagnostics: this.sink,
     })
 
     // Sync from previous engine — external modifications (e.g. revert)

@@ -10,9 +10,12 @@ import { createDiagnosticsSink, stableErrorType, type DiagnosticsSink } from '..
 const execFileAsync = promisify(execFile)
 
 export class SnapshotTimeoutError extends Error {
-  constructor(operation: string, timeoutMs: number) {
+  /** The original error that caused the timeout classification (#78 R1). */
+  declare readonly cause?: unknown
+  constructor(operation: string, timeoutMs: number, original?: unknown) {
     super(`Snapshot operation "${operation}" timed out after ${timeoutMs}ms`)
     this.name = 'SnapshotTimeoutError'
+    if (original !== undefined) this.cause = original
   }
 }
 
@@ -95,6 +98,17 @@ export class SnapshotEngine {
     }
   }
 
+  /** Shared timeout classification for the sync/async paths (#78 R1 dedup):
+   *  sanitized warn (raw error on cause) + throw preserving the original. */
+  private failSnapshotTimeout(operation: string, err: unknown): never {
+    this.diagnostics.warn(
+      `[Snapshot] Snapshot operation "${operation}" timed out after ${this.timeoutMs}ms`,
+      { errorType: stableErrorType(err) },
+      err,
+    )
+    throw new SnapshotTimeoutError(operation, this.timeoutMs, err)
+  }
+
   /** Snapshot repo path. Available after init(). */
   private get gitDir(): string {
     if (!this._gitDir) throw new Error('SnapshotEngine not initialized — call init() first')
@@ -141,8 +155,7 @@ export class SnapshotEngine {
       })
     } catch (err: any) {
       if (err.killed || err.code === 'ETIMEDOUT') {
-        this.diagnostics.warn(`[Snapshot] Snapshot operation "${operation}" timed out after ${this.timeoutMs}ms`, { errorType: stableErrorType(err) })
-        throw new SnapshotTimeoutError(operation, this.timeoutMs)
+        this.failSnapshotTimeout(operation, err)
       }
       throw err
     }
@@ -162,8 +175,7 @@ export class SnapshotEngine {
       })
     } catch (err: any) {
       if (err.killed || err.code === 'ETIMEDOUT') {
-        this.diagnostics.warn(`[Snapshot] Snapshot operation "${operation}" timed out after ${this.timeoutMs}ms`, { errorType: stableErrorType(err) })
-        throw new SnapshotTimeoutError(operation, this.timeoutMs)
+        this.failSnapshotTimeout(operation, err)
       }
       throw err
     }

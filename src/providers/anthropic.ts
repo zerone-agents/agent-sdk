@@ -13,11 +13,15 @@ import type {
   StreamChunk,
 } from './types.js'
 
+import { createDiagnosticsSink, type DiagnosticsSink } from '../utils/diagnostics.js'
+
 export class AnthropicProvider implements LLMProvider {
   readonly apiType = 'anthropic-messages' as const
   private client: Anthropic
 
-  constructor(opts: { apiKey?: string; baseURL?: string }) {
+  private diagnostics: DiagnosticsSink
+  constructor(opts: { apiKey?: string; baseURL?: string; diagnostics?: DiagnosticsSink }) {
+    this.diagnostics = opts.diagnostics ?? createDiagnosticsSink()
     this.client = new Anthropic({
       apiKey: opts.apiKey,
       baseURL: opts.baseURL,
@@ -61,7 +65,7 @@ export class AnthropicProvider implements LLMProvider {
       // Insert placeholder tool_results for missing ids
       const missing = toolUseIds.filter(id => !respondedIds.has(id))
       if (missing.length > 0) {
-        console.log(`[Anthropic] ensureToolCallResponses: inserting ${missing.length} placeholder(s) for: ${missing.join(', ')}`)
+        this.diagnostics.debug(`[Anthropic] ensureToolCallResponses: inserting ${missing.length} placeholder(s) for: ${missing.join(', ')}`)
         const placeholderContent = missing.map(id => ({
           type: 'tool_result' as const,
           tool_use_id: id,

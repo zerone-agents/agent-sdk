@@ -4,13 +4,12 @@
 
 import type { ToolDefinition, McpServerConfig, ToolContext, ToolResult } from '../types.js'
 import { truncateForCatalog } from '../tools/helpers.js'
-// #78: sanitize trio + TimeoutError moved to utils/diagnostics.ts; imported
-// here for the file's own uses AND re-exported for module-level compat.
+// #78: sanitize trio + TimeoutError live in utils/diagnostics.ts (no compat
+// re-export per CONTRIBUTING "No backwards-compat shims").
 import {
   TimeoutError, sanitizeLogField, stableErrorType, normalizeCaughtError,
   createDiagnosticsSink, type DiagnosticsSink,
 } from '../utils/diagnostics.js'
-export { TimeoutError, sanitizeLogField, stableErrorType, normalizeCaughtError }
 
 export interface MCPConnection {
   name: string

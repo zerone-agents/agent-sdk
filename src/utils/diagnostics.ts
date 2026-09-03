@@ -79,7 +79,7 @@ export function normalizeCaughtError(err: unknown): Error {
  *   "safe summary" and "raw error for the caller to handle" (#78 contract).
  */
 export interface DiagnosticsSink extends Logger {
-  warn(msg: string, fields?: Record<string, unknown>): void
+  warn(msg: string, fields?: Record<string, unknown>, cause?: unknown): void
   error(msg: string, fields?: Record<string, unknown>, cause?: unknown): void
   /** Covariant narrowing: deriving a child sink must not lose the channel. */
   child(fields: Record<string, unknown>): DiagnosticsSink
@@ -110,9 +110,9 @@ function prefixedSink(prefix: string, level: LogLevel): DiagnosticsSink {
   return {
     debug: (msg, ...args) => { if (enabled('debug')) console.debug(p(msg), ...args) },
     trace: (msg, ...args) => { if (enabled('trace')) console.debug(p(msg), ...args) },
-    warn: (msg, fields) => {
+    warn: (msg, fields, _cause) => {
       if (fields !== undefined) console.warn(p(msg), fields)
-      else console.warn(p(msg))
+      else console.warn(p(msg)) // cause is NEVER printed (R1: warn carries it too)
     },
     error: (msg, fields) => {
       if (fields !== undefined) console.error(p(msg), fields)
