@@ -144,11 +144,15 @@ describe('SnapshotEngine timeout diagnostics (#78)', () => {
       timeoutMs: 50,
       diagnostics: sink as any,
     })
-    let thrown: any
-    await engine.init().catch((e) => { thrown = e })
+    let thrown: unknown
+    await engine.init().catch((e: unknown) => { thrown = e })
     expect(thrown).toBeInstanceOf(SnapshotTimeoutError)
-    expect(thrown.message).toContain('timed out after 50ms')
-    expect((thrown.cause as Error).message).toBe('ETIMEDOUT-leaked-detail') // R1: original preserved
+    const timeout = thrown instanceof SnapshotTimeoutError ? thrown : undefined
+    expect(timeout?.message).toContain('timed out after 50ms')
+    const cause = timeout?.cause
+    expect(cause).toBeInstanceOf(Error)
+    if (!(cause instanceof Error)) throw new Error('expected Error cause')
+    expect(cause.message).toBe('ETIMEDOUT-leaked-detail') // R1: original preserved
     const e = events[0]
     expect(e.level).toBe('warn')
     expect(e.msg).toContain('timed out after 50ms')

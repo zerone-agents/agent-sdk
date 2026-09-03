@@ -312,3 +312,21 @@ describe('runSubagent diagnostics inheritance (#78)', () => {
     expect((capturedConfig as any)?.logger).toBe(sink)
   })
 })
+
+describe('runSubagent resolution diagnostics (R2)', () => {
+  it('child resolution diagnostics reach the inherited sink', async () => {
+    const events: Array<{ level: string; msg: string }> = []
+    const sink = {
+      debug: () => {}, trace: () => {},
+      warn: (msg: string) => events.push({ level: 'warn', msg }),
+      error: (msg: string) => events.push({ level: 'error', msg }),
+      child: () => sink,
+    }
+    const restrictive = {
+      'child-r': { description: 'd', prompt: 'p', capabilities: { allowedTools: ['Nope*'] } },
+    }
+    await runSubagent(baseOpts({ agentName: 'child-r', subAgents: restrictive, diagnostics: sink as any }))
+    expect(events.some((x) => x.msg.includes('agent resolved to zero tools'))).toBe(true)
+    expect(events.some((x) => x.msg.includes('[tools] allowedTools entry "Nope*"'))).toBe(true)
+  })
+})

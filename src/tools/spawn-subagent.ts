@@ -116,7 +116,7 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     childRuntime,
     agentDef.capabilities ?? {},
     { ...agentDef, prompt: buildSubagentSystemPrompt(agentDef, opts.mode) },
-    { spawn: { mode: opts.mode } },
+    { spawn: { mode: opts.mode }, diagnostics: opts.diagnostics },
   )
 
   const sessionId = crypto.randomUUID()

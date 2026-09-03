@@ -583,6 +583,7 @@ export class Agent {
       provider = createProvider(resolvedApiType, {
         apiKey: overrides.apiKey ?? this.apiCredentials.key,
         baseURL: overrides.baseURL ?? this.apiCredentials.baseUrl,
+        diagnostics: this.sink, // #78 R2: rebuilt provider keeps the sink
       })
     }
 
