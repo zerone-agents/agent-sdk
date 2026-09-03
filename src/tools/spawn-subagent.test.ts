@@ -295,3 +295,20 @@ describe('spawn isolation (issue #72)', () => {
     expect(r.deferredTools.map((t: any) => t.name)).toEqual(['mcp__a__op'])
   })
 })
+
+// ---------------------------------------------------------------------------
+// #78: diagnostics inheritance
+// ---------------------------------------------------------------------------
+describe('runSubagent diagnostics inheritance (#78)', () => {
+  it('child engine inherits diagnostics via spawn opts (#78)', async () => {
+    const events: unknown[] = []
+    const sink = {
+      debug: () => {}, trace: () => {},
+      warn: () => events.push('warn'),
+      error: () => events.push('error'),
+      child: () => sink,
+    }
+    await runSubagent(baseOpts({ diagnostics: sink as any }))
+    expect((capturedConfig as any)?.logger).toBe(sink)
+  })
+})

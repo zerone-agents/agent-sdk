@@ -317,3 +317,23 @@ await withCronMaintenanceSession({ dataDir }, async (service) => {
 ```
 
 Short-lived CRUD + execution-history access over the SAME directory: acquires the exact same `runtime.lock` (a running Runtime or another maintenance session fails fast), uses the same adapters and validation as the online service, never starts a Scheduler/timer/Agent executor, never runs startup recovery, and releases the lock when the callback settles. A service reference retained past the session refuses every operation.
+
+## Diagnostics sink (#78)
+
+Hosts own ALL SDK diagnostic output by injecting a sink — no global console monkey-patching.
+
+```ts
+export interface DiagnosticsSink extends Logger {
+  warn(msg: string, fields?: Record<string, unknown>): void
+  error(msg: string, fields?: Record<string, unknown>, cause?: unknown): void
+  child(fields: Record<string, unknown>): DiagnosticsSink
+}
+```
+
+- **Injection**: `AgentOptions.logger` (widened to accept `Logger | DiagnosticsSink`); plain `Logger`s are auto-adapted — `warn` degrades to `error`, `cause` is dropped. One injection threads through engine/hooks/snapshot/tools/MCP/skills, and subagent child engines inherit it via the Task/MultiTask spawn pipeline. `CronService` (independently constructed) accepts `diagnostics?: DiagnosticsSink` — it takes precedence over the legacy string-based `onDiagnostic`.
+- **Default**: `createDiagnosticsSink()` (console-backed). Byte rules: no prefix injection at the root (call sites keep their full existing message strings), `fields` prints as the second console argument only when defined, and **`cause` is never printed**.
+- **Channel contract**: `fields` carries safe summaries only; `cause` is the raw error for the host's own consumption — this is the explicit boundary between "safe summary" and "raw error" (#78). `warn`/`error` always emit; `debug`/`trace` follow `LogLevel` (`AgentOptions.logLevel` still controls the default sink's filtering).
+
+### Diagnostics behavior change (release-flagged)
+
+Sites that previously printed underlying error text now emit a sanitized skeleton + `fields.errorType` (raw error on `cause`, or on the existing throw/return error channel): hook failures (`[Hook] <event> hook failed`), filesystem skills load/reload failures, SnapshotEngine timeout warnings, `executeSingleTool` errors. All other diagnostic output is byte-identical.

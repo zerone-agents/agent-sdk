@@ -957,3 +957,20 @@ describe('Agent diagnostics sink (#78)', () => {
   // rejects (errors are collected into its result array); the catch is a
   // last-resort guard only. Coverage rides on the MCP test's proven pattern.
 })
+
+describe('Agent diagnostics isolation (#78)', () => {
+  it('two agents with distinct sinks never crosstalk', async () => {
+    const bogus = { transport: { type: 'stdio' as const, command: 'definitely-not-a-command-d78', args: [] } }
+    const a = makeCollectingSink()
+    const b = makeCollectingSink()
+    const agentA = new Agent(makeBaseOptions({ logger: a.sink, mcpServers: { srvA: bogus } }))
+    const agentB = new Agent(makeBaseOptions({ logger: b.sink, mcpServers: { srvB: bogus } }))
+    await (agentA as any).setupDone
+    await (agentB as any).setupDone
+    expect(a.events).toHaveLength(1)
+    expect(b.events).toHaveLength(1)
+    expect(a.events[0].fields).toMatchObject({ server: '"srvA"' })
+    expect(b.events[0].fields).toMatchObject({ server: '"srvB"' })
+    expect(a.events[0].cause).not.toBe(b.events[0].cause)
+  })
+})

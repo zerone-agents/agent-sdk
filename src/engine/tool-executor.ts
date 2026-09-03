@@ -29,6 +29,7 @@ import type { NormalizedMessageParam } from '../providers/types.js'
 import { AsyncQueue } from '../utils/async-queue.js'
 import type { HookRegistry } from '../hooks.js'
 import type { Logger } from '../utils/logger.js'
+import { adaptToDiagnosticsSink, stableErrorType } from '../utils/diagnostics.js'
 import { formatInputPreview, redactSensitiveFields } from '../utils/helpers.js'
 
 // ============================================================================
@@ -312,6 +313,9 @@ export async function runToolsBackground(
     services: ctx.config.resolved.services,
     // Pre-computed subprocess env for Bash/Grep
     subprocessEnv: ctx.config.runtime.subprocessEnv,
+    // #78: surface the engine's logger (adapted) so tools — e.g. subagent
+    // launchers — can forward the diagnostics channel to children.
+    diagnostics: adaptToDiagnosticsSink(ctx.logger),
     // SkillContext
     resolvedSkills: ctx.config.resolved.skills,
     skillRegistry: ctx.config.resolved.skillRegistry,
@@ -592,7 +596,7 @@ export async function executeSingleTool(
       }
     }
 
-    log.error(`executeSingleTool(${block.name}) error:`, err)
+    log.error(`executeSingleTool(${block.name}) error`, { errorType: stableErrorType(err) })
     return {
       type: 'tool_result',
       tool_use_id: block.id,

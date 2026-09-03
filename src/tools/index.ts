@@ -162,7 +162,7 @@ function warnDeadWildcardEntries(
 export function applyAllowedTools(
   tools: ToolDefinition[],
   allowedTools?: string[],
-  diagnostics?: DiagnosticsSink,
+  diagnostics: DiagnosticsSink = createDiagnosticsSink(),
 ): ToolDefinition[] {
   if (!allowedTools || allowedTools.length === 0) return tools
 
@@ -179,7 +179,7 @@ export function applyAllowedTools(
   const kept = tools.filter((t) => matchesToolList(parsed, t.name))
 
   if (kept.length === 0 && tools.length > 0) {
-    console.warn(
+    diagnostics.warn(
       `[tools] allowedTools [${allowedTools.join(', ')}] matched none of the ${tools.length} built-in tools — ` +
         `all built-ins were filtered out. The allow-list applies to built-in tools only; ` +
         `custom and MCP tools bypass it (entries are exact names or trailing-* prefixes).`,

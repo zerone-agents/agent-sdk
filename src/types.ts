@@ -354,6 +354,9 @@ export interface ToolContext {
    *  from AgentOptions.toolEnv + toolEnvInherit. Tools should pass this
    *  directly to spawn() / crossSpawn() as the env option. */
   subprocessEnv: Record<string, string | undefined>
+  /** Diagnostics sink surfaced to tools (#78) — subagent launchers forward
+   *  it so child engines inherit the parent's diagnostics channel. */
+  diagnostics?: import('./utils/diagnostics.js').DiagnosticsSink
 }
 
 /** Context available to the Skill tool: resolved skill set + registry. */
