@@ -63,7 +63,7 @@ function computeProtectedBoundary(
  * Build a lookup map from tool_use_id → tool_name by scanning
  * assistant messages for tool_use blocks.
  */
-function buildToolNameMap(messages: any[]): Map<string, string> {
+function buildToolNameMap(messages: NormalizedMessageParam[]): Map<string, string> {
   const map = new Map<string, string>()
   for (const msg of messages) {
     if (msg.role === 'assistant' && Array.isArray(msg.content)) {
@@ -183,7 +183,7 @@ export interface CompactResult {
 export async function* compactConversationStream(
   provider: LLMProvider,
   model: string,
-  messages: any[],
+  messages: NormalizedMessageParam[],
   state: AutoCompactState,
   debug?: boolean,
 ): AsyncGenerator<SDKCompactMessage, CompactResult> {
@@ -376,12 +376,12 @@ export async function* compactConversationWithProtectedTail(
  * Strip images from messages for compaction safety.
  */
 function stripImagesFromMessages(
-  messages: any[],
-): any[] {
-  return messages.map((msg: any) => {
+  messages: NormalizedMessageParam[],
+): NormalizedMessageParam[] {
+  return messages.map((msg) => {
     if (typeof msg.content === 'string') return msg
 
-    const filtered = (msg.content as any[]).filter((block: any) => {
+    const filtered = msg.content.filter((block) => {
       return block.type !== 'image'
     })
 
@@ -401,7 +401,7 @@ function truncateHeadTail(text: string, max: number): string {
 /**
  * Build compaction prompt from messages.
  */
-function buildCompactionPrompt(messages: any[]): string {
+function buildCompactionPrompt(messages: NormalizedMessageParam[]): string {
   const parts: string[] = ['Please summarize this conversation:\n']
 
   for (const msg of messages) {
@@ -411,7 +411,7 @@ function buildCompactionPrompt(messages: any[]): string {
       parts.push(`${role}: ${truncateHeadTail(msg.content, 5000)}`)
     } else if (Array.isArray(msg.content)) {
       const texts: string[] = []
-      for (const block of msg.content as any[]) {
+      for (const block of msg.content) {
         if (block.type === 'text') {
           texts.push(truncateHeadTail(block.text, 5000))
         } else if (block.type === 'tool_use') {
@@ -492,6 +492,12 @@ function pruneForCompaction(
   return cloned
 }
 
+/**
+ * #92 note: `messages: any[]` is deliberately kept — this is a published
+ * package-root signature (see PR-A audit: index.ts exports it); narrowing
+ * the param would break external callers. The internal helpers above are
+ * the tightened ones.
+ */
 export function microCompactMessages(
   messages: any[],
   maxToolResultChars: number = 50000,
