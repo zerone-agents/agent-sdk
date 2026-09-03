@@ -22,12 +22,15 @@ import type {
 } from './types.js'
 import { getAllBaseTools, assembleToolPool, applyAllowedTools, applyDisallowedTools } from './tools/index.js'
 import { SkillRegistry } from './skills/registry.js'
+import { createDiagnosticsSink, type DiagnosticsSink } from './utils/diagnostics.js'
 
 export interface ResolveAgentOptions {
   /** Spawn pipeline: removes Task/MultiTask; Explore applies the read-only safety policy. */
   spawn?: { mode: 'General' | 'Explore' }
   /** Root path: the Agent session's registry. Spawn builds a fresh one from capabilities.skills. */
   skillRegistry?: SkillRegistry
+  /** Diagnostics sink (#78); defaults to the console-backed sink. */
+  diagnostics?: DiagnosticsSink
 }
 
 function isReadOnlyTool(tool: { isReadOnly?: () => boolean }): boolean {
@@ -42,12 +45,13 @@ export function resolveAgent(
 ): ResolvedAgent {
   // Source-based filtering contract (#64): allow-list gates built-ins only;
   // custom/connection tools bypass. Deny-list applies to the merged pool.
-  const allowedBase = applyAllowedTools(getAllBaseTools(), capabilities.allowedTools)
+  const diagnostics = opts.diagnostics ?? createDiagnosticsSink()
+  const allowedBase = applyAllowedTools(getAllBaseTools(), capabilities.allowedTools, diagnostics)
   let pool = assembleToolPool(
     [...allowedBase, ...(capabilities.customTools ?? [])],
     capabilities.connectionTools ?? [],
   )
-  pool = applyDisallowedTools(pool, capabilities.disallowedTools)
+  pool = applyDisallowedTools(pool, capabilities.disallowedTools, undefined, diagnostics)
 
   // Spawn pipeline (issue #72): nesting ban, then Explore dynamic safety
   // policy on the FINAL pool — deferred tools included, so write tools stay
@@ -62,7 +66,7 @@ export function resolveAgent(
   // Final-pool check lives here (not in the list filters) because only
   // resolveAgent sees the full merged picture across all sources (#64).
   if (pool.length === 0) {
-    console.warn(
+    diagnostics.warn(
       '[tools] agent resolved to zero tools — check allowedTools/disallowedTools ' +
         '(allow-list gates built-in tools only; deny-list applies to everything).',
     )

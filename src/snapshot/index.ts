@@ -5,6 +5,7 @@ import { homedir } from 'os'
 import { mkdir, rm, readFile, writeFile, stat } from 'fs/promises'
 import { join } from 'path'
 import { Semaphore, getLock } from './semaphore.js'
+import { createDiagnosticsSink, stableErrorType, type DiagnosticsSink } from '../utils/diagnostics.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -25,6 +26,8 @@ export interface SnapshotEngineOptions {
   timeoutMs?: number
   /** Optional external abort signal to cancel in-flight git operations. */
   signal?: AbortSignal
+  /** Optional diagnostics sink (#78); defaults to the console-backed sink. */
+  diagnostics?: DiagnosticsSink
 }
 
 /**
@@ -78,11 +81,13 @@ export class SnapshotEngine {
   private timeoutMs: number
   private signal?: AbortSignal
   private abortController: AbortController
+  private diagnostics: DiagnosticsSink
 
   constructor(opts: SnapshotEngineOptions) {
     this.worktree = opts.worktree
     this._gitDir = opts.snapshotDir
     this.timeoutMs = opts.timeoutMs ?? 5000
+    this.diagnostics = opts.diagnostics ?? createDiagnosticsSink()
     this.signal = opts.signal
     this.abortController = new AbortController()
     if (this.signal) {
@@ -136,8 +141,7 @@ export class SnapshotEngine {
       })
     } catch (err: any) {
       if (err.killed || err.code === 'ETIMEDOUT') {
-        const message = `Snapshot operation "${operation}" timed out after ${this.timeoutMs}ms: ${err.message}`
-        console.warn(`[Snapshot] ${message}`)
+        this.diagnostics.warn(`[Snapshot] Snapshot operation "${operation}" timed out after ${this.timeoutMs}ms`, { errorType: stableErrorType(err) })
         throw new SnapshotTimeoutError(operation, this.timeoutMs)
       }
       throw err
@@ -158,8 +162,7 @@ export class SnapshotEngine {
       })
     } catch (err: any) {
       if (err.killed || err.code === 'ETIMEDOUT') {
-        const message = `Snapshot operation "${operation}" timed out after ${this.timeoutMs}ms: ${err.message}`
-        console.warn(`[Snapshot] ${message}`)
+        this.diagnostics.warn(`[Snapshot] Snapshot operation "${operation}" timed out after ${this.timeoutMs}ms`, { errorType: stableErrorType(err) })
         throw new SnapshotTimeoutError(operation, this.timeoutMs)
       }
       throw err

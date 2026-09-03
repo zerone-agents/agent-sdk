@@ -208,7 +208,7 @@ export class Agent {
     )
 
     // Build hook registry from options
-    this.hookRegistry = createHookRegistry()
+    this.hookRegistry = createHookRegistry(undefined, this.sink)
     if (this.cfg.hooks) {
       // Convert AgentOptions hooks format to HookConfig
       for (const [event, defs] of Object.entries(this.cfg.hooks)) {
@@ -514,6 +514,7 @@ export class Agent {
           worktree,
           timeoutMs: this.cfg.snapshotTimeoutMs,
           signal: this.cfg.abortSignal,
+          diagnostics: this.sink,
         })
         await this.cfg.snapshotEngine.init()
       }

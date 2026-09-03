@@ -288,3 +288,19 @@ describe('resolvePrompt', () => {
     expect(resolvePrompt({ type: 'preset', preset: 'default', append: 'EXTRA' })).toContain('EXTRA')
   })
 })
+
+describe('resolveAgent diagnostics (#78)', () => {
+  it('zero-tools warn reaches injected sink', () => {
+    const events: Array<{ level: string; msg: string }> = []
+    const sink = {
+      debug: () => {}, trace: () => {},
+      warn: (msg: string) => events.push({ level: 'warn', msg }),
+      error: (msg: string) => events.push({ level: 'error', msg }),
+      child: () => sink,
+    }
+    resolveAgent(makeRuntime(), { allowedTools: ['Nonexistent*'] }, DEF, { diagnostics: sink as any })
+    const e = events.find((x) => x.msg.includes('agent resolved to zero tools'))
+    expect(e).toBeDefined()
+    expect(e!.level).toBe('warn')
+  })
+})
