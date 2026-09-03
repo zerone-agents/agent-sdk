@@ -913,3 +913,47 @@ describe('Agent.compact option forwarding (issue #86)', () => {
     expect(clearedA).toBeGreaterThan(clearedB)
   })
 })
+
+// ---------------------------------------------------------------------------
+// #78: diagnostics sink
+// ---------------------------------------------------------------------------
+function makeCollectingSink() {
+  const events: Array<{ level: string; msg: string; fields?: unknown; cause?: unknown }> = []
+  const sink = {
+    debug: () => {}, trace: () => {},
+    warn: (msg: string, fields?: unknown) => events.push({ level: 'warn', msg, fields }),
+    error: (msg: string, fields?: unknown, cause?: unknown) => events.push({ level: 'error', msg, fields, cause }),
+    child: () => sink,
+  }
+  return { events, sink }
+}
+
+describe('Agent diagnostics sink (#78)', () => {
+  const bogusServer = { transport: { type: 'stdio' as const, command: 'definitely-not-a-command-d78', args: [] } }
+
+  it('AgentOptions.logger sink receives sanitized MCP connect failure with cause', async () => {
+    const { events, sink } = makeCollectingSink()
+    const agent = new Agent(makeBaseOptions({ logger: sink, mcpServers: { srv: bogusServer } }))
+    await (agent as any).setupDone
+    const e = events.find((x) => x.msg === '[MCP] Failed to connect to server')
+    expect(e).toBeDefined()
+    expect(e!.fields).toMatchObject({ server: '"srv"', errorType: 'Error' })
+    expect(e!.cause).toBeInstanceOf(Error)
+  })
+
+  it('default path: MCP failure prints sanitized fields only (byte rule)', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const agent = new Agent(makeBaseOptions({ mcpServers: { srv: bogusServer } }))
+      await (agent as any).setupDone
+      expect(spy).toHaveBeenCalledWith('[MCP] Failed to connect to server', { server: '"srv"', errorType: 'Error' })
+      expect((spy.mock.calls[0] as unknown[])).toHaveLength(2)
+    } finally { vi.restoreAllMocks() }
+  })
+
+  // NOTE (#78): the skills sites (:522/:977) get the IDENTICAL
+  // sink.error(msg, {errorType}, cause) transformation as :476 above, but
+  // cannot be triggered deterministically — loadSkillsFromFilesystem never
+  // rejects (errors are collected into its result array); the catch is a
+  // last-resort guard only. Coverage rides on the MCP test's proven pattern.
+})
