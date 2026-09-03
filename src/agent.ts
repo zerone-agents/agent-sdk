@@ -558,6 +558,13 @@ export class Agent {
 
     const opts = { ...this.cfg, ...overrides }
 
+    // #78 R3: per-query sink wins over the construction-time one — resolved
+    // ONCE at query start and shared by the provider rebuild, resolveAgent,
+    // and the engine (a query-level logger owns that query's diagnostics).
+    const effectiveSink = overrides?.logger !== undefined
+      ? adaptToDiagnosticsSink(overrides.logger)
+      : this.sink
+
     // Create abort controller for this query
     this.abortCtrl = opts.abortController || new AbortController()
     if (opts.abortSignal) {
@@ -583,7 +590,7 @@ export class Agent {
       provider = createProvider(resolvedApiType, {
         apiKey: overrides.apiKey ?? this.apiCredentials.key,
         baseURL: overrides.baseURL ?? this.apiCredentials.baseUrl,
-        diagnostics: this.sink, // #78 R2: rebuilt provider keeps the sink
+        diagnostics: effectiveSink, // #78 R3: per-query sink wins
       })
     }
 
@@ -611,7 +618,7 @@ export class Agent {
     }
     const resolved = resolveAgent(runtime, rootCaps, mergedDefinition, {
       skillRegistry: this.skillRegistry,
-      diagnostics: this.sink,
+      diagnostics: effectiveSink,
     })
 
     // Sync from previous engine — external modifications (e.g. revert)
@@ -621,7 +628,7 @@ export class Agent {
     }
 
     // Create query engine with current conversation state
-    const engineLogger = opts.logger ?? this.cfg.logger // #78: adapted below
+    const engineLogger = opts.logger ?? this.cfg.logger // #78 R3: guards the engine-default case
     const engine = new QueryEngine({
       runtime,
       resolved,
@@ -644,7 +651,7 @@ export class Agent {
       // #78: adapt whatever logger wins the override chain; when none is
       // set, stay undefined so the engine builds its own '[engine]'-prefixed
       // logger at the forwarded level (byte-preserving).
-      logger: engineLogger !== undefined ? adaptToDiagnosticsSink(engineLogger) : undefined,
+      logger: engineLogger !== undefined ? effectiveSink : undefined,
       logLevel: opts.logLevel ?? this.cfg.logLevel,
     }, { lastInputTokens: this.lastInputTokens, lastOutputTokens: this.lastOutputTokens })
     this.currentEngine = engine
