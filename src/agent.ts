@@ -59,7 +59,15 @@ import { resolveSubprocessEnv } from './utils/subprocess-env.js'
 import { resolveToolServices } from './tools/services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
-export type QueryOverrides = Partial<AgentOptions> & {
+/**
+ * Per-query overrides. NOTE (#78 R4): `logger` is deliberately EXCLUDED —
+ * the diagnostics sink is construction-only. A query-level logger could
+ * never consistently own a query's diagnostics (provider reuse, HookRegistry
+ * and SnapshotEngine are construction-bound singletons), so the footgun is
+ * removed rather than half-honored. Breaking vs. passing `logger` in
+ * overrides (previously it only reached the engine).
+ */
+export type QueryOverrides = Partial<Omit<AgentOptions, 'logger'>> & {
   allowedTools?: string[]
   disallowedTools?: string[]
   availableSkills?: string[]
@@ -558,13 +566,6 @@ export class Agent {
 
     const opts = { ...this.cfg, ...overrides }
 
-    // #78 R3: per-query sink wins over the construction-time one — resolved
-    // ONCE at query start and shared by the provider rebuild, resolveAgent,
-    // and the engine (a query-level logger owns that query's diagnostics).
-    const effectiveSink = overrides?.logger !== undefined
-      ? adaptToDiagnosticsSink(overrides.logger)
-      : this.sink
-
     // Create abort controller for this query
     this.abortCtrl = opts.abortController || new AbortController()
     if (opts.abortSignal) {
@@ -590,7 +591,7 @@ export class Agent {
       provider = createProvider(resolvedApiType, {
         apiKey: overrides.apiKey ?? this.apiCredentials.key,
         baseURL: overrides.baseURL ?? this.apiCredentials.baseUrl,
-        diagnostics: effectiveSink, // #78 R3: per-query sink wins
+        diagnostics: this.sink, // #78: construction-time sink (logger is construction-only, R4)
       })
     }
 
@@ -618,7 +619,7 @@ export class Agent {
     }
     const resolved = resolveAgent(runtime, rootCaps, mergedDefinition, {
       skillRegistry: this.skillRegistry,
-      diagnostics: effectiveSink,
+      diagnostics: this.sink,
     })
 
     // Sync from previous engine — external modifications (e.g. revert)
@@ -628,7 +629,6 @@ export class Agent {
     }
 
     // Create query engine with current conversation state
-    const engineLogger = opts.logger ?? this.cfg.logger // #78 R3: guards the engine-default case
     const engine = new QueryEngine({
       runtime,
       resolved,
@@ -648,10 +648,10 @@ export class Agent {
       maxSessionQueries: opts.maxSessionQueries,
       effort: opts.effort,
       snapshotEngine: opts.snapshotEngine ?? this.cfg.snapshotEngine,
-      // #78: adapt whatever logger wins the override chain; when none is
-      // set, stay undefined so the engine builds its own '[engine]'-prefixed
-      // logger at the forwarded level (byte-preserving).
-      logger: engineLogger !== undefined ? effectiveSink : undefined,
+      // #78 R4: logger is construction-only — when the agent has one, the
+      // engine gets the adapted sink; otherwise undefined so it builds its
+      // own '[engine]'-prefixed logger (byte-preserving).
+      logger: this.cfg.logger !== undefined ? this.sink : undefined,
       logLevel: opts.logLevel ?? this.cfg.logLevel,
     }, { lastInputTokens: this.lastInputTokens, lastOutputTokens: this.lastOutputTokens })
     this.currentEngine = engine

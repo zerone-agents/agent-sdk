@@ -970,18 +970,11 @@ describe('Agent diagnostics isolation (#78)', () => {
     expect(events.some((x) => x.msg.includes('[tools] allowedTools entry "Nonexistent*"'))).toBe(true)
   })
 
-  it("per-query logger sink owns that query's resolution diagnostics (R3)", async () => {
-    const { events: ctorEvents, sink: ctorSink } = makeCollectingSink()
-    const { events: queryEvents, sink: querySink } = makeCollectingSink()
-    const agent = new Agent(makeBaseOptions({ logger: ctorSink, includePartialMessages: true }))
-    ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider([])
-    for await (const _ev of agent.query('hello', { logger: querySink, allowedTools: ['Nonexistent*'] })) {
-      // drain — the per-query sink must own this query's diagnostics
-    }
-    expect(queryEvents.some((x) => x.msg.includes('agent resolved to zero tools'))).toBe(true)
-    expect(queryEvents.some((x) => x.msg.includes('[tools] allowedTools entry "Nonexistent*"'))).toBe(true)
-    expect(ctorEvents.every((x) => !x.msg.includes('zero tools') && !x.msg.includes('Nonexistent*'))).toBe(true)
-  })
+  // (#78 R4): 'logger' is no longer a QueryOverrides field — a query-level
+  // sink could never own a query's diagnostics (reused provider, HookRegistry
+  // and SnapshotEngine are construction-bound singletons). The R3 two-sink
+  // override test was removed with the capability; typecheck:test now guards
+  // the exclusion at the type level.
 
   it('two agents with distinct sinks never crosstalk', async () => {
     const bogus = { transport: { type: 'stdio' as const, command: 'definitely-not-a-command-d78', args: [] } }
