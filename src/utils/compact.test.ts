@@ -481,6 +481,14 @@ describe('compact-time tool pruning (spec v4 §4)', () => {
 })
 
 describe('fractional protectedQueries guard (#92)', () => {
+  // #92 review: typed extraction via the discriminated union — no `any`.
+  function firstToolResultContent(msgs: NormalizedMessageParam[], index: number): unknown {
+    const content = msgs[index].content
+    if (!Array.isArray(content)) return undefined
+    const first = content[0]
+    return first?.type === 'tool_result' ? first.content : undefined
+  }
+
   it('non-integer protectedQueries treated as no-protection (fail-open, no data loss)', () => {
     const msgs: NormalizedMessageParam[] = [
       ...bigToolRound('q1', 'id1'),
@@ -488,8 +496,8 @@ describe('fractional protectedQueries guard (#92)', () => {
     ]
     pruneMessages(msgs, 2.5)
     // boundary = messages.length (nothing protected) → both oversized results cleared
-    expect((msgs[2] as any).content[0].content).toBe('[Old tool result content cleared]')
-    expect((msgs[5] as any).content[0].content).toBe('[Old tool result content cleared]')
+    expect(firstToolResultContent(msgs, 2)).toBe('[Old tool result content cleared]')
+    expect(firstToolResultContent(msgs, 5)).toBe('[Old tool result content cleared]')
   })
 
   it('integral protectedQueries (2.0) behaves as the integer 2', () => {
@@ -498,7 +506,7 @@ describe('fractional protectedQueries guard (#92)', () => {
       ...bigToolRound('q2', 'id2'),
     ]
     pruneMessages(msgs, 2.0)
-    expect((msgs[2] as any).content[0].content).toBe(BIG)   // last-2 queries protected
-    expect((msgs[5] as any).content[0].content).toBe(BIG)
+    expect(firstToolResultContent(msgs, 2)).toBe(BIG)   // last-2 queries protected
+    expect(firstToolResultContent(msgs, 5)).toBe(BIG)
   })
 })

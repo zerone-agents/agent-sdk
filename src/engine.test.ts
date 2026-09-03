@@ -1568,9 +1568,16 @@ describe('per-turn prune in an active session (#92)', () => {
       await run(engine) // each run = one real user query with one big-tool round
     }
     const messages = engine.getMessages()
-    const results = messages
-      .filter((m) => m.role === 'user' && Array.isArray(m.content) && (m.content[0] as any)?.type === 'tool_result')
-      .map((m) => ((m.content as any[])[0] as { content: string }).content)
+    // #92 review: typed extraction via the discriminated union — no `any`
+    // (tool_result blocks narrow by `type`, content narrows by `typeof`).
+    const results: string[] = []
+    for (const m of messages) {
+      if (m.role !== 'user' || !Array.isArray(m.content)) continue
+      const first = m.content[0]
+      if (first?.type === 'tool_result' && typeof first.content === 'string') {
+        results.push(first.content)
+      }
+    }
     expect(results).toHaveLength(6)
     expect(results[0]).toBe('[Old tool result content cleared]') // q1
     expect(results[1]).toBe('[Old tool result content cleared]') // q2
