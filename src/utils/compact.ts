@@ -36,7 +36,8 @@ export const PROTECTED_TOOL_NAMES = new Set<string>(['Skill'])
  * query DOES (accepted variance, spec v4 §4); a MIXED [text, tool_result]
  * message DOES count as a query start, spec v4.2 §1.1). Protected range
  * is [boundary, length); clearable is [0, boundary). PRECEDENCE (spec v4.1 §1):
- * the queries <= 0 check runs FIRST — 0 means fully clearable even when the
+ * the `!Number.isInteger(queries) || queries <= 0` check runs FIRST — 0 (or
+ * any non-integer, #92) means fully clearable even when the
  * window has no real queries; only then does no-queries/queries >= count → 0
  * (everything protected) apply. Shared by pruneMessages and the compaction
  * window so all "last N queries" decisions agree on the same range semantics
@@ -46,7 +47,10 @@ function computeProtectedBoundary(
   messages: NormalizedMessageParam[],
   queries: number,
 ): number {
-  if (queries <= 0) return messages.length
+  // #92: non-integer queries are a programmer error — fail-open to
+  // no-protection (boundary = length ⇒ over-clear to the sentinel, no data
+  // loss), matching the queries <= 0 semantics below.
+  if (!Number.isInteger(queries) || queries <= 0) return messages.length
   const queryStarts: number[] = []
   for (let i = 0; i < messages.length; i++) {
     if (isUserQuery(messages[i])) queryStarts.push(i)
