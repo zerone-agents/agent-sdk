@@ -970,11 +970,44 @@ describe('Agent diagnostics isolation (#78)', () => {
     expect(events.some((x) => x.msg.includes('[tools] allowedTools entry "Nonexistent*"'))).toBe(true)
   })
 
-  // (#78 R4): 'logger' is no longer a QueryOverrides field — a query-level
-  // sink could never own a query's diagnostics (reused provider, HookRegistry
-  // and SnapshotEngine are construction-bound singletons). The R3 two-sink
-  // override test was removed with the capability; typecheck:test now guards
-  // the exclusion at the type level.
+  it('query-level logger stays engine-scoped: receives tool-executor trace only (R5)', async () => {
+    const { events: ctorEvents, sink: ctorSink } = makeCollectingSink()
+    const traceEvents: string[] = []
+    const querySink = {
+      debug: () => {}, trace: (m: string) => traceEvents.push(m),
+      warn: () => {}, error: () => {}, child: () => querySink,
+    }
+    let pass = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        if (pass++ === 0) {
+          yield { type: 'tool_use', index: 1, id: 'tu_r5', name: 'echo-tool-r5', input: '{}' }
+          yield { type: 'done', index: -1 }
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' }
+          yield { type: 'done', index: -1 }
+        }
+      },
+    }
+    const agent = new Agent(makeBaseOptions({
+      logger: ctorSink,
+      includePartialMessages: true,
+      customTools: [{
+        name: 'echo-tool-r5',
+        description: 'd',
+        inputSchema: { type: 'object', properties: {} },
+        async call() { return { type: 'tool_result' as const, tool_use_id: '', content: 'ok', is_error: false } },
+      }],
+    }))
+    ;(agent as unknown as { provider: LLMProvider }).provider = provider
+    for await (const _ev of agent.query('hello', { logger: querySink })) {
+      // drain — the engine-scoped query logger receives the executor trace
+    }
+    expect(traceEvents.some((m) => m.includes('executeSingleTool(echo-tool-r5)'))).toBe(true)
+    expect(ctorEvents.length).toBe(0) // the agent-wide construction sink is untouched
+  })
 
   it('two agents with distinct sinks never crosstalk', async () => {
     const bogus = { transport: { type: 'stdio' as const, command: 'definitely-not-a-command-d78', args: [] } }

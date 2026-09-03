@@ -60,14 +60,13 @@ import { resolveToolServices } from './tools/services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
 /**
- * Per-query overrides. NOTE (#78 R4): `logger` is deliberately EXCLUDED —
- * the diagnostics sink is construction-only. A query-level logger could
- * never consistently own a query's diagnostics (provider reuse, HookRegistry
- * and SnapshotEngine are construction-bound singletons), so the footgun is
- * removed rather than half-honored. Breaking vs. passing `logger` in
- * overrides (previously it only reached the engine).
+ * Per-query overrides. NOTE (#78 R5): `logger` here is the PRE-EXISTING
+ * engine-scoped query logger — it receives only that query's engine /
+ * tool-executor output, exactly as before #78. The agent-wide diagnostics
+ * sink is a separate, construction-only concept (`AgentOptions.logger`);
+ * a query-level logger never re-binds it.
  */
-export type QueryOverrides = Partial<Omit<AgentOptions, 'logger'>> & {
+export type QueryOverrides = Partial<AgentOptions> & {
   allowedTools?: string[]
   disallowedTools?: string[]
   availableSkills?: string[]
@@ -629,6 +628,7 @@ export class Agent {
     }
 
     // Create query engine with current conversation state
+    const engineLogger = opts.logger ?? this.cfg.logger // #78 R5: engine-scoped
     const engine = new QueryEngine({
       runtime,
       resolved,
@@ -648,10 +648,11 @@ export class Agent {
       maxSessionQueries: opts.maxSessionQueries,
       effort: opts.effort,
       snapshotEngine: opts.snapshotEngine ?? this.cfg.snapshotEngine,
-      // #78 R4: logger is construction-only — when the agent has one, the
-      // engine gets the adapted sink; otherwise undefined so it builds its
-      // own '[engine]'-prefixed logger (byte-preserving).
-      logger: this.cfg.logger !== undefined ? this.sink : undefined,
+      // #78 R5: engine-scoped query logger (pre-existing capability):
+      // overrides.logger → that query's engine only; else the construction
+      // sink; else undefined so the engine builds its own '[engine]'-
+      // prefixed logger (byte-preserving).
+      logger: engineLogger !== undefined ? adaptToDiagnosticsSink(engineLogger) : undefined,
       logLevel: opts.logLevel ?? this.cfg.logLevel,
     }, { lastInputTokens: this.lastInputTokens, lastOutputTokens: this.lastOutputTokens })
     this.currentEngine = engine
