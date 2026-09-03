@@ -1024,3 +1024,58 @@ describe('Agent diagnostics isolation (#78)', () => {
     expect(a.events[0].cause).not.toBe(b.events[0].cause)
   })
 })
+
+// #98: `query` merges overrides with `{ ...cfg, ...overrides }`; an explicit
+// `undefined` is a PRESENT key in JS spread, so runtime-style callers whose
+// object simply lacks a field (destructured as undefined) used to clobber the
+// AgentConfig value silently — e.g. maxSessionQueries became undefined and the
+// session-queries compaction never fired (agent-hub#121 repro).
+describe('query overrides: explicit undefined must not clobber AgentConfig (#98)', () => {
+  /**
+   * Minimal structural probe for the agent internals this block asserts on —
+   * a narrowed view of private fields instead of `any` (CONTRIBUTING). The
+   * cfg-survival of the merge is only observable at the engine config.
+   */
+  interface AgentProbe {
+    setupDone: Promise<void>
+    currentEngine: { config: { maxSessionQueries?: number; maxBudgetUsd?: number } }
+  }
+
+  it('keeps the cfg maxSessionQueries cap enforced when overrides carry explicit undefined', async () => {
+    const captured: NormalizedMessageParam[] = []
+    const agent = new Agent(makeBaseOptions({ includePartialMessages: true, maxSessionQueries: 2 }))
+    ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider(captured)
+    const probe = agent as unknown as AgentProbe
+    await probe.setupDone
+
+    // Runtime-style caller: every query omits maxSessionQueries; the
+    // destructured field arrives to the SDK as explicit undefined.
+    const compactEvents: SDKMessage[] = []
+    for (let i = 1; i <= 3; i++) {
+      for await (const ev of agent.query(`query ${i}`, { maxSessionQueries: undefined })) {
+        if (ev.type === 'compact') compactEvents.push(ev)
+      }
+    }
+    expect(compactEvents.length).toBeGreaterThan(0)
+    expect(compactEvents.some((e) => e.type === 'compact' && e.phase === 'end')).toBe(true)
+  })
+
+  it('falls back to cfg for undefined fields while explicit values still override', async () => {
+    const captured: NormalizedMessageParam[] = []
+    const agent = new Agent(makeBaseOptions({ maxSessionQueries: 3, maxBudgetUsd: 5 }))
+    ;(agent as unknown as { provider: LLMProvider }).provider = capturingProvider(captured)
+    const probe = agent as unknown as AgentProbe
+    await probe.setupDone
+
+    for await (const _ev of agent.query('q1', { maxSessionQueries: undefined })) {
+      // drain
+    }
+    expect(probe.currentEngine.config.maxSessionQueries).toBe(3)
+    expect(probe.currentEngine.config.maxBudgetUsd).toBe(5)
+
+    for await (const _ev of agent.query('q2', { maxSessionQueries: 7 })) {
+      // drain
+    }
+    expect(probe.currentEngine.config.maxSessionQueries).toBe(7)
+  })
+})
