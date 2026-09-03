@@ -4,6 +4,12 @@
 
 import type { ToolDefinition, McpServerConfig, ToolContext, ToolResult } from '../types.js'
 import { truncateForCatalog } from '../tools/helpers.js'
+// #78: sanitize trio + TimeoutError moved to utils/diagnostics.ts; imported
+// here for the file's own uses AND re-exported for module-level compat.
+import {
+  TimeoutError, sanitizeLogField, stableErrorType, normalizeCaughtError,
+} from '../utils/diagnostics.js'
+export { TimeoutError, sanitizeLogField, stableErrorType, normalizeCaughtError }
 
 export interface MCPConnection {
   name: string
@@ -11,13 +17,6 @@ export interface MCPConnection {
   tools: ToolDefinition[]
   error?: Error | string
   close: () => Promise<void>
-}
-
-export class TimeoutError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'TimeoutError'
-  }
 }
 
 function createTimeoutSignal(timeoutMs: number, externalSignal?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
@@ -230,59 +229,6 @@ async function connectOnce(
     tools,
     error: undefined,
     close: () => built.close(),
-  }
-}
-
-/**
- * Single-line, injection-safe representation of a log field (issue #77).
- * JSON.stringify escapes every control character (incl. \n, \r, C0/C1) and
- * adds explicit quote boundaries; over-length values are truncated. Underlying
- * Error.message never enters logs — this only sanitizes host-chosen fields
- * like the server name.
- */
-export function sanitizeLogField(value: string, maxLength = 128): string {
-  const s = JSON.stringify(value).replace(
-    // JSON.stringify leaves C1 controls (U+0080–U+009F) and U+2028/U+2029
-    // raw — all render as line breaks, so escape them explicitly (issue #81).
-    /[\u0080-\u009f\u2028\u2029]/g,
-    (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'),
-  )
-  return s.length > maxLength ? s.slice(0, maxLength - 2) + '…"' : s
-}
-
-/**
- * Stable, non-sensitive error-type diagnostic for logs (issue #81, review R1).
- * NEVER derives the logged string from error-controlled data: Error.name is
- * mutable (an identifier-shaped credential like sk_live_… passes any shape
- * check) and can even be a throwing getter — which would break the
- * error-connection return contract when log-argument evaluation throws.
- * Maps to SDK-owned constants via instanceof against SDK-known classes; the
- * try/catch additionally guards instanceof traps (Proxy getPrototypeOf can
- * throw too), making this helper total.
- */
-export function stableErrorType(err: unknown): string {
-  try {
-    if (err instanceof TimeoutError) return 'TimeoutError'
-    if (err instanceof Error) return 'Error'
-    return typeof err
-  } catch {
-    return 'Error'
-  }
-}
-
-/**
- * Total error normalization for catch blocks (issue #81, review R2).
- * `err instanceof Error` and `String(err)` can BOTH throw (a revoked Proxy
- * triggers their traps) — an unprotected normalization makes the catcher
- * itself throw, breaking the error-connection return contract. The fallback
- * message is an SDK-owned constant, never derived from the thrown value.
- */
-export function normalizeCaughtError(err: unknown): Error {
-  try {
-    if (err instanceof Error) return err
-    return new Error(String(err))
-  } catch {
-    return new Error('connection attempt threw a non-stringifiable value')
   }
 }
 
