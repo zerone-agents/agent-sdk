@@ -72,6 +72,21 @@ export type QueryOverrides = Partial<AgentOptions> & {
   availableSkills?: string[]
 }
 
+/**
+ * #98: strip keys whose value is explicitly `undefined` before spreading
+ * overrides over cfg. JS object spread keeps `undefined` values as PRESENT
+ * keys, so `{...{a:3}, ...{a:undefined}}` silently clobbers cfg's 3 — a
+ * runtime-style caller whose payload merely lacks a field (destructured as
+ * undefined) would disable the configured value with no warning. Only a real
+ * value — or explicit `null` — counts as a deliberate override.
+ */
+function omitUndefined<T extends object>(obj: T | undefined): Partial<T> {
+  if (!obj) return {}
+  return Object.fromEntries(
+    Object.entries(obj).filter(([, value]) => value !== undefined),
+  ) as Partial<T>
+}
+
 // --------------------------------------------------------------------------
 // Internal config groups (Task 16: organize 55 AgentOptions fields into 7 groups)
 // --------------------------------------------------------------------------
@@ -563,7 +578,7 @@ export class Agent {
 
     await this.setupDone
 
-    const opts = { ...this.cfg, ...overrides }
+    const opts = { ...this.cfg, ...omitUndefined(overrides) }
 
     // Create abort controller for this query
     this.abortCtrl = opts.abortController || new AbortController()
