@@ -15,6 +15,8 @@ export type CronEvent =
  */
 export type CronEventSink = (event: CronEvent) => void | Promise<void>
 
+import type { DiagnosticsSink } from '../utils/diagnostics.js'
+
 export const noopEventSink: CronEventSink = () => {}
 
 /** Diagnostics channel: reported, never thrown, never alters state. */
@@ -22,6 +24,22 @@ export type CronDiagnosticSink = (message: string) => void
 
 export const consoleDiagnosticSink: CronDiagnosticSink = (message) => {
   console.warn(`[cron] ${message}`)
+}
+
+/**
+ * #78: compose the cron diagnostics channel from the richer sink options.
+ * Precedence: `diagnostics` (DiagnosticsSink — messages bridge to
+ * `sink.warn('[cron] <message>')`) wins over the legacy string-sink
+ * `onDiagnostic`; neither → console default. Pure function, no global state.
+ */
+export function resolveCronDiagnosticSink(options: {
+  diagnostics?: DiagnosticsSink
+  onDiagnostic?: CronDiagnosticSink
+}): CronDiagnosticSink {
+  if (options.diagnostics) {
+    return (message) => options.diagnostics!.warn(`[cron] ${message}`)
+  }
+  return options.onDiagnostic ?? consoleDiagnosticSink
 }
 
 /**

@@ -766,3 +766,57 @@ describe('stdio stderr policy (issue #87)', () => {
       .not.toHaveProperty('stderr')
   })
 })
+
+// ---------------------------------------------------------------------------
+// #78: connectMCPServer diagnostics sink
+// ---------------------------------------------------------------------------
+describe('connectMCPServer diagnostics sink (#78)', () => {
+  function makeCollectingSink() {
+    const events: Array<{ level: string; msg: string; fields?: unknown; cause?: unknown }> = []
+    const sink = {
+      debug: () => {}, trace: () => {},
+      warn: (msg: string, fields?: unknown) => events.push({ level: 'warn', msg, fields }),
+      error: (msg: string, fields?: unknown, cause?: unknown) => events.push({ level: 'error', msg, fields, cause }),
+      child: () => sink,
+    }
+    return { events, sink }
+  }
+  const cfg = { type: 'stdio' as const, command: 'echo', retryPolicy: { timeoutMs: 1000, maxRetries: 0 } }
+
+  it('connect failure reaches injected sink with cause = lastError', async () => {
+    mockClient = createMockClient({ connectShouldReject: true })
+    const { events, sink } = makeCollectingSink()
+    const result = await connectMCPServer('srv', cfg, undefined, sink as any)
+    expect(result.status).toBe('error')
+    const e = events.find((x) => x.msg === '[MCP] Failed to connect to server')
+    expect(e).toBeDefined()
+    expect(e!.fields).toMatchObject({ server: '"srv"', errorType: 'Error' })
+    expect((e!.cause as Error).message).toBe('connect failed')
+  })
+
+  it('retry warn reaches injected sink', async () => {
+    attempt = 0 // sibling-describe scope: the outer beforeEach reset doesn't run here
+    mockClient = createMockClient({ connectShouldReject: (a: number) => a === 1, tools: [{ name: 'tool1', inputSchema: {} }] })
+    const { events, sink } = makeCollectingSink()
+    const result = await connectMCPServer(
+      'srv',
+      { type: 'stdio', command: 'echo', retryPolicy: { timeoutMs: 1000, maxRetries: 1 } },
+      undefined,
+      sink as any,
+    )
+    expect(result.status).toBe('connected')
+    const w = events.find((x) => x.msg === '[MCP] Retrying connection')
+    expect(w).toBeDefined()
+    expect(w!.fields).toMatchObject({ server: '"srv"', attempt: 2, maxAttempts: 2 })
+  })
+
+  it('default path byte-identical for connect failure (no sink injected)', async () => {
+    mockClient = createMockClient({ connectShouldReject: true })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await connectMCPServer('srv', cfg)
+      expect(spy).toHaveBeenCalledWith('[MCP] Failed to connect to server', { server: '"srv"', errorType: 'Error' })
+      expect((spy.mock.calls[0] as unknown[])).toHaveLength(2)
+    } finally { vi.restoreAllMocks() }
+  })
+})

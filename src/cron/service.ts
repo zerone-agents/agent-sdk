@@ -5,13 +5,14 @@ import {
   dispatchCronSubmission,
 } from './coordinator.js'
 import {
-  consoleDiagnosticSink,
+  resolveCronDiagnosticSink,
   emitCronEvent,
   noopEventSink,
   reportCronDiagnostic,
   type CronDiagnosticSink,
   type CronEventSink,
 } from './events.js'
+import type { DiagnosticsSink } from '../utils/diagnostics.js'
 import type { ExecutionStore } from './execution-store.js'
 import type { CronExecutor } from './executor.js'
 import { CronRuntime } from './runtime.js'
@@ -112,6 +113,8 @@ export interface CreateCronServiceOptions {
   events?: CronEventSink
   /** Diagnostics channel: sink/replay failures reported here, never thrown. */
   onDiagnostic?: CronDiagnosticSink
+  /** #78: richer diagnostics sink — takes precedence over onDiagnostic. */
+  diagnostics?: DiagnosticsSink
   executionTimeoutMs?: number
   maxTasks?: number
   clock?: CronClock
@@ -144,7 +147,7 @@ export function createCronService(options: CreateCronServiceOptions): CronServic
     events = noopEventSink,
     maxTasks = DEFAULT_MAX_CRON_TASKS,
   } = options
-  const onDiagnostic = options.onDiagnostic ?? consoleDiagnosticSink
+  const onDiagnostic = resolveCronDiagnosticSink(options)
 
   // Wrap the sink once so EVERY emit — the coordinator's and the service's
   // own — reports sink failures through the diagnostics channel instead of

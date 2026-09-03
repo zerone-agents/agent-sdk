@@ -8,6 +8,7 @@ import { truncateForCatalog } from '../tools/helpers.js'
 // here for the file's own uses AND re-exported for module-level compat.
 import {
   TimeoutError, sanitizeLogField, stableErrorType, normalizeCaughtError,
+  createDiagnosticsSink, type DiagnosticsSink,
 } from '../utils/diagnostics.js'
 export { TimeoutError, sanitizeLogField, stableErrorType, normalizeCaughtError }
 
@@ -239,9 +240,11 @@ export async function connectMCPServer(
   name: string,
   config: McpServerConfig,
   externalSignal?: AbortSignal,
+  diagnostics?: DiagnosticsSink,
 ): Promise<MCPConnection> {
   const timeoutMs = config.retryPolicy?.timeoutMs ?? 5000
   const maxRetries = config.retryPolicy?.maxRetries ?? 0
+  const sink = diagnostics ?? createDiagnosticsSink() // #78
 
   let lastError: Error | undefined
 
@@ -251,7 +254,7 @@ export async function connectMCPServer(
     } catch (err) {
       lastError = normalizeCaughtError(err)
       if (attempt < maxRetries) {
-        console.warn('[MCP] Retrying connection', {
+        sink.warn('[MCP] Retrying connection', {
           server: sanitizeLogField(name),
           attempt: attempt + 2,
           maxAttempts: maxRetries + 1,
@@ -260,10 +263,10 @@ export async function connectMCPServer(
     }
   }
 
-  console.error('[MCP] Failed to connect to server', {
+  sink.error('[MCP] Failed to connect to server', {
     server: sanitizeLogField(name),
     errorType: stableErrorType(lastError),
-  })
+  }, lastError)
   return {
     name,
     status: 'error',

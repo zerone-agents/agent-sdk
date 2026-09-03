@@ -5,7 +5,8 @@ import type { Agent } from '../../agent.js'
 import type { AgentOptions } from '../../types.js'
 import type { CronClock, CronTimer } from '../clock.js'
 import type { CronDiagnosticSink, CronEventSink } from '../events.js'
-import { consoleDiagnosticSink } from '../events.js'
+import { resolveCronDiagnosticSink } from '../events.js'
+import type { DiagnosticsSink } from '../../utils/diagnostics.js'
 import { createDefaultAgentCronExecutor, type CronAgentResolver } from '../executor.js'
 import { createCronService, type CronRuntimeLock, type CronService } from '../service.js'
 import type { CronJitterConfig } from '../types.js'
@@ -36,6 +37,8 @@ export interface CreateDefaultCronServiceOptions {
   events?: CronEventSink
   /** Diagnostics channel: sink/replay failures reported here, never thrown. */
   onDiagnostic?: CronDiagnosticSink
+  /** #78: richer diagnostics sink — takes precedence over onDiagnostic. */
+  diagnostics?: DiagnosticsSink
   maxTasks?: number
   clock?: CronClock
   timer?: CronTimer
@@ -55,7 +58,7 @@ export function createDefaultCronService(
   // Resolve the diagnostic sink ONCE at the composition layer so the store
   // (whose replay diagnostics would otherwise be silently discarded when the
   // caller omits onDiagnostic) and the service share the same sink.
-  const onDiagnostic = options.onDiagnostic ?? consoleDiagnosticSink
+  const onDiagnostic = resolveCronDiagnosticSink(options)
   const taskStorage = new FileCronStorage(cronDir)
   const executionStore = new FileExecutionStore(cronDir, { onDiagnostic })
   const executor = createDefaultAgentCronExecutor(

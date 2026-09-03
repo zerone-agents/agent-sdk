@@ -107,3 +107,21 @@ describe('emitCronEvent', () => {
     expect(() => noopEventSink({ type: 'taskDeleted', taskId: 't1' })).not.toThrow()
   })
 })
+
+describe('resolveCronDiagnosticSink (#78)', () => {
+  it('diagnostics wins, onDiagnostic next, console default', async () => {
+    const { resolveCronDiagnosticSink, consoleDiagnosticSink } = await import('./events.js')
+    const events: Array<{ level: string; msg: string }> = []
+    const sink = {
+      debug: () => {}, trace: () => {},
+      warn: (m: string) => events.push({ level: 'warn', msg: m }),
+      error: (m: string) => events.push({ level: 'error', msg: m }),
+      child: () => sink,
+    }
+    resolveCronDiagnosticSink({ diagnostics: sink as any })('tick')
+    expect(events[0]).toEqual({ level: 'warn', msg: '[cron] tick' })
+    const legacy = vi.fn()
+    expect(resolveCronDiagnosticSink({ onDiagnostic: legacy })).toBe(legacy)
+    expect(resolveCronDiagnosticSink({})).toBe(consoleDiagnosticSink)
+  })
+})
