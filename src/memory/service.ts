@@ -13,6 +13,8 @@ import {
 } from './errors.js'
 import { countMemoryChars } from './length.js'
 import { createDefaultMemoryContentPolicy, type MemoryContentPolicy } from './policy.js'
+import { compareMemorySearchResults, matchMemoryRecord, normalizeMemoryText, resolveMemorySearchLimit, type MemorySearchMatch } from './search.js'
+import { renderMemoryContext } from './render.js'
 import type { MemoryStorage } from './storage.js'
 import {
   DEFAULT_MEMORY_BUDGETS,
@@ -239,6 +241,58 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
     } catch (err) {
       safeError('[memory] event sink threw after commit', { operation: 'MemoryEvent' }, err)
     }
+  }
+
+  /**
+   * Task 10: session-visible search. Readable scopes = global + user + the
+   * bound workspace (omitted when none is bound); statuses = active + archived
+   * — deleted records are never readable, foreign workspaces never scanned.
+   * Matching defers to the canonical pure functions (normalize both sides,
+   * complete-match precedence, then all-terms); ranking and the hard `limit`
+   * cap come from the same reviewed module. Empty (post-normalization) queries
+   * short-circuit to [] — nothing matches nothing.
+   */
+  async function sessionSearch(session: BoundSession, query: MemorySearchQuery): Promise<MemoryRecord[]> {
+    assertRunning('search')
+    const limit = resolveMemorySearchLimit(query.limit)
+    const normalizedQuery = normalizeMemoryText(query.text)
+    if (normalizedQuery.length === 0) return []
+    const matches: MemorySearchMatch[] = []
+    const scopes: Array<{ scope: MemoryScope; workspaceId: string | null }> = [
+      { scope: 'global', workspaceId: null },
+      { scope: 'user', workspaceId: null },
+      ...(session.boundWorkspace ? [{ scope: 'workspace' as const, workspaceId: session.boundWorkspace.id }] : []),
+    ]
+    for (const sel of scopes) {
+      for await (const record of options.storage.scanRecords({
+        scope: sel.scope, workspaceId: sel.workspaceId, statuses: ['active', 'archived'],
+      })) {
+        const kind = matchMemoryRecord(normalizeMemoryText(record.content), normalizedQuery)
+        if (kind) matches.push({ record, kind })
+      }
+    }
+    return matches.sort(compareMemorySearchResults).slice(0, limit).map((m) => m.record)
+  }
+
+  /**
+   * Task 10: budgets-driven canonical rendering of the session's readable
+   * memory — ACTIVE records only (archived/deleted never appear). The
+   * workspace section is collected only when a workspace is bound (null →
+   * canonical renderer omits it); selection/escaping live in render.ts.
+   */
+  async function sessionRenderContext(session: BoundSession): Promise<string> {
+    assertRunning('renderContext')
+    const collectActive = async (scope: MemoryScope, workspaceId: string | null): Promise<MemoryRecord[]> => {
+      const out: MemoryRecord[] = []
+      for await (const r of options.storage.scanRecords({ scope, workspaceId, statuses: ['active'] })) out.push(r)
+      return out
+    }
+    return renderMemoryContext({
+      global: await collectActive('global', null),
+      user: await collectActive('user', null),
+      workspace: session.boundWorkspace ? await collectActive('workspace', session.boundWorkspace.id) : null,
+      budgets,
+    })
   }
 
   /**
@@ -544,9 +598,8 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
         })
       },
 
-      async search(_query: MemorySearchQuery): Promise<MemoryRecord[]> {
-        assertRunning('search')
-        return [] // Task 10: scope-band search with access isolation + ranking
+      search(query: MemorySearchQuery): Promise<MemoryRecord[]> {
+        return sessionSearch(session, query)
       },
 
       replace(recordId: string, expectedRevision: number, changes: MemoryReplaceChanges): Promise<MemoryMutationResult> {
@@ -633,9 +686,8 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
         })
       },
 
-      async renderContext(): Promise<string> {
-        assertRunning('renderContext')
-        return '' // Task 10: budgets-driven canonical rendering
+      renderContext(): Promise<string> {
+        return sessionRenderContext(session)
       },
     }
   }
