@@ -1,30 +1,42 @@
+import { randomUUID } from 'node:crypto'
+
 import type { DiagnosticsSink } from '../utils/diagnostics.js'
-import type { MemoryEventSink } from './events.js'
+import type { MemoryEvent, MemoryEventSink } from './events.js'
 import {
   MemoryAccessError,
+  MemoryConflictError,
   MemoryNotFoundError,
   MemoryServiceUnavailableError,
   MemoryValidationError,
+  type MemoryPolicyFinding,
   type MemoryServicePhase,
 } from './errors.js'
-import type { MemoryContentPolicy } from './policy.js'
+import { countMemoryChars } from './length.js'
+import { createDefaultMemoryContentPolicy, type MemoryContentPolicy } from './policy.js'
 import type { MemoryStorage } from './storage.js'
-import type {
-  MemoryAccessPolicy,
-  MemoryAdministration,
-  MemoryAuditEvent,
-  MemoryAuditQuery,
-  MemoryBudgets,
-  MemoryInvocationContext,
-  MemoryMutationResult,
-  MemoryRecord,
-  MemoryRecordQuery,
-  MemoryScope,
-  MemorySearchQuery,
-  MemorySession,
-  MemorySessionCreateInput,
-  MemoryService,
-  MemoryWorkspace,
+import {
+  DEFAULT_MEMORY_BUDGETS,
+  MEMORY_IMPORTANCE_VALUES,
+  type MemoryAccessPolicy,
+  type MemoryAdministration,
+  type MemoryAuditEvent,
+  type MemoryAuditQuery,
+  type MemoryBudgets,
+  type MemoryImportance,
+  type MemoryInvocationContext,
+  type MemoryMutationCommand,
+  type MemoryMutationResult,
+  type MemoryOperation,
+  type MemoryRecord,
+  type MemoryRecordQuery,
+  type MemoryReplaceChanges,
+  type MemoryScope,
+  type MemorySearchQuery,
+  type MemorySession,
+  type MemorySessionCreateInput,
+  type MemoryService,
+  type MemoryStatus,
+  type MemoryWorkspace,
 } from './types.js'
 import { defaultMemoryWorkspaceResolver, type MemoryWorkspaceResolver } from './workspace.js'
 
@@ -71,11 +83,13 @@ async function loadAccessibleRecord(session: BoundSession, recordId: string, sto
   return record
 }
 
-/** Task 8 replaces the mutation stubs; the code is reserved so call sites stay stable. */
-function unimplementedMutation(): MemoryValidationError {
-  return new MemoryValidationError([
-    { code: 'unimplemented', severity: 'error', message: 'mutation lands in Task 8' },
-  ])
+/** One atomic mutation: the primary effect plus everything storage.commit persists. */
+interface MutationPlan {
+  primary: MemoryRecord | null        // resulting primary record (null for purge)
+  insertRecords: MemoryRecord[]
+  replaceRecords: MemoryRecord[]
+  deleteRecords: string[]
+  audit: MemoryAuditEvent[]           // built by the service (ids + timestamps)
 }
 
 export function createMemoryService(options: MemoryServiceOptions): MemoryService {
@@ -114,6 +128,182 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
     } catch {
       // diagnostics must never affect service behavior (R5-P2)
     }
+  }
+
+  // Derived options: immutable for the service lifetime, so every admitted
+  // mutation sees a consistent view (review P1-4 — no mid-chain option changes).
+  const budgets: MemoryBudgets = { ...DEFAULT_MEMORY_BUDGETS, ...options.budgets }
+  const policy: MemoryContentPolicy = options.policy ?? createDefaultMemoryContentPolicy()
+  const now: () => Date = options.now ?? (() => new Date())
+  const newId: () => string = options.newId ?? (() => randomUUID())
+
+  /** Audit events are built by the service: ids + timestamps, never by storage. */
+  function makeAuditEvent(
+    context: MemoryInvocationContext,
+    partial: Omit<MemoryAuditEvent, 'id' | 'committedAt' | 'actor' | 'sessionId' | 'sourceMessageId' | 'reason'>,
+  ): MemoryAuditEvent {
+    return {
+      ...partial,
+      actor: context.actor,
+      sessionId: context.sessionId,
+      sourceMessageId: context.sourceMessageId,
+      reason: context.reason,
+      id: newId(),
+      committedAt: now().toISOString(),
+    }
+  }
+
+  /**
+   * Structural validation (always, BEFORE policy): trim; empty → content.empty;
+   * C0 control chars except \t\n\r plus DEL → content.control_chars; single
+   * record exceeding its scope budget (weighted countMemoryChars) →
+   * content.exceeds_budget. All findings aggregate into ONE MemoryValidationError.
+   */
+  function validateContent(content: string, scope: MemoryScope, workspaceId: string | null): string {
+    const trimmed = content.trim()
+    const findings: MemoryPolicyFinding[] = []
+    if (trimmed.length === 0) {
+      findings.push({ code: 'content.empty', severity: 'error', message: 'Content is empty after trimming.' })
+    }
+    // C0 controls except \t \n \r, plus DEL:
+    if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(trimmed)) {
+      findings.push({ code: 'content.control_chars', severity: 'error', message: 'Content contains NUL or control characters.' })
+    }
+    const size = countMemoryChars(trimmed) // weighted chars (review P2-5)
+    const budget = scope === 'global' ? budgets.globalChars : scope === 'user' ? budgets.userChars : budgets.workspaceChars
+    if (size > budget) {
+      findings.push({ code: 'content.exceeds_budget', severity: 'error', message: `Content (${size} weighted chars) exceeds the ${scope} budget (${budget}).` })
+    }
+    if (findings.length > 0) throw new MemoryValidationError(findings)
+    return trimmed
+  }
+
+  /**
+   * Importance + exact-duplicate + host policy checks. The duplicate scan
+   * covers active+archived in the same scope+workspaceId, excluding the record
+   * being updated (`excludeRecordId`). Policy `error` findings join the
+   * aggregate; `warning` findings go to safeWarn and NEVER block (R5-P2: even
+   * a throwing diagnostics sink must not reject the write).
+   */
+  async function validateDuplicateAndPolicy(
+    trimmed: string,
+    scope: MemoryScope,
+    workspaceId: string | null,
+    importance: MemoryImportance,
+    excludeRecordId?: string,
+  ): Promise<void> {
+    const findings: MemoryPolicyFinding[] = []
+    if (!MEMORY_IMPORTANCE_VALUES.includes(importance)) {
+      findings.push({ code: 'importance.invalid', severity: 'error', message: `Importance must be one of 25/50/75/100, got ${importance}.` })
+    }
+    for await (const r of options.storage.scanRecords({ scope, workspaceId, statuses: ['active', 'archived'] })) {
+      if (r.id === excludeRecordId) continue
+      if (r.content === trimmed) {
+        findings.push({ code: 'duplicate.content', severity: 'error', message: `An identical record already exists (${r.id}).` })
+        break
+      }
+    }
+    const policyFindings = policy({ content: trimmed, scope })
+    for (const w of policyFindings.filter((f) => f.severity === 'warning')) {
+      // R5-P2: safeWarn — a throwing host sink must not turn a warning-only
+      // finding into a rejected write ("warnings never block").
+      safeWarn(`[memory] policy warning ${w.code}: ${w.message}`)
+    }
+    findings.push(...policyFindings.filter((f) => f.severity === 'error'))
+    if (findings.length > 0) throw new MemoryValidationError(findings)
+  }
+
+  /** Illegal state-machine migration → transition.invalid (never silent no-op). */
+  function invalidTransition(operation: MemoryOperation, status: MemoryStatus): MemoryValidationError {
+    return new MemoryValidationError([
+      { code: 'transition.invalid', severity: 'error', message: `Cannot ${operation} a "${status}" memory record.` },
+    ])
+  }
+
+  /**
+   * Post-commit event emission. Sinks are observational (per events.ts):
+   * a throwing sink is reported via diagnostics and must NEVER turn a durable
+   * commit into a reported failure, nor roll it back.
+   */
+  function emitEvent(event: MemoryEvent): void {
+    if (!options.events) return
+    try {
+      options.events(event)
+    } catch (err) {
+      safeError('[memory] event sink threw after commit', { operation: 'MemoryEvent' }, err)
+    }
+  }
+
+  /**
+   * The verbatim mutation pipeline (spec):
+   * validate access&input → read & verify revision → calculate state change &
+   * capacity → build ALL audit events → storage.commit() → return committed
+   * result → emit MemoryEvent. Abort semantics live at the TOOL boundary
+   * (MemoryTool.call), so no AbortSignal flows through here; once commit
+   * resolves, the operation succeeds even if a signal fires later.
+   *
+   * The `plan` runs INSIDE the admission barrier: revision verification
+   * happens against the serialized, current record immediately before the
+   * commit is computed (spec), so cross-mutation conflicts are exact.
+   */
+  async function runMutation(
+    method: string,
+    context: MemoryInvocationContext,
+    plan: () => Promise<MutationPlan>,
+  ): Promise<MemoryMutationResult> {
+    // async entry: assertRunning's sync throw becomes a REJECTED promise, never
+    // a synchronous escape (callers use expect(promise).rejects).
+    assertRunning(method)
+    const result = await admit(async () => {
+      const p = await plan()
+      // Task 9 adds: capacity archives → replaceRecords+audit; audit retention → deleteAuditIds
+      await options.storage.commit({
+        insertRecords: p.insertRecords,
+        replaceRecords: p.replaceRecords,
+        deleteRecords: p.deleteRecords,
+        appendAudit: p.audit,
+      })
+      return { record: p.primary, archived: [], audit: p.audit } satisfies MemoryMutationResult
+    })
+    emitEvent({ result, context }) // post-commit; sink failure → diagnostics, never rollback
+    return result
+  }
+
+  /** Admin trusted load: no session checks; revision verified immediately before the commit. */
+  async function loadCurrent(recordId: string, expectedRevision: number): Promise<MemoryRecord> {
+    const record = await options.storage.getRecord(recordId)
+    if (!record) throw new MemoryNotFoundError(recordId)
+    if (expectedRevision !== record.revision) throw new MemoryConflictError(record)
+    return record
+  }
+
+  /** Status transition shared by archive/restore/delete: revision+1, updatedAt bumped. */
+  function applyTransition(
+    record: MemoryRecord,
+    context: MemoryInvocationContext,
+    operation: MemoryOperation,
+    nextStatus: MemoryStatus,
+    extra: Partial<Pick<MemoryRecord, 'deletedAt'>> = {},
+  ): { updated: MemoryRecord; audit: MemoryAuditEvent } {
+    const timestamp = now()
+    const updated: MemoryRecord = {
+      ...record,
+      ...extra,
+      status: nextStatus,
+      revision: record.revision + 1,
+      updatedAt: timestamp.toISOString(),
+    }
+    const audit = makeAuditEvent(context, {
+      recordId: record.id,
+      scope: record.scope,
+      workspaceId: record.workspaceId,
+      operation,
+      expectedRevision: record.revision,
+      committedRevision: record.revision + 1,
+      beforeContent: record.content,
+      afterContent: record.content,
+    })
+    return { updated, audit }
   }
 
   /** Serialize start bodies; concurrent same-transition calls share one promise. */
@@ -210,37 +400,130 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 
   function makeSession(session: BoundSession): MemorySession {
     return {
-      async add(input: MemorySessionCreateInput): Promise<MemoryMutationResult> {
-        assertRunning('add')
-        return admit(async () => {
+      add(input: MemorySessionCreateInput): Promise<MemoryMutationResult> {
+        return runMutation('add', session.context, async () => {
           assertWritable(session, input.scope)
-          throw unimplementedMutation()
+          const workspaceId: string | null = input.scope === 'workspace' ? session.boundWorkspace!.id : null
+          const content = validateContent(input.content, input.scope, workspaceId)
+          await validateDuplicateAndPolicy(content, input.scope, workspaceId, input.importance)
+          const timestamp = now()
+          const record: MemoryRecord = {
+            id: newId(),
+            scope: input.scope,
+            workspaceId,
+            content,
+            importance: input.importance,
+            status: 'active',
+            revision: 1,
+            createdAt: timestamp.toISOString(),
+            updatedAt: timestamp.toISOString(),
+            deletedAt: null,
+          }
+          return {
+            primary: record,
+            insertRecords: [record],
+            replaceRecords: [],
+            deleteRecords: [],
+            audit: [makeAuditEvent(session.context, {
+              recordId: record.id,
+              scope: record.scope,
+              workspaceId: record.workspaceId,
+              operation: 'create',
+              expectedRevision: null,
+              committedRevision: 1,
+              beforeContent: null,
+              afterContent: record.content,
+            })],
+          }
         })
       },
 
       async search(_query: MemorySearchQuery): Promise<MemoryRecord[]> {
         assertRunning('search')
-        return [] // Task 8: scope-band search with access isolation + ranking
+        return [] // Task 10: scope-band search with access isolation + ranking
       },
 
-      async replace(_recordId: string, _expectedRevision: number, _changes: unknown): Promise<MemoryMutationResult> {
-        assertRunning('replace')
-        return admit(async () => {
-          // Task 8: loadAccessibleRecord(session, recordId) → assertWritable → conflict/state checks → commit
-          throw unimplementedMutation()
+      replace(recordId: string, expectedRevision: number, changes: MemoryReplaceChanges): Promise<MemoryMutationResult> {
+        return runMutation('replace', session.context, async () => {
+          const record = await loadAccessibleRecord(session, recordId, options.storage)
+          // R3-P2: replace/remove carry NO target scope — writability is checked
+          // against the RECORD's own scope + this session's binding.
+          assertWritable(session, record.scope)
+          if (expectedRevision !== record.revision) throw new MemoryConflictError(record)
+          if (record.status !== 'active' && record.status !== 'archived') {
+            throw invalidTransition('update', record.status)
+          }
+          const content = changes.content !== undefined
+            ? validateContent(changes.content, record.scope, record.workspaceId)
+            : record.content
+          const importance = changes.importance ?? record.importance
+          await validateDuplicateAndPolicy(content, record.scope, record.workspaceId, importance, record.id)
+          const timestamp = now()
+          const updated: MemoryRecord = {
+            ...record,
+            content,
+            importance,
+            revision: record.revision + 1,
+            updatedAt: timestamp.toISOString(),
+          }
+          return {
+            primary: updated,
+            insertRecords: [],
+            replaceRecords: [updated],
+            deleteRecords: [],
+            audit: [makeAuditEvent(session.context, {
+              recordId: record.id,
+              scope: record.scope,
+              workspaceId: record.workspaceId,
+              operation: 'update',
+              expectedRevision,
+              committedRevision: record.revision + 1,
+              beforeContent: record.content,
+              afterContent: content,
+            })],
+          }
         })
       },
 
-      async remove(_recordId: string, _expectedRevision: number): Promise<MemoryMutationResult> {
-        assertRunning('remove')
-        return admit(async () => {
-          throw unimplementedMutation()
+      remove(recordId: string, expectedRevision: number): Promise<MemoryMutationResult> {
+        return runMutation('remove', session.context, async () => {
+          const record = await loadAccessibleRecord(session, recordId, options.storage)
+          // R3-P2: same as replace — writability follows the record's own scope.
+          assertWritable(session, record.scope)
+          if (expectedRevision !== record.revision) throw new MemoryConflictError(record)
+          if (record.status !== 'active' && record.status !== 'archived') {
+            throw invalidTransition('delete', record.status)
+          }
+          const timestamp = now()
+          const updated: MemoryRecord = {
+            ...record,
+            status: 'deleted',
+            deletedAt: timestamp.toISOString(),
+            revision: record.revision + 1,
+            updatedAt: timestamp.toISOString(),
+          }
+          return {
+            primary: updated,
+            insertRecords: [],
+            replaceRecords: [updated],
+            deleteRecords: [],
+            audit: [makeAuditEvent(session.context, {
+              recordId: record.id,
+              scope: record.scope,
+              workspaceId: record.workspaceId,
+              operation: 'delete',
+              expectedRevision,
+              committedRevision: record.revision + 1,
+              beforeContent: record.content,
+              afterContent: null,
+            })],
+          }
         })
       },
 
       async renderContext(): Promise<string> {
         assertRunning('renderContext')
-        return '' // Task 8: budgets-driven canonical rendering
+        return '' // Task 10: budgets-driven canonical rendering
       },
     }
   }
@@ -254,15 +537,151 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
       return workspaces
     },
 
-    async queryRecords(_query: MemoryRecordQuery): Promise<MemoryRecord[]> {
+    async queryRecords(query: MemoryRecordQuery): Promise<MemoryRecord[]> {
       assertRunning('queryRecords')
-      return [] // Task 8
+      const records: MemoryRecord[] = []
+      for await (const record of options.storage.scanRecords({
+        scope: query.scope,
+        workspaceId: query.workspaceId,
+        statuses: query.status !== undefined ? [query.status] : undefined,
+      })) {
+        records.push(record)
+      }
+      // Spec ordering: updatedAt desc, id asc (ISO strings compare chronologically).
+      records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
+      return records
     },
 
-    async mutate(_command: unknown, _context: MemoryInvocationContext): Promise<MemoryMutationResult> {
-      assertRunning('mutate')
-      return admit(async () => {
-        throw unimplementedMutation()
+    /**
+     * Admin mutations are TRUSTED: no session/access checks (the host owns the
+     * store), but the same revision + state-machine rules apply. Creation rules
+     * differ for scope↔workspaceId: a workspace-scoped record must carry an
+     * explicit workspaceId, global/user must NOT (code `workspace.scope`).
+     */
+    mutate(command: MemoryMutationCommand, context: MemoryInvocationContext): Promise<MemoryMutationResult> {
+      return runMutation('mutate', context, async () => {
+        switch (command.type) {
+          case 'create': {
+            const { scope, content, importance } = command
+            if (scope === 'workspace' && !command.workspaceId) {
+              throw new MemoryValidationError([
+                { code: 'workspace.scope', severity: 'error', message: 'A workspace-scoped memory record requires an explicit workspaceId.' },
+              ])
+            }
+            if (scope !== 'workspace' && command.workspaceId) {
+              throw new MemoryValidationError([
+                { code: 'workspace.scope', severity: 'error', message: `Memory scope "${scope}" cannot carry a workspaceId.` },
+              ])
+            }
+            const workspaceId: string | null = scope === 'workspace' ? command.workspaceId! : null
+            const trimmed = validateContent(content, scope, workspaceId)
+            await validateDuplicateAndPolicy(trimmed, scope, workspaceId, importance)
+            const timestamp = now()
+            const record: MemoryRecord = {
+              id: newId(),
+              scope,
+              workspaceId,
+              content: trimmed,
+              importance,
+              status: 'active',
+              revision: 1,
+              createdAt: timestamp.toISOString(),
+              updatedAt: timestamp.toISOString(),
+              deletedAt: null,
+            }
+            return {
+              primary: record,
+              insertRecords: [record],
+              replaceRecords: [],
+              deleteRecords: [],
+              audit: [makeAuditEvent(context, {
+                recordId: record.id,
+                scope: record.scope,
+                workspaceId: record.workspaceId,
+                operation: 'create',
+                expectedRevision: null,
+                committedRevision: 1,
+                beforeContent: null,
+                afterContent: record.content,
+              })],
+            }
+          }
+          case 'update': {
+            const { recordId, expectedRevision, changes } = command
+            const record = await loadCurrent(recordId, expectedRevision)
+            if (record.status !== 'active' && record.status !== 'archived') {
+              throw invalidTransition('update', record.status)
+            }
+            const content = changes.content !== undefined
+              ? validateContent(changes.content, record.scope, record.workspaceId)
+              : record.content
+            const importance = changes.importance ?? record.importance
+            await validateDuplicateAndPolicy(content, record.scope, record.workspaceId, importance, record.id)
+            const timestamp = now()
+            const updated: MemoryRecord = {
+              ...record,
+              content,
+              importance,
+              revision: record.revision + 1,
+              updatedAt: timestamp.toISOString(),
+            }
+            return {
+              primary: updated,
+              insertRecords: [],
+              replaceRecords: [updated],
+              deleteRecords: [],
+              audit: [makeAuditEvent(context, {
+                recordId: record.id,
+                scope: record.scope,
+                workspaceId: record.workspaceId,
+                operation: 'update',
+                expectedRevision,
+                committedRevision: record.revision + 1,
+                beforeContent: record.content,
+                afterContent: content,
+              })],
+            }
+          }
+          case 'archive': {
+            const { recordId, expectedRevision } = command
+            const record = await loadCurrent(recordId, expectedRevision)
+            if (record.status !== 'active') throw invalidTransition('archive', record.status)
+            const { updated, audit } = applyTransition(record, context, 'archive', 'archived')
+            return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], audit: [audit] }
+          }
+          case 'restore': {
+            const { recordId, expectedRevision } = command
+            const record = await loadCurrent(recordId, expectedRevision)
+            if (record.status !== 'archived') throw invalidTransition('restore', record.status)
+            const { updated, audit } = applyTransition(record, context, 'restore', 'active')
+            return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], audit: [audit] }
+          }
+          case 'delete': {
+            const { recordId, expectedRevision } = command
+            const record = await loadCurrent(recordId, expectedRevision)
+            if (record.status !== 'active' && record.status !== 'archived') {
+              throw invalidTransition('delete', record.status)
+            }
+            const { updated, audit } = applyTransition(record, context, 'delete', 'deleted', { deletedAt: now().toISOString() })
+            return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], audit: [audit] }
+          }
+          case 'purge': {
+            const { recordId, expectedRevision } = command
+            const record = await loadCurrent(recordId, expectedRevision)
+            // Any status (pinned decision 4) → hard delete; audit redaction lands in Task 9.
+            const audit = makeAuditEvent(context, {
+              recordId: record.id,
+              scope: record.scope,
+              workspaceId: record.workspaceId,
+              operation: 'purge',
+              expectedRevision,
+              committedRevision: record.revision + 1,
+              beforeContent: record.content,
+              afterContent: null,
+            })
+            return { primary: null, insertRecords: [], replaceRecords: [], deleteRecords: [record.id], audit: [audit] }
+          }
+        }
       })
     },
 
