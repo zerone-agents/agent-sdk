@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest'
 import type { CronService } from '../cron/service.js'
+import type { MemoryService } from '../memory/service.js'
 import { createEmptyServices, resolveToolServices } from './services.js'
 
 describe('resolveToolServices', () => {
@@ -27,11 +28,38 @@ describe('resolveToolServices', () => {
     expect(a.config).toBe(shared.config)
   })
 
+  it('overriding memory copies the caller container and leaves the memory slot untouched when unset', () => {
+    const shared = createEmptyServices() // explicit `memory: null` init (field stays optional)
+    const memory = {} as MemoryService
+    const combined = resolveToolServices(shared, null, memory)
+    // The caller's object is never mutated — its memory slot stays null
+    expect(shared.memory).toBeNull()
+    // The fresh copy carries the override
+    expect(combined.memory).toBe(memory)
+    expect(combined).not.toBe(shared)
+    // Non-overridden slots stay shared by reference
+    expect(combined.cron).toBeNull()
+    expect(combined.findTool).toBe(shared.findTool)
+  })
+
+  it('null/undefined memory means "not provided" — the caller object is used as-is (cron-identical semantics)', () => {
+    // Mirrors the cronService contract: an explicit null override is NOT a
+    // "clear" — it falls into the no-override path, so the caller's container
+    // (and any binding on it) is used as-is, never copied, never reset.
+    const combined = resolveToolServices(
+      { ...createEmptyServices(), memory: {} as MemoryService },
+      null,
+      null,
+    )
+    expect(combined.memory).toBeInstanceOf(Object)
+  })
+
   it('uses the caller object as-is without an override', () => {
     const shared = createEmptyServices()
     expect(resolveToolServices(shared, undefined)).toBe(shared)
     expect(resolveToolServices(shared, null)).toBe(shared)
-    expect(resolveToolServices(undefined, undefined).cron).toBeNull()
+    expect(resolveToolServices(shared, null, undefined)).toBe(shared)
+    expect(resolveToolServices(undefined, undefined, undefined).cron).toBeNull()
   })
 
   it('creates a fresh DefaultToolServices with cron when no caller object is given', () => {
@@ -39,6 +67,7 @@ describe('resolveToolServices', () => {
     const services = resolveToolServices(undefined, cron)
     expect(services.cron).toBe(cron)
     expect(services.askUser).toBeNull()
+    expect(services.memory).toBeNull()
     expect(services.findTool.deferredTools).toEqual([])
     expect(services.findTool.activatedTools).toBeInstanceOf(Set)
     expect(services.config).toBeInstanceOf(Map)
