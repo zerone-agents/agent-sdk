@@ -4,7 +4,7 @@ import { InMemoryMemoryStorage } from './in-memory-storage.js'
 import type { MemoryStorage } from './storage.js'
 
 let current: InMemoryMemoryStorage | null = null
-runMemoryStorageConformance(
+await runMemoryStorageConformance(
   'InMemoryMemoryStorage',
   () => {
     current = new InMemoryMemoryStorage()

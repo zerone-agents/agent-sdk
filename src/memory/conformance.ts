@@ -1,4 +1,3 @@
-import { describe, expect, it } from 'vitest'
 import type { MemoryStorage } from './storage.js'
 import type { MemoryAuditEvent, MemoryRecord, MemoryWorkspace } from './types.js'
 
@@ -36,14 +35,20 @@ async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
 
 /**
  * Reusable adapter conformance suite (issue #61). Register inside a test file:
- * `runMemoryStorageConformance('Name', () => new MyStorage(), hooks?)`.
+ * `await runMemoryStorageConformance('Name', () => new MyStorage(), hooks?)`.
  * Storage CONTRACT tests only — MemoryService behavior has its own seam tests.
+ *
+ * TEST INFRASTRUCTURE: vitest is imported lazily at call time, so importing
+ * the package root never requires vitest (the SDK ships no vitest dependency);
+ * consumers running this suite must install vitest themselves. Returns a
+ * promise — `await` it at the top level of a vitest test file.
  */
-export function runMemoryStorageConformance(
+export async function runMemoryStorageConformance(
   name: string,
   factory: () => MemoryStorage | Promise<MemoryStorage>,
   hooks: MemoryStorageConformanceHooks = {},
-): void {
+): Promise<void> {
+  const { describe, expect, it } = await import('vitest')
   describe(`MemoryStorage conformance: ${name}`, () => {
     async function withFresh<T>(fn: (storage: MemoryStorage) => Promise<T>): Promise<T> {
       const storage = await factory()

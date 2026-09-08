@@ -318,6 +318,45 @@ await withCronMaintenanceSession({ dataDir }, async (service) => {
 
 Short-lived CRUD + execution-history access over the SAME directory: acquires the exact same `runtime.lock` (a running Runtime or another maintenance session fails fast), uses the same adapters and validation as the online service, never starts a Scheduler/timer/Agent executor, never runs startup recovery, and releases the lock when the callback settles. A service reference retained past the session refuses every operation.
 
+## Memory (3.x)
+
+Host-independent long-term memory: one deep `MemoryService` over a
+transactional `MemoryStorage` seam (issue #61). Scopes: `global`, `user`,
+`workspace`. Every mutation requires `expectedRevision` and commits audit
+events atomically; capacity archival is deterministic (importance asc →
+updatedAt asc → id asc) and lands in the same commit.
+
+- `createMemoryService({ storage, budgets?, policy?, resolveWorkspace?, events?, diagnostics? })`
+  — core entry; lifecycle `stopped → starting → running → stopping → stopped`
+  (host owns it; Agents never start/stop it).
+- `service.bind({ actor, sessionId?, workspace?, ... }, policy?)` → `MemorySession`
+  (add/search/replace/remove/renderContext). A session reads global + user +
+  its bound workspace only; `policy.writableScopes` narrows writes.
+- `service.admin` — host-only: queryWorkspaces / queryRecords / mutate
+  (create|update|archive|restore|delete|purge) / queryAudit.
+- `runMemoryStorageConformance(name, factory, hooks?)` — reusable adapter test suite.
+- `AgentOptions.memoryService` — present → deferred `Memory`/`MemorySearch`
+  built-in tools are mounted (ADR 0005 `context.services.memory`); absent →
+  neither tool exists. The SDK never injects memory into the prompt: hosts
+  call `session.renderContext()` explicitly.
+- Node adapter: `@zerone-agent/agent-sdk/memory/node` —
+  `createDefaultMemoryService({ dataDir? })` stores under `<dataDir>/memory`
+  (default `~/.agents/memory`) with single-writer lock, journal + checkpoint
+  crash recovery, and purge redaction. Never creates data dirs implicitly.
+
+**Test infrastructure** — `runMemoryStorageConformance` is TEST infrastructure:
+it imports vitest lazily at call time and returns `Promise<void>` (await it at
+the top level of a vitest test file). Merely importing the package root never
+requires vitest; only consumers RUNNING the suite must install vitest
+themselves (the SDK ships no vitest dependency).
+
+**Journal recovery** — `loadMemoryState(memoryDir, diagnostics?)` takes an
+optional `DiagnosticsSink` for torn-tail warnings (SDK-internal, not part of
+the subpath exports).
+
+**Behavior changes** — purely additive: no existing API is removed or changes
+defaults; code written against earlier releases keeps compiling.
+
 ## Diagnostics sink (#78)
 
 Hosts own ALL SDK diagnostic output by injecting a sink — no global console monkey-patching.

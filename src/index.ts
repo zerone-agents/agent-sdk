@@ -354,6 +354,9 @@ export {
 // Cron kernel: CronService + ports + scheduler/coordinator/runtime + utilities
 export * from './cron/index.js'
 
+// Memory: host-independent long-term memory service + storage seam (issue #61)
+export * from './memory/index.js'
+
 export {
   getConfig,
   setConfig,

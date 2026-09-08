@@ -10,7 +10,7 @@ import { NodeFileMemoryStorage } from './file-storage.js'
 // but track every dir created and clean them all up after the run.
 const createdDirs: string[] = []
 let currentDir = ''
-runMemoryStorageConformance(
+await runMemoryStorageConformance(
   'NodeFileMemoryStorage',
   async () => {
     currentDir = await mkdtemp(path.join(tmpdir(), 'mem-node-conf-'))
