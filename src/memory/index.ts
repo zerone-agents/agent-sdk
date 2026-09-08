@@ -47,8 +47,7 @@ export {
   workspaceIdFromCanonicalPath,
 } from './workspace.js'
 
-// Length / search / render constants + pure functions
-export { countMemoryChars } from './length.js'
+// Search / render constants + pure functions
 export {
   compareMemorySearchResults,
   matchMemoryRecord,

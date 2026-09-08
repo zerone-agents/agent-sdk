@@ -32,7 +32,11 @@ export function matchMemoryRecord(normalizedContent: string, normalizedQuery: st
   return null
 }
 
-/** Deterministic result order: match kind, importance desc, updatedAt desc, id asc. */
+/**
+ * Deterministic result order: match kind, importance desc, updatedAt desc, id asc.
+ * Precondition: `updatedAt` is an ISO-8601 UTC timestamp string — byte-wise
+ * (lexicographic) comparison then equals chronological order.
+ */
 export function compareMemorySearchResults(a: MemorySearchMatch, b: MemorySearchMatch): number {
   if (a.kind !== b.kind) return a.kind === 'complete' ? -1 : 1
   if (a.record.importance !== b.record.importance) return b.record.importance - a.record.importance

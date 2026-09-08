@@ -820,6 +820,21 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
             const { recordId, expectedRevision } = command
             const record = await loadCurrent(recordId, expectedRevision)
             if (record.status !== 'archived') throw invalidTransition('restore', record.status)
+            // §18-L: the single-record over-budget rule covers restore — a record
+            // archived under an OLDER budget may exceed the CURRENT one (budgets
+            // are per-instance config, e.g. a smaller-budget restart). Without
+            // this, enforceCapacity has no victim when the restored record is the
+            // only active one and the scope silently exceeds its budget (>100%
+            // usage). Same code + message 口径 as validateContent (§10 stable list).
+            const budget = record.scope === 'global' ? budgets.globalChars : record.scope === 'user' ? budgets.userChars : budgets.workspaceChars
+            const size = countMemoryChars(record.content)
+            if (size > budget) {
+              throw new MemoryValidationError([{
+                code: 'content.exceeds_budget',
+                severity: 'error',
+                message: `Content (${size} weighted chars) exceeds the ${record.scope} budget (${budget}).`,
+              }])
+            }
             const { updated, audit } = applyTransition(record, context, 'restore', 'active')
             return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], redactAuditForRecords: [], audit: [audit] }
           }

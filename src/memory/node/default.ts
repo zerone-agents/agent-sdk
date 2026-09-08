@@ -12,6 +12,7 @@ export function defaultMemoryDataDir(): string {
 }
 
 export interface CreateDefaultMemoryServiceOptions {
+  /** Root data directory; memory state lives under `<dataDir>/memory` (default `~/.agents`). */
   dataDir?: string
   budgets?: Partial<MemoryBudgets>
   policy?: MemoryContentPolicy

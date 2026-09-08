@@ -72,6 +72,35 @@ describe('capacity archival', () => {
     expect(restored.archived.map((r) => r.content)).toEqual(['bbb'])
     await service.stop()
   })
+
+  it('restore REJECTS a record exceeding the CURRENT budget after a smaller-budget restart (§18-L)', async () => {
+    // Budgets are per-instance configuration: a record archived under a large
+    // budget may exceed a smaller one on restart. Same storage, two services.
+    const storage = new InMemoryMemoryStorage()
+    let idSeq = 0
+    const newId = () => `id-${String(idSeq++).padStart(3, '0')}`
+    const now = () => new Date(1_700_000_000_000)
+
+    const first = createMemoryService({ storage, budgets: { globalChars: 10 }, now, newId })
+    await first.start()
+    const s = await first.bind({ actor: 'session' })
+    const r1 = (await s.add({ scope: 'global', content: 'abcdefghij', importance: 50 })).record! // 10 <= 10
+    await first.admin.mutate({ type: 'archive', recordId: r1.id, expectedRevision: 1 }, { actor: 'host' })
+    await first.stop()
+
+    const second = createMemoryService({ storage, budgets: { globalChars: 4 }, now, newId })
+    await second.start()
+    // content(10) > budget(4): the single-record over-budget rule covers restore
+    // (§18-L) → rejected BEFORE commit, record stays archived (no silent >100% usage).
+    await expect(
+      second.admin.mutate({ type: 'restore', recordId: r1.id, expectedRevision: 2 }, { actor: 'host' }),
+    ).rejects.toSatisfy(
+      (e) => e instanceof MemoryValidationError && e.findings.some((f) => f.code === 'content.exceeds_budget'),
+    )
+    const actives = await second.admin.queryRecords({ scope: 'global', status: 'active' })
+    expect(actives).toHaveLength(0) // nothing was committed
+    await second.stop()
+  })
 })
 
 describe('audit retention + purge redaction', () => {
