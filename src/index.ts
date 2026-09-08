@@ -120,6 +120,11 @@ export {
 
   // Skill
   SkillTool,
+
+  // Memory (deferred; mounted conditionally by resolveAgent when a
+  // MemoryService is bound — issue #61)
+  MemoryTool,
+  MemorySearchTool,
 } from './tools/index.js'
 export type {
   ExaProviderConfig,

@@ -42,6 +42,11 @@ import { TodoWriteTool } from './todowrite.js'
 // Skill
 import { SkillTool } from './skill.js'
 
+// Memory (issue #61): deferred built-ins mounted CONDITIONALLY by
+// resolveAgent when a MemoryService is bound — deliberately NOT in
+// ALL_TOOLS below (absent service = no tools anywhere).
+import { MemoryTool, MemorySearchTool } from './memory.js'
+
 /**
  * All built-in tools (20+).
  */
@@ -81,6 +86,10 @@ const ALL_TOOLS: ToolDefinition[] = [
 
   // Skill
   SkillTool,
+
+  // NOTE: MemoryTool/MemorySearchTool are intentionally NOT in ALL_TOOLS —
+  // resolveAgent appends them to the base pool only when a MemoryService is
+  // bound (conditional mounting, issue #61).
 ]
 
 /**
@@ -290,6 +299,9 @@ export {
   TodoWriteTool,
   // Skill
   SkillTool,
+  // Memory (deferred; mounted conditionally by resolveAgent — issue #61)
+  MemoryTool,
+  MemorySearchTool,
 }
 
 // Re-export helpers

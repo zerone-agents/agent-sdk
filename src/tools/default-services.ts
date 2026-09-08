@@ -18,6 +18,7 @@ import type {
 import type { WebSearchConfig } from './web-search.js'
 import type { WebFetchConfig } from './web-fetch-providers.js'
 import type { CronService } from '../cron/service.js'
+import type { MemoryService } from '../memory/service.js'
 
 /**
  * Default implementation of ToolServices.
@@ -35,6 +36,12 @@ export class DefaultToolServices implements ToolServices {
   webFetch?: WebFetchConfig
   /** Cron service shared by the cron tools; null = not initialized. */
   cron: CronService | null = null
+  /**
+   * Optional memory service shared by the Memory/MemorySearch tools; explicit
+   * null init keeps the default services fully wired (DefaultToolServices
+   * implements ToolServices). Hosts wire it via AgentOptions.memoryService.
+   */
+  memory?: MemoryService | null = null
 
   constructor() {
     // No user handler by default (non-interactive mode)

@@ -43,6 +43,7 @@ import {
 import { defaultMemoryWorkspaceResolver, type MemoryWorkspaceResolver } from './workspace.js'
 
 export type { MemoryServicePhase } from './errors.js'
+export type { MemoryService, MemorySession } from './types.js'
 
 export interface MemoryServiceOptions {
   storage: MemoryStorage
