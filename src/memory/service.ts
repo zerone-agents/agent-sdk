@@ -89,6 +89,8 @@ interface MutationPlan {
   insertRecords: MemoryRecord[]
   replaceRecords: MemoryRecord[]
   deleteRecords: string[]
+  /** Purge only: erase before/after content from EVERY prior audit event of these records. */
+  redactAuditForRecords: string[]
   audit: MemoryAuditEvent[]           // built by the service (ids + timestamps)
 }
 
@@ -137,17 +139,22 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
   const now: () => Date = options.now ?? (() => new Date())
   const newId: () => string = options.newId ?? (() => randomUUID())
 
-  /** Audit events are built by the service: ids + timestamps, never by storage. */
+  /**
+   * Audit events are built by the service: ids + timestamps, never by storage.
+   * `reason` defaults to the invocation context's; a caller whose cause is
+   * structural rather than contextual — the automatic capacity archive
+   * (Task 9) — may override it per event.
+   */
   function makeAuditEvent(
     context: MemoryInvocationContext,
-    partial: Omit<MemoryAuditEvent, 'id' | 'committedAt' | 'actor' | 'sessionId' | 'sourceMessageId' | 'reason'>,
+    partial: Omit<MemoryAuditEvent, 'id' | 'committedAt' | 'actor' | 'sessionId' | 'sourceMessageId' | 'reason'> & { reason?: string },
   ): MemoryAuditEvent {
     return {
       ...partial,
       actor: context.actor,
       sessionId: context.sessionId,
       sourceMessageId: context.sourceMessageId,
-      reason: context.reason,
+      reason: partial.reason ?? context.reason,
       id: newId(),
       committedAt: now().toISOString(),
     }
@@ -235,6 +242,88 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
   }
 
   /**
+   * Task 9: budget-driven capacity enforcement (spec verbatim).
+   * Rebuilds the ACTIVE set exactly as it will exist AFTER this mutation's
+   * pending inserts/replaces (a restored record is active again, an updated
+   * record carries its new content/importance). If the weighted total
+   * (countMemoryChars — the SAME 口径 as validateContent and the budgets
+   * themselves, review P2-5) exceeds the scope budget, archive candidates —
+   * the PRIMARY record is never a candidate — ordered importance asc →
+   * updatedAt asc → id asc until the total fits. Each archive bumps
+   * revision+1 with updatedAt=now and pushes its 'capacity' audit event; all
+   * of it lands in the SAME arrays the caller commits, so the primary
+   * mutation, the automatic archives and every audit event are ONE
+   * storage.commit(). Returns the archived records for the mutation result.
+   */
+  async function enforceCapacity(
+    context: MemoryInvocationContext,
+    scope: MemoryScope,
+    workspaceId: string | null,
+    primaryId: string,
+    insertRecords: MemoryRecord[],
+    replaceRecords: MemoryRecord[],
+    audit: MemoryAuditEvent[],
+  ): Promise<MemoryRecord[]> {
+    const budget = scope === 'global' ? budgets.globalChars : scope === 'user' ? budgets.userChars : budgets.workspaceChars
+    // Active set AFTER applying this mutation's pending inserts/replaces:
+    const pending = new Map<string, MemoryRecord>()
+    for (const r of insertRecords) pending.set(r.id, r)
+    for (const r of replaceRecords) pending.set(r.id, r)
+    const actives: MemoryRecord[] = []
+    for await (const r of options.storage.scanRecords({ scope, workspaceId, statuses: ['active'] })) {
+      actives.push(pending.get(r.id) ?? r)
+    }
+    for (const r of pending.values()) {
+      if (r.status === 'active' && !actives.some((a) => a.id === r.id)) actives.push(r)
+    }
+    const total = () => actives.reduce((n, r) => n + countMemoryChars(r.content), 0) // weighted (P2-5)
+    const archived: MemoryRecord[] = []
+    const candidates = () => actives
+      .filter((r) => r.id !== primaryId && !archived.some((a) => a.id === r.id))
+      .sort((a, b) =>
+        a.importance - b.importance ||
+        (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0) ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    while (total() > budget) {
+      const victim = candidates()[0]
+      if (!victim) break // only the primary remains — validated against budget earlier
+      const archivedRecord: MemoryRecord = {
+        ...victim, status: 'archived', revision: victim.revision + 1, updatedAt: now().toISOString(),
+      }
+      archived.push(archivedRecord)
+      replaceRecords.push(archivedRecord)
+      audit.push(makeAuditEvent(context, {
+        recordId: victim.id, scope, workspaceId, operation: 'archive',
+        expectedRevision: victim.revision, committedRevision: archivedRecord.revision,
+        beforeContent: victim.content, afterContent: victim.content,
+        reason: 'capacity',
+      }))
+      actives.splice(actives.findIndex((a) => a.id === victim.id), 1)
+    }
+    return archived
+  }
+
+  /**
+   * Task 9: global audit retention. Once this mutation's appends are known,
+   * if the total event count exceeds `auditRetention`, the OLDEST events
+   * (committedAt asc, id asc) beyond the cap are hard-deleted in the SAME
+   * commit via deleteAuditIds. localeCompare on ISO-8601 UTC strings is
+   * chronological; id tie-break keeps the order total (the brief's comparator
+   * falls through to `1` for identical (committedAt, id), which is
+   * inconsistent for self-comparison — same semantics, total order).
+   */
+  async function retentionDeletes(appended: number): Promise<string[]> {
+    const all: MemoryAuditEvent[] = []
+    for await (const e of options.storage.scanAudit({})) all.push(e)
+    const overflow = all.length + appended - budgets.auditRetention
+    if (overflow <= 0) return []
+    return all
+      .sort((a, b) => a.committedAt.localeCompare(b.committedAt) || a.id.localeCompare(b.id))
+      .slice(0, overflow)
+      .map((e) => e.id)
+  }
+
+  /**
    * The verbatim mutation pipeline (spec):
    * validate access&input → read & verify revision → calculate state change &
    * capacity → build ALL audit events → storage.commit() → return committed
@@ -245,6 +334,11 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
    * The `plan` runs INSIDE the admission barrier: revision verification
    * happens against the serialized, current record immediately before the
    * commit is computed (spec), so cross-mutation conflicts are exact.
+   *
+   * Task 9: capacity enforcement runs for every plan whose primary stays
+   * active (create, content update, importance update, restore — an
+   * importance-only update leaves the weighted total unchanged and is a
+   * natural no-op); retention pruning + purge redaction join the same commit.
    */
   async function runMutation(
     method: string,
@@ -256,14 +350,25 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
     assertRunning(method)
     const result = await admit(async () => {
       const p = await plan()
-      // Task 9 adds: capacity archives → replaceRecords+audit; audit retention → deleteAuditIds
+      // Capacity archives fold into the SAME commit as the primary mutation
+      // (spec: primary mutation + automatic archives + audit = ONE commit).
+      const archived: MemoryRecord[] = []
+      if (p.primary && p.primary.status === 'active') {
+        archived.push(...(await enforceCapacity(
+          context, p.primary.scope, p.primary.workspaceId, p.primary.id,
+          p.insertRecords, p.replaceRecords, p.audit,
+        )))
+      }
+      const deleteAuditIds = await retentionDeletes(p.audit.length)
       await options.storage.commit({
         insertRecords: p.insertRecords,
         replaceRecords: p.replaceRecords,
         deleteRecords: p.deleteRecords,
+        redactAuditForRecords: p.redactAuditForRecords,
         appendAudit: p.audit,
+        deleteAuditIds,
       })
-      return { record: p.primary, archived: [], audit: p.audit } satisfies MemoryMutationResult
+      return { record: p.primary, archived, audit: p.audit } satisfies MemoryMutationResult
     })
     emitEvent({ result, context }) // post-commit; sink failure → diagnostics, never rollback
     return result
@@ -424,6 +529,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
             insertRecords: [record],
             replaceRecords: [],
             deleteRecords: [],
+            redactAuditForRecords: [],
             audit: [makeAuditEvent(session.context, {
               recordId: record.id,
               scope: record.scope,
@@ -471,6 +577,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
             insertRecords: [],
             replaceRecords: [updated],
             deleteRecords: [],
+            redactAuditForRecords: [],
             audit: [makeAuditEvent(session.context, {
               recordId: record.id,
               scope: record.scope,
@@ -507,6 +614,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
             insertRecords: [],
             replaceRecords: [updated],
             deleteRecords: [],
+            redactAuditForRecords: [],
             audit: [makeAuditEvent(session.context, {
               recordId: record.id,
               scope: record.scope,
@@ -515,7 +623,11 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
               expectedRevision,
               committedRevision: record.revision + 1,
               beforeContent: record.content,
-              afterContent: null,
+              // Soft delete KEEPS content in the audit (task-8 ledger ①): the
+              // record still exists — only its status changed — matching the
+              // archive/restore "retain content" semantics; purge redacts it
+              // later.
+              afterContent: record.content,
             })],
           }
         })
@@ -594,6 +706,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
               insertRecords: [record],
               replaceRecords: [],
               deleteRecords: [],
+              redactAuditForRecords: [],
               audit: [makeAuditEvent(context, {
                 recordId: record.id,
                 scope: record.scope,
@@ -630,6 +743,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
               insertRecords: [],
               replaceRecords: [updated],
               deleteRecords: [],
+              redactAuditForRecords: [],
               audit: [makeAuditEvent(context, {
                 recordId: record.id,
                 scope: record.scope,
@@ -647,14 +761,14 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
             const record = await loadCurrent(recordId, expectedRevision)
             if (record.status !== 'active') throw invalidTransition('archive', record.status)
             const { updated, audit } = applyTransition(record, context, 'archive', 'archived')
-            return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], audit: [audit] }
+            return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], redactAuditForRecords: [], audit: [audit] }
           }
           case 'restore': {
             const { recordId, expectedRevision } = command
             const record = await loadCurrent(recordId, expectedRevision)
             if (record.status !== 'archived') throw invalidTransition('restore', record.status)
             const { updated, audit } = applyTransition(record, context, 'restore', 'active')
-            return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], audit: [audit] }
+            return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], redactAuditForRecords: [], audit: [audit] }
           }
           case 'delete': {
             const { recordId, expectedRevision } = command
@@ -663,12 +777,16 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
               throw invalidTransition('delete', record.status)
             }
             const { updated, audit } = applyTransition(record, context, 'delete', 'deleted', { deletedAt: now().toISOString() })
-            return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], audit: [audit] }
+            return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], redactAuditForRecords: [], audit: [audit] }
           }
           case 'purge': {
             const { recordId, expectedRevision } = command
             const record = await loadCurrent(recordId, expectedRevision)
-            // Any status (pinned decision 4) → hard delete; audit redaction lands in Task 9.
+            // Any status (pinned decision 4) → hard delete. Task 9: prior
+            // audit events for this record are REDACTED in the same commit
+            // (redactAuditForRecords nulls their before/after content) and the
+            // final purge event itself carries NO content — deletion surfaces
+            // only the metadata trail, never the erased bytes.
             const audit = makeAuditEvent(context, {
               recordId: record.id,
               scope: record.scope,
@@ -676,18 +794,32 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
               operation: 'purge',
               expectedRevision,
               committedRevision: record.revision + 1,
-              beforeContent: record.content,
+              beforeContent: null,
               afterContent: null,
             })
-            return { primary: null, insertRecords: [], replaceRecords: [], deleteRecords: [record.id], audit: [audit] }
+            return { primary: null, insertRecords: [], replaceRecords: [], deleteRecords: [record.id], redactAuditForRecords: [record.id], audit: [audit] }
           }
         }
       })
     },
 
-    async queryAudit(_query: MemoryAuditQuery): Promise<MemoryAuditEvent[]> {
+    /**
+     * Task 9: audit trail query. Collects via storage.scanAudit({ recordId })
+     * (the storage-level limit would truncate BEFORE our filters → not
+     * passed), filters scope/workspaceId client-side, sorts newest first
+     * (committedAt desc, id desc — ISO strings compare chronologically) and
+     * applies `limit` AFTER sorting (spec verbatim).
+     */
+    async queryAudit(query: MemoryAuditQuery): Promise<MemoryAuditEvent[]> {
       assertRunning('queryAudit')
-      return [] // Task 9
+      const events: MemoryAuditEvent[] = []
+      for await (const e of options.storage.scanAudit({ recordId: query.recordId })) {
+        if (query.scope !== undefined && e.scope !== query.scope) continue
+        if (query.workspaceId !== undefined && e.workspaceId !== query.workspaceId) continue
+        events.push(e)
+      }
+      events.sort((a, b) => b.committedAt.localeCompare(a.committedAt) || b.id.localeCompare(a.id))
+      return query.limit !== undefined ? events.slice(0, query.limit) : events
     },
   }
 
