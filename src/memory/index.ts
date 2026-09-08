@@ -2,6 +2,8 @@
 
 // Domain types
 export type {
+  MemoryAccessPolicy,
+  MemoryActor,
   MemoryAdministration,
   MemoryAuditEvent,
   MemoryAuditQuery,
@@ -16,6 +18,7 @@ export type {
   MemoryReplaceChanges,
   MemoryScope,
   MemorySearchQuery,
+  MemoryService,
   MemorySession,
   MemorySessionCreateInput,
   MemoryStatus,

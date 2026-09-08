@@ -2,6 +2,11 @@
  * CI-level type contracts for issue #61 (pattern: src/cron/type-contracts.ts).
  * Not shipped: excluded from tsconfig.build.json. `npm run typecheck` enforces.
  */
+// Public-path guard: import through the root barrel, NOT the module-local
+// path — a missing root re-export would otherwise stay invisible to these
+// contracts while consumers get TS2305 (issue #63 lesson: contracts green,
+// public surface broken).
+import type { MemoryService as PublicMemoryService } from '../index.js'
 import type { AgentOptions } from '../types.js'
 import type { MemoryService, MemorySession } from './types.js'
 import type { ToolServices } from '../tools/services.js'
@@ -44,3 +49,9 @@ void badImportance
 // @ts-expect-error MemoryScope is fixed to global|user|workspace
 const badScope: MemoryScope = 'project'
 void badScope
+
+// Public-path guard: the barrel re-export must be the same MemoryService as
+// the module-local definition (fix round 1 — the root export was missing and
+// no contract passed through the barrel to catch it; issue #63 lesson).
+const publicServiceIdentity: PublicMemoryService = null as unknown as MemoryService
+void publicServiceIdentity
