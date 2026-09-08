@@ -176,6 +176,8 @@ interface MiscConfig {
   }>>
   maxSessionQueries?: number
   cronService?: import('./cron/service.js').CronService
+  /** Memory service for the built-in Memory/MemorySearch tools (see AgentOptions.memoryService). */
+  memoryService?: import('./memory/service.js').MemoryService
 }
 
 // --------------------------------------------------------------------------
@@ -412,6 +414,7 @@ export class Agent {
       hooks: opts.hooks,
       maxSessionQueries: opts.maxSessionQueries,
       cronService: opts.cronService,
+      memoryService: opts.memoryService,
     }
   }
 
@@ -423,12 +426,13 @@ export class Agent {
     const skillConfig = this.extractSkillConfig(opts)
     const miscConfig = this.extractMiscConfig(opts)
 
-    // Per-agent tool services (ADR 0005). Precedence: an explicit `cronService`
-    // option wins and is combined into a fresh per-Agent COPY — the caller's
-    // ToolServices object is never mutated, so Agents sharing one container
-    // keep independent cron bindings. Without an override the caller's object
-    // (or a fresh default) is used as-is.
-    const toolServices = resolveToolServices(opts.toolServices, miscConfig.cronService)
+    // Per-agent tool services (ADR 0005). Precedence: an explicit
+    // `cronService`/`memoryService` option wins and is combined into a fresh
+    // per-Agent COPY — the caller's ToolServices object is never mutated, so
+    // Agents sharing one container keep independent cron/memory bindings.
+    // Without any override the caller's object (or a fresh default) is used
+    // as-is.
+    const toolServices = resolveToolServices(opts.toolServices, miscConfig.cronService, miscConfig.memoryService)
 
     return {
       provider,

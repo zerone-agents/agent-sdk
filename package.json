@@ -27,6 +27,11 @@
       "types": "./dist/cron/node/index.d.ts",
       "import": "./dist/cron/node/index.js",
       "default": "./dist/cron/node/index.js"
+    },
+    "./memory/node": {
+      "types": "./dist/memory/node/index.d.ts",
+      "import": "./dist/memory/node/index.js",
+      "default": "./dist/memory/node/index.js"
     }
   },
   "files": [

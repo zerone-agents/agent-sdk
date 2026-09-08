@@ -120,6 +120,11 @@ export {
 
   // Skill
   SkillTool,
+
+  // Memory (deferred; mounted conditionally by resolveAgent when a
+  // MemoryService is bound — issue #61)
+  MemoryTool,
+  MemorySearchTool,
 } from './tools/index.js'
 export type {
   ExaProviderConfig,
@@ -348,6 +353,9 @@ export {
 
 // Cron kernel: CronService + ports + scheduler/coordinator/runtime + utilities
 export * from './cron/index.js'
+
+// Memory: host-independent long-term memory service + storage seam (issue #61)
+export * from './memory/index.js'
 
 export {
   getConfig,

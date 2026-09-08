@@ -17,6 +17,7 @@ import type { ToolDefinition } from '../types.js'
 import type { WebSearchConfig } from './web-search.js'
 import type { WebFetchConfig } from './web-fetch-providers.js'
 import type { CronService } from '../cron/service.js'
+import type { MemoryService } from '../memory/service.js'
 import { DefaultToolServices } from './default-services.js'
 
 // NOTE (import-cycle safety): default-services.ts imports ONLY types from
@@ -83,6 +84,14 @@ export interface ToolServices {
   webFetch?: WebFetchConfig
   /** Cron service shared by the CronCreate/CronDelete/CronList tools; null = not initialized. */
   cron: CronService | null
+  /**
+   * Memory service shared by the Memory/MemorySearch tools. OPTIONAL
+   * (round-2 review P2): hosts constructing their own ToolServices WITHOUT
+   * enabling memory must keep compiling — the SDK normalizes the slot
+   * everywhere via `?? null` (tools, resolveAgent, resolveToolServices).
+   * Absent/undefined = tools report "Memory service is not configured."
+   */
+  memory?: MemoryService | null
 }
 
 // ============================================================================
@@ -103,6 +112,7 @@ export function createEmptyServices(): ToolServices {
     },
     config: new Map<string, unknown>(),
     cron: null,
+    memory: null,
   }
 }
 
@@ -114,15 +124,24 @@ export function createEmptyServices(): ToolServices {
  * Per-Agent ToolServices resolution (ADR 0005).
  *
  * A caller-provided ToolServices object is COMBINED into a fresh copy when a
- * cronService override applies — the caller's object is never mutated, so
- * Agents sharing one container keep independent cron bindings. Without an
- * override the caller's object is used as-is (caller-controlled sharing).
+ * cronService and/or memoryService override applies — the caller's object is
+ * never mutated, so Agents sharing one container keep independent bindings.
+ * Without any override the caller's object is used as-is (caller-controlled
+ * sharing). Undefined slots keep the base (caller-provided or default)
+ * binding — copy-on-override, never a reset.
  */
 export function resolveToolServices(
   toolServices: ToolServices | undefined,
   cronService: CronService | null | undefined,
+  memoryService?: MemoryService | null,
 ): ToolServices {
-  if (!cronService) return toolServices ?? new DefaultToolServices()
-  if (toolServices) return { ...toolServices, cron: cronService }
-  return Object.assign(new DefaultToolServices(), { cron: cronService })
+  if (!cronService && !memoryService) return toolServices ?? new DefaultToolServices()
+  const base = toolServices ?? new DefaultToolServices()
+  // Copy-on-override: the caller's object is never mutated; undefined slots
+  // keep the base (caller-provided or default) binding.
+  return {
+    ...base,
+    cron: cronService ?? base.cron,
+    memory: memoryService ?? base.memory,
+  }
 }

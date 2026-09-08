@@ -21,6 +21,7 @@ import type {
   RuntimeEnvironment,
 } from './types.js'
 import { getAllBaseTools, assembleToolPool, applyAllowedTools, applyDisallowedTools } from './tools/index.js'
+import { MemoryTool, MemorySearchTool } from './tools/memory.js'
 import { SkillRegistry } from './skills/registry.js'
 import { createDiagnosticsSink, type DiagnosticsSink } from './utils/diagnostics.js'
 
@@ -45,8 +46,17 @@ export function resolveAgent(
 ): ResolvedAgent {
   // Source-based filtering contract (#64): allow-list gates built-ins only;
   // custom/connection tools bypass. Deny-list applies to the merged pool.
+  // Memory tools (issue #61): mounted INTO the base pool ONLY when a
+  // MemoryService is bound (runtime.toolServices.memory != null). They are
+  // NOT in ALL_TOOLS — mounting is conditional on the service. Once mounted
+  // they participate in ALL downstream filtering like any other built-in
+  // (allow/deny lists, spawn pipeline below).
   const diagnostics = opts.diagnostics ?? createDiagnosticsSink()
-  const allowedBase = applyAllowedTools(getAllBaseTools(), capabilities.allowedTools, diagnostics)
+  const memoryBound = runtime.toolServices.memory != null
+  const baseTools = memoryBound
+    ? [...getAllBaseTools(), MemoryTool, MemorySearchTool]
+    : getAllBaseTools()
+  const allowedBase = applyAllowedTools(baseTools, capabilities.allowedTools, diagnostics)
   let pool = assembleToolPool(
     [...allowedBase, ...(capabilities.customTools ?? [])],
     capabilities.connectionTools ?? [],
