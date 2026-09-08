@@ -755,6 +755,14 @@ export interface AgentOptions {
    * "Cron service is not initialized."
    */
   cronService?: import('./cron/service.js').CronService
+  /**
+   * Memory service for the built-in Memory/MemorySearch tools. When present,
+   * capability resolution conditionally adds both deferred tools; when absent
+   * neither tool is mounted. Combined with caller-provided `toolServices` via
+   * the same copy-on-override rule as `cronService` (never mutates the caller's
+   * object). Null/undefined = tools report "Memory service is not configured."
+   */
+  memoryService?: import('./memory/service.js').MemoryService
 
   // ===========================================================================
   // === SessionConfig === (9 fields)
