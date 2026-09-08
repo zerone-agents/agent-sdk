@@ -81,6 +81,49 @@ class SlowOnOpenStorage implements MemoryStorage {
   }
 }
 
+/**
+ * Test seam: open() throws exactly once, then delegates normally — proves a
+ * failed open must not poison the lifecycle chain (restart stays reachable).
+ */
+class FailFirstOpenStorage implements MemoryStorage {
+  private readonly inner = new InMemoryMemoryStorage()
+  private openCalls = 0
+
+  open(): Promise<void> {
+    this.openCalls++
+    if (this.openCalls === 1) return Promise.reject(new Error('open boom'))
+    return this.inner.open()
+  }
+
+  close(): Promise<void> {
+    return this.inner.close()
+  }
+
+  ensureWorkspace(workspace: MemoryWorkspace): Promise<void> {
+    return this.inner.ensureWorkspace(workspace)
+  }
+
+  scanWorkspaces(): AsyncIterable<MemoryWorkspace> {
+    return this.inner.scanWorkspaces()
+  }
+
+  getRecord(recordId: string): Promise<MemoryRecord | null> {
+    return this.inner.getRecord(recordId)
+  }
+
+  scanRecords(query: MemoryStorageRecordQuery): AsyncIterable<MemoryRecord> {
+    return this.inner.scanRecords(query)
+  }
+
+  commit(commit: MemoryStorageCommit): Promise<void> {
+    return this.inner.commit(commit)
+  }
+
+  scanAudit(query: MemoryStorageAuditQuery): AsyncIterable<MemoryAuditEvent> {
+    return this.inner.scanAudit(query)
+  }
+}
+
 describe('lifecycle', () => {
   it('rejects bind before start with method+phase', async () => {
     const { service } = makeService()
@@ -149,6 +192,34 @@ describe('lifecycle', () => {
     await expect(service.bind({ actor: 'session' })).rejects.toSatisfy(
       (e) => e instanceof MemoryServiceUnavailableError && e.method === 'bind' && e.phase === 'stopped',
     )
+  })
+
+  it('stop() published synchronously before the queued start body runs: final phase is stopped', async () => {
+    // start() only QUEUES its body on the lifecycle chain; stop() flips the
+    // phase to 'stopping' synchronously before that body ever enters. The
+    // queued start body must not run open() nor overwrite the newer stop
+    // intent — service ends 'stopped' with storage closed, never a silent
+    // post-close admit.
+    const { service } = makeService()
+    const start = service.start() // body queued, not yet entered
+    const stop = service.stop()   // sync flip lands before the body enters
+    await start
+    await stop
+    await expect(service.bind({ actor: 'session' })).rejects.toSatisfy(
+      (e) => e instanceof MemoryServiceUnavailableError && e.phase === 'stopped',
+    )
+  })
+
+  it('failed open() must not poison the lifecycle chain: a later start() restarts normally', async () => {
+    const storage = new FailFirstOpenStorage()
+    const service = createMemoryService({ storage })
+    await expect(service.start()).rejects.toThrow('open boom')
+    // The failing transition must leave the chain alive (error swallowed in
+    // the tail while phase resets to 'stopped'): restart — not a stale
+    // rejection carrying the old error — follows.
+    await service.start()
+    await expect(service.bind({ actor: 'session' })).resolves.toBeDefined()
+    await service.stop()
   })
 })
 

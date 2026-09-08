@@ -119,7 +119,13 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
   /** Serialize start bodies; concurrent same-transition calls share one promise. */
   function start(): Promise<void> {
     const run = lifecycleChain.then(async () => {
-      if (phase === 'running') return
+      // Entry guard (fix round 2, #61): only a true 'stopped' service may run
+      // the start body. 'starting'/'running' early-return like before, and a
+      // 'stopping' intent published SYNCHRONOUSLY (stop()) while this body was
+      // still queued must not be overwritten — running open() here would flip
+      // the phase back to 'running' after the stop drain, silently admitting
+      // ops on closed storage.
+      if (phase !== 'stopped') return
       phase = 'starting'
       try {
         await options.storage.open()
@@ -134,7 +140,12 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
         throw err
       }
     })
-    lifecycleChain = run.then(() => undefined, (err) => { phase = 'stopped'; throw err })
+    // Tail swallows the body's rejection (fix round 2, #61): the caller still
+    // observes it via `run`, but the chain itself must stay alive — a rejected
+    // chain would poison every later start()/stop() with the stale error and
+    // leave a floating rejected promise (unhandledRejection). Phase reset to
+    // 'stopped' is preserved so a restart is reachable.
+    lifecycleChain = run.then(() => undefined, () => { phase = 'stopped' })
     return run
   }
 
@@ -147,7 +158,14 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
    * publication completes before the storage closes.
    */
   function stop(): Promise<void> {
-    if (phase === 'stopped') return Promise.resolve()
+    // No 'stopped' early return (fix round 2, #61): a start() whose body is
+    // still QUEUED leaves phase reading 'stopped' at this call point — an
+    // early return would silently swallow the stop intent (no sync
+    // publication, no drain, no close) and the queued start body would then
+    // carry the service to 'running'. Unconditional publication is also
+    // idempotent for a genuinely idle service: the body drains an empty
+    // chain, closes (storage close must be idempotent) and lands back on
+    // 'stopped'.
     if (phase === 'stopping') return lifecycleChain // share the in-flight stop
     phase = 'stopping' // synchronous intent publication
     const run = lifecycleChain.then(async () => {
@@ -162,7 +180,10 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
         throw err
       }
     })
-    lifecycleChain = run.then(() => undefined, (err) => { phase = 'stopped'; throw err })
+    // Tail swallows the body's rejection (fix round 2, #61): mirror the start
+    // branch — a close() failure must not poison the chain for later start()s.
+    // Caller still observes the rejection via `run`; phase reset preserved.
+    lifecycleChain = run.then(() => undefined, () => { phase = 'stopped' })
     return run
   }
 
