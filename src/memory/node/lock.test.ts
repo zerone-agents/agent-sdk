@@ -48,4 +48,21 @@ describe('acquireMemoryLock (fail-closed by design, review P1-1)', () => {
     await writeFile(lockPath(), 'not json')
     await expect(acquireMemoryLock(dir)).rejects.toThrow(MemoryStorageLockError)
   })
+
+  it("a repeated release never removes a NEW owner's lock (Task 12 minor)", async () => {
+    const first = await acquireMemoryLock(dir)
+    await first.release()
+    const second = await acquireMemoryLock(dir)
+
+    // The stale owner's repeated release must be a no-op, not an unlink of
+    // the live lock — otherwise a third owner could enter while the second
+    // still holds it (mutual exclusion broken).
+    await first.release()
+    await expect(acquireMemoryLock(dir)).rejects.toThrow(MemoryStorageLockError)
+
+    await second.release()
+    // And the released directory is free again.
+    const third = await acquireMemoryLock(dir)
+    await third.release()
+  })
 })

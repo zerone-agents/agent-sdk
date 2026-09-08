@@ -66,6 +66,7 @@ export class InMemoryMemoryStorage implements MemoryStorage {
     }
     // Copy-then-swap: apply to clones; swap only when every op succeeded.
     const records = new Map(this.records)
+    const workspaces = new Map(this.workspaces)
     let audit = [...this.audit]
     // Write-time copies (R4-P2): every record/audit entering the store is
     // COPIED — later mutation of the caller's objects cannot alter stored
@@ -73,6 +74,7 @@ export class InMemoryMemoryStorage implements MemoryStorage {
     for (const r of commit.insertRecords ?? []) records.set(r.id, { ...r })
     for (const r of commit.replaceRecords ?? []) records.set(r.id, { ...r })
     for (const id of commit.deleteRecords ?? []) records.delete(id)
+    for (const w of commit.ensureWorkspaces ?? []) workspaces.set(w.id, { ...w }) // Task 13 wiring: storage-level field, not a record mutation
     const redact = new Set(commit.redactAuditForRecords ?? [])
     if (redact.size > 0) {
       audit = audit.map((e) => redact.has(e.recordId) ? { ...e, beforeContent: null, afterContent: null } : e)
@@ -81,6 +83,7 @@ export class InMemoryMemoryStorage implements MemoryStorage {
     if (deleteIds.size > 0) audit = audit.filter((e) => !deleteIds.has(e.id))
     audit.push(...(commit.appendAudit ?? []).map((e) => ({ ...e }))) // write-time copy (R4-P2)
     this.records = records
+    this.workspaces = workspaces
     this.audit = audit
   }
 

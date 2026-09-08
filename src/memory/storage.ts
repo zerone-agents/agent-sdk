@@ -35,6 +35,21 @@ export interface MemoryStorageCommit {
  * Port: persistence operations only — NO domain rules (no budgets, no state
  * machine, no search ranking). Direct storage mutation outside MemoryService
  * is unsupported.
+ *
+ * Lifecycle contract: `open()` must be called before any other method and
+ * `close()` before process exit; both are idempotent-ish (double open/close
+ * does not corrupt state). Methods called while CLOSED reject with an Error
+ * whose message contains BOTH the method name AND the word "open" (e.g.
+ * `NodeFileMemoryStorage.getRecord called outside open lifecycle`) — hosts
+ * and tests may rely on the method name for attribution and on the "open"
+ * marker for lifecycle-classification.
+ *
+ * Scan determinism contract: `scanRecords`/`scanWorkspaces`/`scanAudit` yield
+ * in INSERTION ORDER — the order in which records/workspaces/audit events
+ * were first written (a replace keeps the original position; a delete removes
+ * the slot; later inserts append). The order survives `close()` + `open()`:
+ * the Node adapter preserves it by replaying the journal in sequence order
+ * and checkpointing state arrays in that same order.
  */
 export interface MemoryStorage {
   open(): Promise<void>
