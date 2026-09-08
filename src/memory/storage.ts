@@ -27,6 +27,8 @@ export interface MemoryStorageCommit {
   redactAuditForRecords?: string[]
   /** Retention: delete these audit event IDs. */
   deleteAuditIds?: string[]
+  /** Workspace registrations to persist (Node adapter journal path; wired in Task 13). */
+  ensureWorkspaces?: MemoryWorkspace[]
 }
 
 /**
