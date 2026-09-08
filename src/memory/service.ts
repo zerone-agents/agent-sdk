@@ -123,7 +123,12 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
       phase = 'starting'
       try {
         await options.storage.open()
-        phase = 'running'
+        // Conditional completion (fix round 1, #61): stop() may have published
+        // 'stopping' SYNCHRONOUSLY while open() was in-flight; do not override
+        // that intent back to 'running'. Unconditional assignment would open a
+        // window where new ops pass assertRunning and escape the stop drain
+        // (they would run after storage.close() or, worse, silently succeed).
+        if (phase === 'starting') phase = 'running'
       } catch (err) {
         phase = 'stopped'
         throw err
@@ -149,9 +154,11 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
       try {
         await admissionChain // drain ALL admitted operations (new ones are impossible: phase already 'stopping')
         await options.storage.close()
-        phase = 'stopped'
+        // Conditional completion (fix round 1, #61): mirror the start branch —
+        // never overwrite a phase that a newer transition intent already owns.
+        if (phase === 'stopping') phase = 'stopped'
       } catch (err) {
-        phase = 'stopped'
+        if (phase === 'stopping') phase = 'stopped'
         throw err
       }
     })
