@@ -216,4 +216,60 @@ describe('NodeFileMemoryStorage fault cases', () => {
     const s = new NodeFileMemoryStorage(dir)
     await expect(s.open()).rejects.toThrow(/schema/i)
   })
+
+  it('real dir-fsync I/O failure keeps the journal; compaction retries later (round-6 P1)', async () => {
+    const diagnostics = createDiagnosticsSink()
+    const warnSpy = vi.spyOn(diagnostics, 'warn')
+    const s = new NodeFileMemoryStorage(dir, { checkpointEvery: 1, diagnostics })
+    await s.open()
+    // writeMemoryCheckpoint's SECOND open is the directory ('r'): make its
+    // fsync fail with a REAL I/O error (EIO) — must NOT be treated as
+    // "platform unsupported".
+    const realOpen = fsPromises.open.bind(fsPromises)
+    vi.spyOn(fsPromises, 'open').mockImplementation((async (p: unknown, flags?: unknown) => {
+      if (flags === 'r' && p === dir) {
+        return {
+          sync: async () => {
+            throw Object.assign(new Error('dir fsync fail'), { code: 'EIO' })
+          },
+          close: async () => {},
+        } as unknown as import('node:fs/promises').FileHandle
+      }
+      return realOpen(p as never, flags as never)
+    }) as never)
+    await s.commit({ insertRecords: [rec('r1')] }) // commit durably succeeds; checkpoint EIO → warn + journal retained
+    expect((await s.getRecord('r1'))?.id).toBe('r1')
+    expect(warnSpy).toHaveBeenCalled()
+    const journal = await readFile(path.join(dir, 'journal.jsonl'), 'utf8')
+    expect(journal).toContain('r1') // NOT truncated — the confirmed row stays for recovery
+    vi.restoreAllMocks()
+    await s.close() // checkpoint retried with real fsync → compaction succeeds
+    const after = await readFile(path.join(dir, 'journal.jsonl'), 'utf8')
+    expect(after).toBe('')
+  })
+
+  it('platform-unsupported dir fsync (EINVAL) is tolerated; compaction proceeds (round-6 P1)', async () => {
+    const diagnostics = createDiagnosticsSink()
+    const warnSpy = vi.spyOn(diagnostics, 'warn')
+    const s = new NodeFileMemoryStorage(dir, { checkpointEvery: 1, diagnostics })
+    await s.open()
+    const realOpen = fsPromises.open.bind(fsPromises)
+    vi.spyOn(fsPromises, 'open').mockImplementation((async (p: unknown, flags?: unknown) => {
+      if (flags === 'r' && p === dir) {
+        return {
+          sync: async () => {
+            throw Object.assign(new Error('unsupported'), { code: 'EINVAL' })
+          },
+          close: async () => {},
+        } as unknown as import('node:fs/promises').FileHandle
+      }
+      return realOpen(p as never, flags as never)
+    }) as never)
+    await s.commit({ insertRecords: [rec('r1')] })
+    expect(warnSpy).not.toHaveBeenCalled() // tolerated silently
+    const journal = await readFile(path.join(dir, 'journal.jsonl'), 'utf8')
+    expect(journal).toBe('') // checkpoint completed → journal truncated
+    vi.restoreAllMocks()
+    await s.close()
+  })
 })

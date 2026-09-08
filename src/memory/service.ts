@@ -100,6 +100,10 @@ interface MutationPlan {
 export function createMemoryService(options: MemoryServiceOptions): MemoryService {
   let phase: MemoryServicePhase = 'stopped'
   let lifecycleChain: Promise<void> = Promise.resolve()
+  // Round-6 review (P2): the caller-facing conversion promise of the CURRENT
+  // stop transition — concurrent stop() callers share it (same outcome),
+  // distinct from lifecycleChain (internal recovery queue, tail-swallowed).
+  let inFlightStop: Promise<void> | null = null
   // ONE admission queue for ALL persistent work (review P1-4): domain
   // mutations AND bind workspace registrations. "Admitted" = enqueued; a stop()
   // draining this chain therefore always covers in-flight bind registrations.
@@ -508,6 +512,14 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
    * publication completes before the storage closes.
    */
   function stop(): Promise<void> {
+    // Round-6 review (P2): concurrent stop() callers must share the SAME
+    // conversion promise — the tail-swallowed lifecycleChain settles
+    // FULFILLED on failure, so sharing it would give a second (in-flight)
+    // caller a different outcome than the first (verified by injected close
+    // failure: rejected vs fulfilled). inFlightStop is the shared, UNTAMPERED
+    // promise of the current stop transition; it is released once settled, so
+    // a later stop() re-issues the transition (idempotent for idle services).
+    if (inFlightStop !== null) return inFlightStop
     // No 'stopped' early return (fix round 2, #61): a start() whose body is
     // still QUEUED leaves phase reading 'stopped' at this call point — an
     // early return would silently swallow the stop intent (no sync
@@ -516,7 +528,6 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
     // idempotent for a genuinely idle service: the body drains an empty
     // chain, closes (storage close must be idempotent) and lands back on
     // 'stopped'.
-    if (phase === 'stopping') return lifecycleChain // share the in-flight stop
     phase = 'stopping' // synchronous intent publication
     const run = lifecycleChain.then(async () => {
       try {
@@ -534,7 +545,10 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
     // branch — a close() failure must not poison the chain for later start()s.
     // Caller still observes the rejection via `run`; phase reset preserved.
     lifecycleChain = run.then(() => undefined, () => { phase = 'stopped' })
-    return run
+    // Shared caller-facing conversion promise (round-6 review P2): same
+    // outcome as `run` for every concurrent caller; cleared once settled.
+    inFlightStop = run.finally(() => { inFlightStop = null })
+    return inFlightStop
   }
 
   /**

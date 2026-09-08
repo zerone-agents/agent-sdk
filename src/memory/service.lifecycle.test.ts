@@ -221,6 +221,26 @@ describe('lifecycle', () => {
     await expect(service.bind({ actor: 'session' })).resolves.toBeDefined()
     await service.stop()
   })
+
+  it('concurrent stop() callers share the same outcome even when close fails (round-6 P2)', async () => {
+    const storage = new InMemoryMemoryStorage()
+    let closeCalls = 0
+    const originalClose = storage.close.bind(storage)
+    storage.close = async () => {
+      closeCalls += 1
+      if (closeCalls === 1) throw new Error('close boom')
+      return originalClose()
+    }
+    const service = createMemoryService({ storage })
+    await service.start()
+    const p1 = service.stop()
+    const p2 = service.stop() // in-flight: must share p1's outcome
+    await expect(p1).rejects.toThrow('close boom')
+    await expect(p2).rejects.toThrow('close boom') // was: fulfilled via the swallowed tail
+    // Recovery: a later stop() re-issues the transition and succeeds.
+    await expect(service.stop()).resolves.toBeUndefined()
+    expect(closeCalls).toBe(2)
+  })
 })
 
 describe('bind + access isolation', () => {

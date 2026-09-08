@@ -238,7 +238,15 @@ export async function writeMemoryCheckpoint(memoryDir: string, state: MemoryChec
     } finally {
       await dirHandle.close()
     }
-  } catch {
-    // dir fsync unsupported on some platforms (e.g. some network/overlay fs) → tolerate
+  } catch (err) {
+    // Round-6 review (P1): ONLY tolerate explicit "unsupported" platform
+    // errors — some filesystems reject directory fsync with EINVAL/ENOTSUP
+    // (and Windows directory opens with EISDIR). A REAL I/O failure
+    // (EIO/EACCES/ENOSPC/…) must propagate: the rename above is not yet
+    // guaranteed durable, so proceeding to truncate the journal here could
+    // lose CONFIRMED commits on a crash. Propagating keeps the caller's
+    // checkpoint error path active — journal retained, compaction retried.
+    const code = (err as NodeJS.ErrnoException | null)?.code
+    if (code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EISDIR') throw err
   }
 }
