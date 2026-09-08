@@ -26,6 +26,13 @@ export async function canonicalizeWorkspacePath(reference: string): Promise<stri
   } catch {
     canonical = absolute
   }
+  // A reference can indirectly point at the root through a symlink chain
+  // (lexically non-root); realpath collapses it, so re-check after resolution.
+  if (canonical === path.parse(canonical).root) {
+    throw new MemoryValidationError([
+      { code: 'workspace.root', severity: 'error', message: 'A filesystem root cannot be a memory workspace.' },
+    ])
+  }
   // Strip trailing separators (root already rejected above).
   while (canonical.length > 1 && (canonical.endsWith('/') || canonical.endsWith('\\'))) {
     canonical = canonical.slice(0, -1)

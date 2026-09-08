@@ -2,6 +2,7 @@ import { mkdtemp, symlink, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { MemoryValidationError } from './errors.js'
 import {
   canonicalizeWorkspacePath,
   defaultMemoryWorkspaceResolver,
@@ -37,6 +38,16 @@ describe('canonicalizeWorkspacePath', () => {
 
   it('rejects a filesystem root', async () => {
     await expect(canonicalizeWorkspacePath(path.parse(dir).root)).rejects.toThrow(/root/i)
+  })
+
+  it('rejects a symlink resolving to the filesystem root', async () => {
+    const linkToRoot = path.join(dir, 'link-to-root')
+    await symlink(path.parse(dir).root, linkToRoot)
+    const rejected = await canonicalizeWorkspacePath(linkToRoot).catch((error: unknown) => error)
+    expect(rejected).toBeInstanceOf(MemoryValidationError)
+    expect((rejected as MemoryValidationError).findings).toContainEqual(
+      expect.objectContaining({ code: 'workspace.root', severity: 'error' }),
+    )
   })
 })
 
