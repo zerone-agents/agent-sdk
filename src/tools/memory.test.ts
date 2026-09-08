@@ -133,6 +133,19 @@ describe('Memory tool (tool-level)', () => {
     await stop()
   })
 
+  it.each(['toString', '__proto__', 'constructor', 'hasOwnProperty'])(
+    'rejects prototype-chain target %s (round-8 review P2)',
+    async (inherited) => {
+      const { ctx, stop } = await makeContext()
+      const result = await MemoryTool.call(
+        { action: 'add', target: inherited, content: 'proto target', importance: 'medium' }, ctx)
+      expect(result.is_error).toBe(true)
+      expect(String(result.content)).toContain('target')
+      const search = await MemorySearchTool.call({ query: 'proto target' }, ctx)
+      expect(String(search.content)).toBe('No memory records found.')
+      await stop()
+    })
+
   it('an already-aborted invocation never writes (PR review P2)', async () => {
     const { ctx, stop } = await makeContext()
     const abortedCtx = { ...ctx, abortSignal: { aborted: true } as AbortSignal }

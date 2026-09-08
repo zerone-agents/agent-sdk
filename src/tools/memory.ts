@@ -140,7 +140,10 @@ export const MemoryTool: ToolDefinition = {
         // without target; replace/remove are validated against the record's own
         // scope and the session's bound workspace (service-side access rules).
         const target = input?.target
-        if (typeof target !== 'string' || !(target in TARGET_TO_SCOPE)) {
+        // R8-P2 review: `in` walks the prototype chain — 'toString', '__proto__',
+        // 'constructor' would pass and map to non-scope values. Own-property
+        // check only: unknown targets are rejected, never silently written.
+        if (typeof target !== 'string' || !Object.hasOwn(TARGET_TO_SCOPE, target)) {
           return errorResult('add requires target ("memory" | "user" | "workspace").')
         }
         if (typeof input.content !== 'string' || typeof input.importance !== 'string') {
