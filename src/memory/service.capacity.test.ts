@@ -116,6 +116,23 @@ describe('audit retention + purge redaction', () => {
     await service.stop()
   })
 
+  it('retention counts PENDING events too: a commit cannot leave more events than the cap (PR review P2)', async () => {
+    const service = await running({ globalChars: 5, auditRetention: 1 })
+    const s = await service.bind({ actor: 'session' })
+    await s.add({ scope: 'global', content: 'aaaa', importance: 25 })
+    // Second add triggers a capacity archive → TWO pending events in ONE
+    // commit; retention=1 must prune one of THEM (pending), not just
+    // pre-existing events — the same commit must never leave > cap events.
+    const result = await s.add({ scope: 'global', content: 'bbbb', importance: 50 })
+    expect(result.archived.map((r) => r.content)).toEqual(['aaaa'])
+    expect(result.audit).toHaveLength(1) // pruned inside the same commit
+    expect(await service.admin.queryAudit({})).toHaveLength(1) // never > cap
+    const records = await service.admin.queryRecords({ scope: 'global' })
+    expect(records.map((r) => `${r.content}:${r.status}`).sort())
+      .toEqual(['aaaa:archived', 'bbbb:active'])
+    await service.stop()
+  })
+
   it('purge erases content from records AND prior audit; final purge event has no content', async () => {
     const service = await running()
     const s = await service.bind({ actor: 'session' })

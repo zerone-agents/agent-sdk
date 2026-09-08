@@ -95,6 +95,11 @@ class FailFirstOpenStorage implements MemoryStorage {
     return this.inner.open()
   }
 
+  /** Test accessor (PR review P2): how many times open() was invoked. */
+  getOpenCalls(): number {
+    return this.openCalls
+  }
+
   close(): Promise<void> {
     return this.inner.close()
   }
@@ -217,6 +222,20 @@ describe('lifecycle', () => {
     // The failing transition must leave the chain alive (error swallowed in
     // the tail while phase resets to 'stopped'): restart — not a stale
     // rejection carrying the old error — follows.
+    await service.start()
+    await expect(service.bind({ actor: 'session' })).resolves.toBeDefined()
+    await service.stop()
+  })
+
+  it('concurrent start() callers share the same failure and open() runs once (PR review P2)', async () => {
+    const storage = new FailFirstOpenStorage()
+    const service = createMemoryService({ storage })
+    const p1 = service.start()
+    const p2 = service.start() // in-flight: must share p1's outcome
+    await expect(p1).rejects.toThrow('open boom')
+    await expect(p2).rejects.toThrow('open boom') // was: fulfilled via a second queued body
+    expect(storage.getOpenCalls()).toBe(1) // only ONE transition body ran
+    // Recovery: a later start() re-runs a FRESH transition and succeeds.
     await service.start()
     await expect(service.bind({ actor: 'session' })).resolves.toBeDefined()
     await service.stop()

@@ -66,8 +66,16 @@ function unexpectedErrorResult(context: ToolContext, err: unknown): ToolResult {
   return errorResult('Memory operation failed unexpectedly.')
 }
 
-function targetScope(target: string): MemoryScope {
-  return target === 'memory' ? 'global' : target === 'user' ? 'user' : 'workspace'
+/**
+ * Tool target → domain scope. Lookup table with NO fallback branch (PR review
+ * P2): unknown targets must be rejected at the boundary, never silently
+ * written to 'workspace' — the inputSchema enum guards the model path, and
+ * add() below validates direct calls against this exact set.
+ */
+const TARGET_TO_SCOPE: Readonly<Record<string, MemoryScope>> = {
+  memory: 'global',
+  user: 'user',
+  workspace: 'workspace',
 }
 
 /** One deterministic result line: id + scope + label + revision + status + preview. */
@@ -106,6 +114,11 @@ export const MemoryTool: ToolDefinition = {
   async call(input: any, context: ToolContext): Promise<ToolResult> {
     const service = memoryServiceFrom(context)
     if (!service) return errorResult('Memory service is not configured.')
+    // PR review (P2): cancellation is checked BEFORE bind — an already-aborted
+    // invocation must not even enter the admission barrier.
+    if (context.abortSignal?.aborted) {
+      return errorResult('Memory operation aborted before it started.')
+    }
     const { action } = input ?? {}
     if (typeof action !== 'string') {
       return errorResult('Memory requires action ("add" | "replace" | "remove").')
@@ -114,12 +127,20 @@ export const MemoryTool: ToolDefinition = {
       const session = await service.bind({
         actor: 'session', sessionId: context.sessionId, workspace: context.cwd,
       })
+      // PR review (P2): re-check AFTER bind, immediately before any domain
+      // mutation — a signal that fired while the resolver/registration was
+      // pending must stop the write. An already-durable commit is never
+      // reinterpreted as cancellation (the check only runs pre-mutation).
+      if (context.abortSignal?.aborted) {
+        return errorResult('Memory operation aborted while binding; nothing was written.')
+      }
       if (action === 'add') {
         // ROUND-3 REVIEW (R3-P2): target is REQUIRED for add only — the App's
         // existing contract accepts `{action: "remove", record_id, expected_revision}`
         // without target; replace/remove are validated against the record's own
         // scope and the session's bound workspace (service-side access rules).
-        if (typeof input?.target !== 'string') {
+        const target = input?.target
+        if (typeof target !== 'string' || !(target in TARGET_TO_SCOPE)) {
           return errorResult('add requires target ("memory" | "user" | "workspace").')
         }
         if (typeof input.content !== 'string' || typeof input.importance !== 'string') {
@@ -127,7 +148,7 @@ export const MemoryTool: ToolDefinition = {
         }
         const importance = IMPORTANCE_BY_LABEL[input.importance as ImportanceLabel]
         const result = await session.add({
-          scope: targetScope(input.target), content: input.content, importance,
+          scope: TARGET_TO_SCOPE[target], content: input.content, importance,
         })
         return okResult(
           `Memory saved: [${result.record!.id}] (${result.record!.scope}, ${MEMORY_IMPORTANCE_LABELS[result.record!.importance]}, rev ${result.record!.revision})`)
@@ -191,6 +212,11 @@ export const MemorySearchTool: ToolDefinition = {
   async call(input: any, context: ToolContext): Promise<ToolResult> {
     const service = memoryServiceFrom(context)
     if (!service) return errorResult('Memory service is not configured.')
+    // PR review (P2): cancellation check before bind (read-only tool, nothing
+    // is written — no post-bind re-check needed).
+    if (context.abortSignal?.aborted) {
+      return errorResult('MemorySearch aborted before it started.')
+    }
     if (typeof input?.query !== 'string') {
       return errorResult('MemorySearch requires a query string.')
     }

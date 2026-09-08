@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { createMemoryService } from '../memory/service.js'
 import { InMemoryMemoryStorage } from '../memory/in-memory-storage.js'
+import { defaultMemoryWorkspaceResolver } from '../memory/workspace.js'
 import type { MemoryService } from '../memory/types.js'
 import { MemorySearchTool, MemoryTool } from './memory.js'
 import type { ToolContext } from '../types.js'
@@ -118,6 +119,59 @@ describe('Memory tool (tool-level)', () => {
     } finally {
       await stop()
     }
+  })
+
+  it('rejects an unknown target instead of silently writing workspace (PR review P2)', async () => {
+    const { ctx, stop } = await makeContext()
+    const result = await MemoryTool.call(
+      { action: 'add', target: 'global', content: 'bad target', importance: 'medium' }, ctx)
+    expect(result.is_error).toBe(true)
+    expect(String(result.content)).toContain('target')
+    // nothing was written anywhere:
+    const search = await MemorySearchTool.call({ query: 'bad target' }, ctx)
+    expect(String(search.content)).toBe('No memory records found.')
+    await stop()
+  })
+
+  it('an already-aborted invocation never writes (PR review P2)', async () => {
+    const { ctx, stop } = await makeContext()
+    const abortedCtx = { ...ctx, abortSignal: { aborted: true } as AbortSignal }
+    const result = await MemoryTool.call(
+      { action: 'add', target: 'memory', content: 'should-not-persist', importance: 'medium' }, abortedCtx)
+    expect(result.is_error).toBe(true)
+    expect(String(result.content)).toContain('aborted')
+    // MemorySearch aborts too — and nothing was persisted anywhere:
+    const searchAborted = await MemorySearchTool.call({ query: 'should-not-persist' }, abortedCtx)
+    expect(searchAborted.is_error).toBe(true)
+    const search = await MemorySearchTool.call({ query: 'should-not-persist' }, ctx)
+    expect(String(search.content)).toBe('No memory records found.')
+    await stop()
+  })
+
+  it('cancellation while binding stops the write before the mutation (PR review P2)', async () => {
+    const service = createMemoryService({
+      storage: new InMemoryMemoryStorage(),
+      resolveWorkspace: async (ref: string) => {
+        await new Promise((r) => setTimeout(r, 20))
+        return defaultMemoryWorkspaceResolver(ref)
+      },
+    })
+    liveServices.push(service)
+    await service.start()
+    const controller = new AbortController()
+    const ctx: ToolContext = {
+      cwd: '/repo/a', agentId: 'main', sessionId: 's1',
+      services: { memory: service } as unknown as ToolContext['services'],
+      subprocessEnv: {}, toolUseId: 'tu1', abortSignal: controller.signal,
+    }
+    setTimeout(() => controller.abort(), 5) // fires while bind is pending
+    const result = await MemoryTool.call(
+      { action: 'add', target: 'memory', content: 'late-write', importance: 'medium' }, ctx)
+    expect(result.is_error).toBe(true)
+    expect(String(result.content)).toContain('aborted')
+    const freshCtx = { ...ctx, abortSignal: undefined }
+    const search = await MemorySearchTool.call({ query: 'late-write' }, freshCtx)
+    expect(String(search.content)).toBe('No memory records found.')
   })
 })
 

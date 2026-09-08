@@ -104,6 +104,10 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
   // stop transition — concurrent stop() callers share it (same outcome),
   // distinct from lifecycleChain (internal recovery queue, tail-swallowed).
   let inFlightStop: Promise<void> | null = null
+  // PR review (P2): the same sharing contract for start() — concurrent
+  // start() callers share one conversion promise INCLUDING its failure; a
+  // settled in-flight entry releases the slot so a later start re-queues.
+  let inFlightStart: Promise<void> | null = null
   // ONE admission queue for ALL persistent work (review P1-4): domain
   // mutations AND bind workspace registrations. "Admitted" = enqueued; a stop()
   // draining this chain therefore always covers in-flight bind registrations.
@@ -363,23 +367,29 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
   }
 
   /**
-   * Task 9: global audit retention. Once this mutation's appends are known,
-   * if the total event count exceeds `auditRetention`, the OLDEST events
-   * (committedAt asc, id asc) beyond the cap are hard-deleted in the SAME
-   * commit via deleteAuditIds. localeCompare on ISO-8601 UTC strings is
-   * chronological; id tie-break keeps the order total (the brief's comparator
-   * falls through to `1` for identical (committedAt, id), which is
-   * inconsistent for self-comparison — same semantics, total order).
+   * Task 9 + PR review (P2): global audit retention across BOTH already-stored
+   * events and the events THIS commit is about to append. The OLDEST events
+   * (committedAt asc, id asc) beyond the cap are either hard-deleted
+   * (existing, via deleteAuditIds) or OMITTED from the commit entirely
+   * (pending) — the same commit must not leave more than `auditRetention`
+   * events behind, and pending events outside the retained set must never be
+   * persisted in the first place. localeCompare on ISO-8601 UTC strings is
+   * chronological; id tie-break keeps the order total.
    */
-  async function retentionDeletes(appended: number): Promise<string[]> {
-    const all: MemoryAuditEvent[] = []
-    for await (const e of options.storage.scanAudit({})) all.push(e)
-    const overflow = all.length + appended - budgets.auditRetention
-    if (overflow <= 0) return []
-    return all
-      .sort((a, b) => a.committedAt.localeCompare(b.committedAt) || a.id.localeCompare(b.id))
-      .slice(0, overflow)
-      .map((e) => e.id)
+  function pruneAuditRetention(
+    existing: MemoryAuditEvent[],
+    pending: MemoryAuditEvent[],
+  ): { deleteAuditIds: string[]; appendAudit: MemoryAuditEvent[] } {
+    const overflow = existing.length + pending.length - budgets.auditRetention
+    if (overflow <= 0) return { deleteAuditIds: [], appendAudit: pending }
+    const merged = [...existing, ...pending].sort(
+      (a, b) => a.committedAt.localeCompare(b.committedAt) || a.id.localeCompare(b.id),
+    )
+    const removed = new Set(merged.slice(0, overflow).map((e) => e.id))
+    return {
+      deleteAuditIds: existing.filter((e) => removed.has(e.id)).map((e) => e.id),
+      appendAudit: pending.filter((e) => !removed.has(e.id)),
+    }
   }
 
   /**
@@ -418,16 +428,22 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
           p.insertRecords, p.replaceRecords, p.audit,
         )))
       }
-      const deleteAuditIds = await retentionDeletes(p.audit.length)
+      // PR review (P2): retention is computed across BOTH already-stored
+      // events and this commit's pending events — the oldest beyond the cap
+      // are deleted (existing) or omitted from the commit (pending), so a
+      // single commit can never leave more than `auditRetention` events.
+      const existingAudit: MemoryAuditEvent[] = []
+      for await (const e of options.storage.scanAudit({})) existingAudit.push(e)
+      const { deleteAuditIds, appendAudit } = pruneAuditRetention(existingAudit, p.audit)
       await options.storage.commit({
         insertRecords: p.insertRecords,
         replaceRecords: p.replaceRecords,
         deleteRecords: p.deleteRecords,
         redactAuditForRecords: p.redactAuditForRecords,
-        appendAudit: p.audit,
+        appendAudit,
         deleteAuditIds,
       })
-      return { record: p.primary, archived, audit: p.audit } satisfies MemoryMutationResult
+      return { record: p.primary, archived, audit: appendAudit } satisfies MemoryMutationResult
     })
     emitEvent({ result, context }) // post-commit; sink failure → diagnostics, never rollback
     return result
@@ -472,6 +488,14 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 
   /** Serialize start bodies; concurrent same-transition calls share one promise. */
   function start(): Promise<void> {
+    // PR review (P2): concurrent start() callers must share the SAME
+    // conversion promise, INCLUDING failures — mirroring inFlightStop. Old
+    // behavior queued a second body that (after the first failed and phase
+    // reset to 'stopped') would run open() AGAIN and return a different
+    // outcome (rejected vs fulfilled). inFlightStart is released once
+    // settled; a later start() then re-queues normally (running → early
+    // return; stopped → fresh transition).
+    if (inFlightStart !== null) return inFlightStart
     const run = lifecycleChain.then(async () => {
       // Entry guard (fix round 2, #61): only a true 'stopped' service may run
       // the start body. 'starting'/'running' early-return like before, and a
@@ -500,7 +524,16 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
     // leave a floating rejected promise (unhandledRejection). Phase reset to
     // 'stopped' is preserved so a restart is reachable.
     lifecycleChain = run.then(() => undefined, () => { phase = 'stopped' })
-    return run
+    // Shared caller-facing conversion promise (PR review P2): concurrent
+    // start() callers share `run` ITSELF (same outcome, untampered). The slot
+    // is cleared by a detached finally — NOT by wrapping the returned promise
+    // (a finally-wrapped return delays `await start` resumption by extra
+    // microtasks and lets a queued stop body finish first, flipping the phase
+    // to 'stopped' before a bind issued right after start resolves — see the
+    // stop-during-start lifecycle test).
+    inFlightStart = run
+    run.finally(() => { inFlightStart = null }).catch(() => {})
+    return inFlightStart
   }
 
   /**
@@ -546,8 +579,11 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
     // Caller still observes the rejection via `run`; phase reset preserved.
     lifecycleChain = run.then(() => undefined, () => { phase = 'stopped' })
     // Shared caller-facing conversion promise (round-6 review P2): same
-    // outcome as `run` for every concurrent caller; cleared once settled.
-    inFlightStop = run.finally(() => { inFlightStop = null })
+    // outcome as `run` for every concurrent caller; cleared by a detached
+    // finally (mirroring start — see note there on why the returned promise
+    // is NOT the finally-wrapped one).
+    inFlightStop = run
+    run.finally(() => { inFlightStop = null }).catch(() => {})
     return inFlightStop
   }
 
