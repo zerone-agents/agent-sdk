@@ -1,4 +1,4 @@
-Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.
+Executes a command in a new process using the selected shell, with optional timeout. Shell state does not persist between calls. Use syntax and quoting appropriate to that shell.
 
 Be aware: OS: ${os}, Shell: ${shell}
 
@@ -19,6 +19,10 @@ Before executing the command, please follow these steps:
      - mkdir /Users/name/My Documents (incorrect - will fail)
      - python "/path/with spaces/script.py" (correct)
      - python /path/with spaces/script.py (incorrect - will fail)
+   - In POSIX shells, double quotes still allow variable expansion and command substitution: text in backticks or `$(...)` inside double quotes EXECUTES as a command. Single quotes preserve literal text. To output such text verbatim, use single quotes:
+     - printf '%s\n' 'Literal text: `name` $(value)' (correct - prints the text as-is)
+     - printf '%s\n' "Literal text: `name` $(value)" (incorrect - runs the backtick/$(...) parts as commands)
+   - For long or multiline data, write it to a file (Write tool) and pass the file path instead of embedding it in the command.
    - After ensuring proper quoting, execute the command.
    - Capture the output of the command.
 

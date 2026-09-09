@@ -201,7 +201,7 @@ export const BashTool = defineTool({
     properties: {
       command: {
         type: 'string',
-        description: 'The bash command to execute',
+        description: 'The command to execute in the selected shell',
       },
       description: {
         type: 'string',

@@ -393,6 +393,27 @@ describe('BashTool.inputSchema', () => {
     expect(timeout.description).toContain('seconds')
     expect(timeout.description).not.toContain('milliseconds')
   })
+
+  it('describes the command param shell-neutrally (issue #103)', () => {
+    const schema = BashTool.inputSchema as any
+    expect(schema.properties.command.description).toBe('The command to execute in the selected shell')
+  })
+})
+
+describe('BashTool.description (issue #103: accurate shell semantics)', () => {
+  it('does not claim a persistent shell session', () => {
+    expect(BashTool.description).not.toMatch(/persistent/i)
+  })
+
+  it('states commands run in a new process with the selected shell', () => {
+    expect(BashTool.description).toContain('selected shell')
+    expect(BashTool.description).toMatch(/does not persist/i)
+  })
+
+  it('warns that double quotes still allow command substitution; single quotes preserve literal text', () => {
+    expect(BashTool.description).toContain('command substitution')
+    expect(BashTool.description).toMatch(/single quotes/i)
+  })
 })
 
 const { resolveTimeoutMs } = await import('./bash.js')
