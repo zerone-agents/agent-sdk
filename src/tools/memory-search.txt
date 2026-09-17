@@ -1,0 +1,5 @@
+Search persistent memory records visible to the current session across global, user, and current-workspace scopes, including active and archived records.
+
+Use this tool when recalling stored context and always before Memory replace or remove. Search with a short distinctive phrase or the most specific terms from the record. If a broad query produces too many results, refine it rather than guessing.
+
+Each result includes the record id, scope, importance, revision, status, and a content preview. For replace/remove, copy id to record_id and revision to expected_revision from the same result. If no result matches, do not invent an id.
