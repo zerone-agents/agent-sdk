@@ -32,10 +32,7 @@ export interface CompactMessagesResult {
   compacted: boolean
   messages: NormalizedMessageParam[]
   state: AutoCompactState
-  /**
-   * Sanitized provider error when compaction failed (#109). Undefined on
-   * success, nothing-to-compact (identity), and cancellation.
-   */
+  /** Sanitized provider error when compaction failed; see {@link SDKCompactMessage.error}. */
   error?: string
 }
 

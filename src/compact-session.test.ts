@@ -3,6 +3,7 @@ import { compactSessionStream, compactSession, type CompactSessionResult } from 
 import { loadSession, saveSession, deleteSession } from './session.js'
 import { shouldAutoCompact, PRUNE_PROTECTED_QUERIES, PRUNE_THRESHOLD_CHARS, createAutoCompactState } from './utils/compact.js'
 import type { LLMProvider, StreamChunk, NormalizedMessageParam } from './providers/types.js'
+import type { SDKCompactMessage } from './types.js'
 
 /**
  * Regression coverage for issue #46: session-level compact-and-persist.
@@ -462,7 +463,7 @@ describe('compactSessionStream (issue #46)', () => {
 
 describe('compactSessionStream error propagation (#109)', () => {
   /** Provider failing on BOTH code paths with the same message. */
-  function makeFailingStreamProvider(message: string): LLMProvider {
+  function failingProvider(message: string): LLMProvider {
     return {
       apiType: 'anthropic-messages',
       async createMessage() { throw new Error(message) },
@@ -472,15 +473,49 @@ describe('compactSessionStream error propagation (#109)', () => {
     }
   }
 
-  it('provider failure surfaces the sanitized error and leaves the session unchanged', async () => {
+  /** Drain a compactSessionStream while recording every emitted event. */
+  async function drainRecording(
+    gen: AsyncGenerator<SDKCompactMessage, CompactSessionResult>,
+  ): Promise<{ events: SDKCompactMessage[]; result: CompactSessionResult }> {
+    const events: SDKCompactMessage[] = []
+    while (true) {
+      const next = await gen.next()
+      if (next.done) return { events, result: next.value }
+      events.push(next.value)
+    }
+  }
+
+  it('provider failure surfaces the sanitized error on the result and end event, and leaves the session unchanged', async () => {
     const sid = freshSessionId('err-prop')
     const messages = buildConversation(8)
     await saveSession(sid, messages, { cwd: '/tmp/project', model: 'test-model' })
 
-    const result = await drainSession(compactSessionStream({
+    const { events, result } = await drainRecording(compactSessionStream({
       sessionId: sid,
-      provider: makeFailingStreamProvider('provider exploded: 429'),
+      provider: failingProvider('provider exploded: 429'),
     }))
+
+    expect(result.compacted).toBe(false)
+    expect(result.error).toContain('provider exploded: 429')
+    const end = events.at(-1)
+    expect(end?.type).toBe('compact')
+    expect(end?.phase).toBe('end')
+    expect(end?.error).toContain('provider exploded: 429')
+
+    const persisted = await loadSession(sid)
+    expect(persisted).not.toBeNull()
+    expect(JSON.stringify(persisted!.messages)).toBe(JSON.stringify(messages))
+  })
+
+  it('non-streaming wrapper failure also carries the sanitized error (#109)', async () => {
+    const sid = freshSessionId('err-prop-ns')
+    const messages = buildConversation(8)
+    await saveSession(sid, messages, { cwd: '/tmp/project', model: 'test-model' })
+
+    const result = await compactSession({
+      sessionId: sid,
+      provider: failingProvider('provider exploded: 429'),
+    })
 
     expect(result.compacted).toBe(false)
     expect(result.error).toContain('provider exploded: 429')

@@ -109,27 +109,44 @@ describe('compact error propagation (#109)', () => {
     }
   }
 
-  it('provider failure propagates the sanitized error through the stream wrapper', async () => {
+  /** Drain a compactMessagesStream while recording every emitted event. */
+  async function drainRecording(
+    gen: AsyncGenerator<SDKCompactMessage, CompactMessagesResult>,
+  ): Promise<{ events: SDKCompactMessage[]; result: CompactMessagesResult }> {
     const events: SDKCompactMessage[] = []
-    const gen = compactMessagesStream({
+    while (true) {
+      const next = await gen.next()
+      if (next.done) return { events, result: next.value }
+      events.push(next.value)
+    }
+  }
+
+  it('provider failure propagates the sanitized error through the stream wrapper', async () => {
+    const { events, result } = await drainRecording(compactMessagesStream({
       provider: failingProvider('OpenAI API error: 429'),
       model: 'test-model',
       messages: buildConversation(5),
       state: createAutoCompactState(),
       protectedQueries: 2,
-    })
-    let result: CompactMessagesResult | undefined
-    while (true) {
-      const next = await gen.next()
-      if (next.done) { result = next.value; break }
-      events.push(next.value)
-    }
-    expect(result!.compacted).toBe(false)
-    expect(result!.error).toContain('429')
+    }))
+    expect(result.compacted).toBe(false)
+    expect(result.error).toContain('429')
     const end = events.at(-1)
     expect(end?.type).toBe('compact')
     expect(end?.phase).toBe('end')
     expect(end?.error).toContain('429')
+  })
+
+  it('non-streaming wrapper failure also carries the sanitized error (#109)', async () => {
+    const result = await compactMessages({
+      provider: failingProvider('summary provider down'),
+      model: 'test-model',
+      messages: buildConversation(5),
+      state: createAutoCompactState(),
+      protectedQueries: 2,
+    })
+    expect(result.compacted).toBe(false)
+    expect(result.error).toContain('summary provider down')
   })
 
   it('nothing-to-compact (identity) leaves error undefined', async () => {
