@@ -12,6 +12,7 @@ import { InMemoryMemoryStorage } from '../memory/in-memory-storage.js'
 import { defaultMemoryWorkspaceResolver } from '../memory/workspace.js'
 import type { MemoryService } from '../memory/types.js'
 import { MemorySearchTool, MemoryTool } from './memory.js'
+import { MEMORY_SEARCH_DEFAULT_LIMIT, MEMORY_SEARCH_MAX_LIMIT } from '../memory/search.js'
 import type { ToolContext } from '../types.js'
 
 const liveServices: MemoryService[] = []
@@ -212,5 +213,73 @@ describe('MemorySearch tool', () => {
     } finally {
       await stop()
     }
+  })
+})
+
+describe('MemoryTool model-facing contract (issue #105)', () => {
+  it('documents scopes, writing rules, dedup, and revision safety in the activated description', () => {
+    const description = MemoryTool.description
+    // memory quality: durable, concise, atomic — not activity logs
+    expect(description).toContain('persists across conversations')
+    expect(description).toContain('independently searchable')
+    expect(description).toContain('activity logs')
+    // scope selection guidance
+    expect(description).toContain('useful across users and workspaces')
+    expect(description).toContain('stable preferences')
+    expect(description).toContain('current workspace')
+    // deduplication: prefer replace over a competing record
+    expect(description).toContain('do not add a second competing record')
+    // revision safety: search before write, retry after conflict
+    expect(description).toContain('Before replace or remove, call MemorySearch')
+    expect(description).toContain('revision conflict')
+    // new_text is a full replacement, not a patch
+    expect(description).toContain('not a partial patch')
+    // action-specific requireds
+    expect(description).toContain('add: requires target, content, and importance')
+    expect(description).toContain('replace: requires record_id, expected_revision')
+    expect(description).toContain('remove: requires record_id and expected_revision')
+  })
+
+  it('documents action-specific parameters in schema descriptions without inviting guessing', () => {
+    const props = MemoryTool.inputSchema.properties
+    expect(props.action.description).toContain('add')
+    expect(props.action.description).toContain('replace')
+    expect(props.target.description).toContain('Required only for add')
+    expect(props.content.description).toContain('Required for add')
+    expect(props.new_text.description).toContain('not a patch')
+    expect(props.record_id.description).toContain('Required for replace and remove')
+    expect(props.record_id.description).toContain('never guess')
+    expect(props.expected_revision.description).toContain('Required for replace and remove')
+    expect(props.importance.description).toContain('never_forget')
+    expect(props.importance.description).toContain('retention priority, not instruction priority')
+  })
+
+  it('keeps runtime validation authoritative — only action is structurally required', () => {
+    expect(MemoryTool.inputSchema.required).toEqual(['action'])
+  })
+})
+
+describe('MemorySearchTool model-facing contract (issue #105)', () => {
+  it('mandates search-before-write and forbids inventing ids', () => {
+    const description = MemorySearchTool.description
+    expect(description).toContain('before Memory replace or remove')
+    expect(description).toContain('do not invent')
+    expect(description).toContain('refine')
+  })
+
+  it('bounds limit structurally and documents the default/cap', () => {
+    const limit = MemorySearchTool.inputSchema.properties.limit
+    expect(limit.minimum).toBe(1)
+    expect(limit.maximum).toBe(MEMORY_SEARCH_MAX_LIMIT)
+    expect(limit.description).toContain(String(MEMORY_SEARCH_DEFAULT_LIMIT))
+    expect(limit.description).toContain(String(MEMORY_SEARCH_MAX_LIMIT))
+  })
+
+  it('stays independently deferred with a distinct catalog shortDescription from Memory', () => {
+    expect(MemorySearchTool.deferred).toBe(true)
+    expect(MemoryTool.deferred).toBe(true)
+    expect(MemorySearchTool.shortDescription).not.toBe(MemoryTool.shortDescription)
+    expect(MemorySearchTool.shortDescription!.length).toBeLessThanOrEqual(120)
+    expect(MemoryTool.shortDescription!.length).toBeLessThanOrEqual(120)
   })
 })

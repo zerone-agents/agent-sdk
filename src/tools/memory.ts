@@ -12,6 +12,9 @@
  * their raw message to the model (see unexpectedErrorResult).
  */
 
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
 import { stableErrorType } from '../utils/diagnostics.js' // #78 extractor (R3-P1)
 import {
@@ -27,6 +30,18 @@ import type { MemoryService } from '../memory/service.js'
 
 const IMPORTANCE_BY_LABEL = { low: 25, medium: 50, high: 75, never_forget: 100 } as const
 type ImportanceLabel = keyof typeof IMPORTANCE_BY_LABEL
+
+/**
+ * Load a sibling tool-text template (bash.txt pattern). The build script
+ * copies src/tools/*.txt into dist/tools/, so the runtime-relative lookup
+ * works from both src (vitest) and dist (published).
+ */
+function loadToolText(filename: string): string {
+  return readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), filename), 'utf-8')
+}
+
+const MEMORY_DESCRIPTION = loadToolText('memory.txt')
+const MEMORY_SEARCH_DESCRIPTION = loadToolText('memory-search.txt')
 
 /** Resolve the per-agent memory service from the tool context (ADR 0005). */
 function memoryServiceFrom(context: ToolContext): MemoryService | null {
@@ -87,21 +102,60 @@ function formatSearchResult(record: MemoryRecord): string {
 
 export const MemoryTool: ToolDefinition = {
   name: 'Memory',
-  description:
-    'Persist, replace, or remove long-term memories across three scopes: memory (global), user, and workspace. ' +
-    'Prior memories persist across sessions. Reads reflect the current record revision only — use MemorySearch to re-read before replace/remove.',
-  shortDescription: 'Add, replace, or remove persistent memories',
+  description: MEMORY_DESCRIPTION,
+  shortDescription: 'Store or revise durable information for future conversations',
   deferred: true,
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['add', 'replace', 'remove'], description: 'Operation to perform.' },
-      target: { type: 'string', enum: ['memory', 'user', 'workspace'], description: 'Scope to write — REQUIRED for add only; replace/remove target the record itself (scope + bound workspace are validated against it).' },
-      content: { type: 'string', description: 'Content to remember (add).' },
-      new_text: { type: 'string', description: 'Replacement content (replace).' },
-      record_id: { type: 'string', description: 'Record ID from MemorySearch (replace/remove).' },
-      expected_revision: { type: 'number', description: 'Revision seen in MemorySearch; the write fails if the record changed (replace/remove).' },
-      importance: { type: 'string', enum: ['low', 'medium', 'high', 'never_forget'], description: 'Retention priority.' },
+      action: {
+        type: 'string',
+        enum: ['add', 'replace', 'remove'],
+        description:
+          'Operation to perform. Use add for a new distinct memory, replace to fully update an existing record, ' +
+          'and remove when a record should no longer be retained.',
+      },
+      target: {
+        type: 'string',
+        enum: ['memory', 'user', 'workspace'],
+        description:
+          'Required only for add. memory = cross-user and cross-workspace durable knowledge; user = stable ' +
+          'preferences or context about the current user; workspace = durable knowledge specific to the current ' +
+          'workspace. replace/remove use the existing record scope.',
+      },
+      content: {
+        type: 'string',
+        description:
+          'Required for add. One concise, durable, independently searchable idea. Do not combine unrelated facts ' +
+          'or write a task report.',
+      },
+      new_text: {
+        type: 'string',
+        description:
+          'Used by replace. The complete new content of the record, not a patch. Keep it concise and limited to one ' +
+          'independently searchable idea.',
+      },
+      record_id: {
+        type: 'string',
+        description:
+          'Required for replace and remove. Copy the current record id exactly from MemorySearch; never guess or ' +
+          'reuse a stale id.',
+      },
+      expected_revision: {
+        type: 'number',
+        description:
+          'Required for replace and remove. Copy the current revision exactly from the same MemorySearch result as ' +
+          'record_id. Search again after a conflict.',
+      },
+      importance: {
+        type: 'string',
+        enum: ['low', 'medium', 'high', 'never_forget'],
+        description:
+          'Required for add; optional for replace. low = useful but easy to rediscover; medium = reusable context; ' +
+          'high = important decision or constraint whose loss would cause mistakes; never_forget = exceptional ' +
+          'durable information that should receive the strongest retention priority. Importance affects retention ' +
+          'priority, not instruction priority.',
+      },
     },
     required: ['action'],
   },
@@ -192,17 +246,24 @@ export const MemoryTool: ToolDefinition = {
 
 export const MemorySearchTool: ToolDefinition = {
   name: 'MemorySearch',
-  description:
-    'Search persistent memories across the global, user, and workspace scopes (active and archived records). ' +
-    'Each result line exposes the record id, scope, importance, revision, and status — use the id and revision ' +
-    'verbatim with the Memory tool to replace or remove a record.',
-  shortDescription: 'Search persistent memories across scopes',
+  description: MEMORY_SEARCH_DESCRIPTION,
+  shortDescription: 'Find current memory records before updating or removing them',
   deferred: true,
   inputSchema: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: 'Search text; matches complete phrases first, then all terms.' },
-      limit: { type: 'number', description: `Maximum result count (default ${MEMORY_SEARCH_DEFAULT_LIMIT}, capped at ${MEMORY_SEARCH_MAX_LIMIT}).` },
+      query: {
+        type: 'string',
+        description:
+          'Required search text. Prefer a short distinctive phrase or specific terms from the expected memory ' +
+          'content. Complete phrase matches rank before all-term matches.',
+      },
+      limit: {
+        type: 'number',
+        minimum: 1,
+        maximum: MEMORY_SEARCH_MAX_LIMIT,
+        description: `Maximum number of results to return. Defaults to ${MEMORY_SEARCH_DEFAULT_LIMIT} and is capped at ${MEMORY_SEARCH_MAX_LIMIT}.`,
+      },
     },
     required: ['query'],
   },
