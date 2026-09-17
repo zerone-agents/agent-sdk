@@ -60,7 +60,7 @@ export interface CompactSessionResult {
   messages: NormalizedMessageParam[]
   /** Token counters that were persisted alongside the messages. */
   state: AutoCompactState
-  /** Sanitized provider error when compaction failed; see {@link SDKCompactMessage.error}. */
+  /** Sanitized provider error when compaction failed; see SDKCompactMessage.error. */
   error?: string
 }
 

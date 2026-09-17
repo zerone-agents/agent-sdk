@@ -32,7 +32,7 @@ export interface CompactMessagesResult {
   compacted: boolean
   messages: NormalizedMessageParam[]
   state: AutoCompactState
-  /** Sanitized provider error when compaction failed; see {@link SDKCompactMessage.error}. */
+  /** Sanitized provider error when compaction failed; see SDKCompactMessage.error. */
   error?: string
 }
 
