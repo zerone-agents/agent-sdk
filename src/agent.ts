@@ -57,6 +57,8 @@ import { type AutoCompactState } from './utils/compact.js'
 import { compactMessagesStream } from './compact-messages.js'
 import { resolveSubprocessEnv } from './utils/subprocess-env.js'
 import { resolveToolServices } from './tools/services.js'
+import type { ToolServices } from './tools/services.js'
+import { DefaultToolServices } from './tools/default-services.js'
 
 /** Per-query overrides: AgentOptions plus ad-hoc capability filters layered on the agent definition. */
 /**
@@ -198,6 +200,15 @@ export class Agent {
   private sid: string
   private abortCtrl: AbortController | null = null
   private currentEngine: QueryEngine | null = null
+  /**
+   * Per-Agent ToolServices base (ADR 0005). Cached so the FindTool registry
+   * identity — and with it `findTool.activatedTools` — survives across
+   * queries when the host passes no explicit toolServices. Without this
+   * cache, buildRuntime() → resolveToolServices() would mint a fresh
+   * DefaultToolServices per query, silently discarding lazy-load activations
+   * between queries.
+   */
+  private baseToolServices: ToolServices | null = null
   private hookRegistry: HookRegistry
   private sink: DiagnosticsSink
   private lastInputTokens = 0
@@ -432,7 +443,16 @@ export class Agent {
     // Agents sharing one container keep independent cron/memory bindings.
     // Without any override the caller's object (or a fresh default) is used
     // as-is.
-    const toolServices = resolveToolServices(opts.toolServices, miscConfig.cronService, miscConfig.memoryService)
+    //
+    // The default (host passes no toolServices) is CACHED per Agent (see
+    // baseToolServices): buildRuntime runs on every query, and a fresh
+    // DefaultToolServices per query would reset findTool.activatedTools —
+    // FindTool activations would silently vanish for the next query even
+    // though the engine treats them as session-scoped.
+    const baseServices = opts.toolServices
+      ?? this.baseToolServices
+      ?? (this.baseToolServices = new DefaultToolServices())
+    const toolServices = resolveToolServices(baseServices, miscConfig.cronService, miscConfig.memoryService)
 
     return {
       provider,

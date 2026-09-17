@@ -1079,3 +1079,66 @@ describe('query overrides: explicit undefined must not clobber AgentConfig (#98)
     expect(probe.currentEngine.config.maxSessionQueries).toBe(7)
   })
 })
+
+describe('Agent lazy-load activation persistence across queries', () => {
+  // Regression: buildRuntime()/resolveToolServices() must NOT hand each query
+  // a fresh DefaultToolServices. When a host passes no explicit toolServices,
+  // a new DefaultToolServices per query resets findTool.activatedTools — so a
+  // tool activated via FindTool in query N vanishes from the provider tools
+  // array in query N+1 (engine.ts deliberately preserves activatedTools, but
+  // only within ONE registry instance).
+
+  function lazyActivationSetup() {
+    let query = 0
+    let call = 0
+    const seenNames: string[][] = []
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      createMessage: vi.fn(async (params: any) => {
+        seenNames.push((params.tools ?? []).map((t: any) => t.name))
+        call++
+        if (query === 0 && call === 1) {
+          return {
+            content: [
+              { type: 'tool_use', id: 'tu_1', name: 'FindTool', input: { query: 'select:lazy_hello' } },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+            stop_reason: 'tool_use',
+          } as any
+        }
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: 'end_turn',
+        } as any
+      }),
+      createMessageStream: async function* () {},
+    }
+    const lazyTool = {
+      name: 'lazy_hello',
+      description: 'deferred test tool',
+      deferred: true,
+      inputSchema: { type: 'object' as const, properties: {} },
+      call: async () => ({ type: 'tool_result' as const, tool_use_id: '', content: 'hi' }),
+    }
+    return { provider, seenNames, lazyTool, advanceQuery: () => { query = 1; call = 0 } }
+  }
+
+  it('activation in query 1 keeps the schema in query 2 tools (host passes no toolServices)', async () => {
+    const { provider, seenNames, lazyTool, advanceQuery } = lazyActivationSetup()
+    const agent = new Agent(makeBaseOptions({
+      customTools: [lazyTool as any],
+    }))
+    ;(agent as any).provider = provider
+
+    // Query 1: FindTool activates lazy_hello mid-query.
+    await agent.prompt('hi')
+    expect(seenNames[0]).not.toContain('lazy_hello') // turn 1: deferred, hidden
+    expect(seenNames[1]).toContain('lazy_hello')     // turn 2 (same query): activated
+
+    // Query 2: new query engine + runtime rebuild — schema must survive.
+    advanceQuery()
+    await agent.prompt('hi again')
+    expect(seenNames[2]).toContain('lazy_hello')
+  })
+})
