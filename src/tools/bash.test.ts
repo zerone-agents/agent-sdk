@@ -617,6 +617,8 @@ describe('BashTool.call working directory validation (#112)', () => {
       expect(result.is_error).toBe(true)
       expect(result.content).toContain(filePath)
       expect(result.content).toContain('does not exist')
+      expect(result.content).toContain('not a directory')
+      expect(mockSpawn).not.toHaveBeenCalled()
     } finally {
       fs.rmSync(filePath, { force: true })
     }
@@ -640,6 +642,30 @@ describe('BashTool.call working directory validation (#112)', () => {
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('Error executing command')
     expect(result.content).toContain('spawn zsh ENOENT')
+    // ENOENT hint names BOTH plausible causes (issue: do not classify every
+    // ENOENT as a missing directory).
+    expect(result.content).toContain('working directory removed concurrently')
+    expect(result.content).toContain('shell binary missing')
+  })
+
+  it('non-ENOENT spawn errors stay is_error without the ENOENT hint (#112)', async () => {
+    mockSpawn.mockImplementation(() => {
+      const proc = new EventEmitter()
+      ;(proc as any).stdout = new EventEmitter()
+      ;(proc as any).stderr = new EventEmitter()
+      ;(proc as any).pid = 12345
+      setTimeout(() => {
+        const err = new Error('spawn EACCES permission denied') as NodeJS.ErrnoException
+        err.code = 'EACCES'
+        proc.emit('error', err)
+      }, 0)
+      return proc as any
+    })
+    const result = await BashTool.call({ command: 'pwd' } as any, makeContext()) as any
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('Error executing command')
+    expect(result.content).toContain('EACCES')
+    expect(result.content).not.toContain('concurrently')
   })
 })
 
