@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'events'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import type { ToolContext } from '../types.js'
 import { createEmptyServices } from './services.js'
 
@@ -583,6 +586,60 @@ describe('BashTool.call timeout semantics (issue #27)', () => {
     expect(result.content).toContain('spawn ENOENT')
     // advancing far past the default timeout must not kill anything or double-resolve
     await vi.advanceTimersByTimeAsync(200_000)
+  })
+})
+
+// #112: a nonexistent workdir makes Node's spawn fail as `spawn <shell>
+// ENOENT` — naming the BINARY, not the missing directory — and the error
+// handler resolved a bare string, which defineTool wraps as is_error: false
+// (a silent success). Both must be fixed: actionable pre-validation and
+// is_error on spawn failures.
+describe('BashTool.call working directory validation (#112)', () => {
+  afterEach(() => {
+    restorePlatform()
+    vi.clearAllMocks()
+  })
+
+  it('rejects a nonexistent workdir with an actionable is_error result before spawn', async () => {
+    const missing = path.join(os.tmpdir(), `bash-missing-${process.pid}-${Date.now()}`)
+    const result = await BashTool.call({ command: 'pwd', workdir: missing } as any, makeContext()) as any
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain(missing)
+    expect(result.content).toContain('does not exist')
+    expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  it('rejects a workdir that is a file, not a directory', async () => {
+    const filePath = path.join(os.tmpdir(), `bash-file-${process.pid}-${Date.now()}`)
+    fs.writeFileSync(filePath, 'x')
+    try {
+      const result = await BashTool.call({ command: 'pwd', workdir: filePath } as any, makeContext()) as any
+      expect(result.is_error).toBe(true)
+      expect(result.content).toContain(filePath)
+      expect(result.content).toContain('does not exist')
+    } finally {
+      fs.rmSync(filePath, { force: true })
+    }
+  })
+
+  it('spawn failures resolve with is_error: true instead of a silent success (#112)', async () => {
+    setPlatform('linux')
+    mockSpawn.mockImplementation(() => {
+      const proc = new EventEmitter()
+      ;(proc as any).stdout = new EventEmitter()
+      ;(proc as any).stderr = new EventEmitter()
+      ;(proc as any).pid = 12345
+      setTimeout(() => {
+        const err = new Error('spawn zsh ENOENT') as NodeJS.ErrnoException
+        err.code = 'ENOENT'
+        proc.emit('error', err)
+      }, 0)
+      return proc as any
+    })
+    const result = await BashTool.call({ command: 'pwd' } as any, makeContext()) as any
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('Error executing command')
+    expect(result.content).toContain('spawn zsh ENOENT')
   })
 })
 
