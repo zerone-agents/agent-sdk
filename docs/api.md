@@ -53,6 +53,17 @@ persisted session. Use `compactMessagesStream()` or `compactMessages()` when a
 host owns custom storage, then persist the returned `messages` and `state`
 together. Both interfaces preserve recent queries verbatim by default.
 
+**Compaction failure visibility (#109)** — on provider failure every surface
+keeps the graceful-degradation contract (no throw) but now carries the reason:
+the terminal `compact` `end` event and `CompactMessagesResult` /
+`CompactSessionResult` include a sanitized `error` string (`err.message`, or
+`String(err)` for non-Error throws — trimmed, capped at 500 chars). `error` is
+undefined on success, nothing-to-compact, and cancellation, which makes it the
+signal that distinguishes a failed compaction from an identity return. An
+empty sanitized message falls back to the fixed constant
+`'compaction provider call failed'`, so a failed compaction always carries a
+non-empty error.
+
 **Compaction options** — two independent knobs control how much of the recent
 tail survives. `toolProtectedQueries` is new across all four surfaces;
 `QueryEngine.compactStream`/`compact` and `Agent.compactStream`/`compact` gain

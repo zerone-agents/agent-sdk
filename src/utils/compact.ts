@@ -15,6 +15,7 @@ import {
   getAutoCompactThreshold,
 } from './tokens.js'
 import { isUserQuery } from './session-queries.js'
+import { normalizeCaughtError } from './diagnostics.js'
 
 export const PRUNE_PROTECTED_QUERIES = 4
 
@@ -159,6 +160,23 @@ export interface CompactResult {
   compactedMessages: NormalizedMessageParam[]
   summary: string
   state: AutoCompactState
+  /** Sanitized provider error when compaction failed; see SDKCompactMessage.error. */
+  error?: string
+}
+
+/** #109: cap for the sanitized compaction error string. */
+const COMPACT_ERROR_MAX_LENGTH = 500
+
+/**
+ * #109: sanitize a caught value into a bounded, host-displayable error
+ * string. Reuses normalizeCaughtError (Error → message; anything else →
+ * String()), then trims and caps so a hostile or oversized provider response
+ * cannot flood the event stream. An empty result falls back to a stable
+ * constant so a failed compaction ALWAYS carries a non-empty error.
+ */
+function sanitizeCompactionError(err: unknown): string {
+  const message = normalizeCaughtError(err).message.trim().slice(0, COMPACT_ERROR_MAX_LENGTH)
+  return message.length > 0 ? message : 'compaction provider call failed'
 }
 
 /**
@@ -237,8 +255,12 @@ export async function* compactConversationStream(
         lastOutputTokens: 0,
       },
     }
-  } catch (err: any) {
-    yield { type: 'compact', phase: 'end', summary: '' }
+  } catch (err) {
+    // #109: graceful-degradation contract unchanged (no throw) — but the
+    // sanitized reason now rides the terminal end event and the result so
+    // hosts can surface actionable errors (rate limit, reset time, ...).
+    const error = sanitizeCompactionError(err)
+    yield { type: 'compact', phase: 'end', summary: '', error }
     return {
       compactedMessages: messages as NormalizedMessageParam[],
       summary: '',
@@ -246,6 +268,7 @@ export async function* compactConversationStream(
         ...state,
         consecutiveFailures: state.consecutiveFailures + 1,
       },
+      error,
     }
   }
 }
@@ -283,7 +306,7 @@ export async function compactConversation(
         lastOutputTokens: 0,
       },
     }
-  } catch (err: any) {
+  } catch (err) {
     return {
       compactedMessages: messages,
       summary: '',
@@ -291,6 +314,7 @@ export async function compactConversation(
         ...state,
         consecutiveFailures: state.consecutiveFailures + 1,
       },
+      error: sanitizeCompactionError(err),
     }
   }
 }
@@ -322,6 +346,8 @@ export async function* compactConversationWithProtectedTail(
   messages: NormalizedMessageParam[]
   state: AutoCompactState
   summary: string
+  /** #109: sanitized failure reason propagated from the primitive. */
+  error?: string
 }> {
   // Nothing meaningful to compact.
   if (messages.length < 2) {
@@ -351,7 +377,9 @@ export async function* compactConversationWithProtectedTail(
   // Failure / empty summary → return the caller's array UNCHANGED (identity,
   // never re-assembled, never pruned) — compaction failure contract.
   if (result.summary.length === 0) {
-    return { messages, state: result.state, summary: '' }
+    // #109: propagate the sanitized failure reason; undefined when the empty
+    // summary came from a successful-but-empty provider response.
+    return { messages, state: result.state, summary: '', error: result.error }
   }
 
   // Success → prune ONLY the recent window [...tail, lastMsg] (the leading

@@ -32,6 +32,8 @@ export interface CompactMessagesResult {
   compacted: boolean
   messages: NormalizedMessageParam[]
   state: AutoCompactState
+  /** Sanitized provider error when compaction failed; see SDKCompactMessage.error. */
+  error?: string
 }
 
 /**
@@ -59,6 +61,8 @@ export async function* compactMessagesStream(
       compacted: false,
       messages: opts.messages,
       state: result.state,
+      // #109: sanitized failure reason from the underlying primitive.
+      error: result.error,
     }
   }
 

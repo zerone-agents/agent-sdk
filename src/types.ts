@@ -206,6 +206,12 @@ export interface SDKCompactMessage {
   phase: 'start' | 'progress' | 'end'
   text?: string
   summary?: string
+  /**
+   * Sanitized provider error when compaction failed (#109). Present ONLY on
+   * the terminal `end` event of a failed compaction; undefined on success,
+   * nothing-to-compact, and cancellation.
+   */
+  error?: string
 }
 
 /** Status update during long operations. */

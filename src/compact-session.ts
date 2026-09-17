@@ -60,6 +60,8 @@ export interface CompactSessionResult {
   messages: NormalizedMessageParam[]
   /** Token counters that were persisted alongside the messages. */
   state: AutoCompactState
+  /** Sanitized provider error when compaction failed; see SDKCompactMessage.error. */
+  error?: string
 }
 
 /**
@@ -120,6 +122,8 @@ export async function* compactSessionStream(
       compacted: false,
       messages: session.messages,
       state,
+      // #109: sanitized failure reason, propagated unchanged.
+      error: result.error,
     }
   }
 

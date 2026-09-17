@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import {
+  compactConversation,
+  compactConversationStream,
   compactConversationWithProtectedTail,
   createAutoCompactState,
   PRUNE_PROTECTED_QUERIES,
   pruneMessages,
   PRUNE_THRESHOLD_CHARS,
   TOOL_PROTECTED_QUERIES,
+  type CompactResult,
 } from './compact.js'
-import type { LLMProvider, CreateMessageResponse } from '../providers/types.js'
+import type { LLMProvider, CreateMessageResponse, StreamChunk } from '../providers/types.js'
 import type { NormalizedMessageParam } from '../providers/types.js'
+import type { SDKCompactMessage } from '../types.js'
 
 function userMsg(text: string): NormalizedMessageParam {
   return { role: 'user', content: text }
@@ -508,5 +512,95 @@ describe('fractional protectedQueries guard (#92)', () => {
     pruneMessages(msgs, 2.0)
     expect(firstToolResultContent(msgs, 2)).toBe(BIG)   // last-2 queries protected
     expect(firstToolResultContent(msgs, 5)).toBe(BIG)
+  })
+})
+
+describe('compaction failure error propagation (#109)', () => {
+  /** Provider that fails on BOTH code paths with the same message. */
+  function failingProvider(message: string): LLMProvider {
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error(message) },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        throw new Error(message)
+      },
+    }
+  }
+
+  /** Drain a stream generator while recording every emitted event. */
+  async function drainRecording(
+    gen: AsyncGenerator<SDKCompactMessage, CompactResult>,
+  ): Promise<{ events: SDKCompactMessage[]; result: CompactResult }> {
+    const events: SDKCompactMessage[] = []
+    while (true) {
+      const next = await gen.next()
+      if (next.done) return { events, result: next.value }
+      events.push(next.value)
+    }
+  }
+
+  it('streaming failure surfaces the sanitized error on the terminal end event and result', async () => {
+    const { events, result } = await drainRecording(compactConversationStream(
+      failingProvider('OpenAI API error: 429 Too Many Requests: rate limited'),
+      'm', [userMsg('a'), assistantMsg('b')], createAutoCompactState(),
+    ))
+    expect(result.summary).toBe('')
+    expect(result.error).toContain('429')
+    const end = events.at(-1)
+    expect(end?.type).toBe('compact')
+    expect(end?.phase).toBe('end')
+    expect(end?.error).toBe(result.error)
+  })
+
+  it('non-streaming failure attaches the sanitized error to the result', async () => {
+    const result = await compactConversation(
+      failingProvider('summary provider down'),
+      'm', [userMsg('a'), assistantMsg('b')], createAutoCompactState(),
+    )
+    expect(result.summary).toBe('')
+    expect(result.error).toContain('summary provider down')
+  })
+
+  it('non-Error throws fall back to String(err)', async () => {
+    const throwing: LLMProvider = {
+      apiType: 'anthropic-messages',
+      // Deliberately throws a bare string — the sanitize path must stringify it.
+      async createMessage(): Promise<never> { throw 'string boom' },
+    }
+    const result = await compactConversation(
+      throwing, 'm', [userMsg('a'), assistantMsg('b')], createAutoCompactState(),
+    )
+    expect(result.error).toBe('string boom')
+  })
+
+  it('caps the error string at a safe length', async () => {
+    const result = await compactConversation(
+      failingProvider('E'.repeat(600)),
+      'm', [userMsg('a'), assistantMsg('b')], createAutoCompactState(),
+    )
+    expect(result.error).toBeDefined()
+    expect(result.error!.length).toBeGreaterThan(0)
+    expect(result.error!.length).toBeLessThanOrEqual(500)
+  })
+
+  it('success leaves error undefined on both the end event and the result', async () => {
+    const ok: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'S' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+    const { events, result } = await drainRecording(compactConversationStream(
+      ok, 'm', [userMsg('a'), assistantMsg('b')], createAutoCompactState(),
+    ))
+    expect(result.summary).toBe('S')
+    expect(result.error).toBeUndefined()
+    expect(events.at(-1)?.error).toBeUndefined()
+    const nonStream = await compactConversation(
+      summaryProvider(), 'm', [userMsg('a'), assistantMsg('b')], createAutoCompactState(),
+    )
+    expect(nonStream.error).toBeUndefined()
   })
 })
