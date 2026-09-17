@@ -459,3 +459,42 @@ describe('compactSessionStream (issue #46)', () => {
     expect(cleared2).toHaveLength(0)
   })
 })
+
+describe('compactSessionStream error propagation (#109)', () => {
+  /** Provider failing on BOTH code paths with the same message. */
+  function makeFailingStreamProvider(message: string): LLMProvider {
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error(message) },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        throw new Error(message)
+      },
+    }
+  }
+
+  it('provider failure surfaces the sanitized error and leaves the session unchanged', async () => {
+    const sid = freshSessionId('err-prop')
+    const messages = buildConversation(8)
+    await saveSession(sid, messages, { cwd: '/tmp/project', model: 'test-model' })
+
+    const result = await drainSession(compactSessionStream({
+      sessionId: sid,
+      provider: makeFailingStreamProvider('provider exploded: 429'),
+    }))
+
+    expect(result.compacted).toBe(false)
+    expect(result.error).toContain('provider exploded: 429')
+
+    const persisted = await loadSession(sid)
+    expect(persisted).not.toBeNull()
+    expect(JSON.stringify(persisted!.messages)).toBe(JSON.stringify(messages))
+  })
+
+  it('successful compaction leaves error undefined', async () => {
+    const sid = freshSessionId('err-prop-ok')
+    await saveSession(sid, buildConversation(8), { cwd: '/tmp/project', model: 'test-model' })
+    const result = await compactSession({ sessionId: sid, provider: makeNonStreamingProvider() })
+    expect(result.compacted).toBe(true)
+    expect(result.error).toBeUndefined()
+  })
+})

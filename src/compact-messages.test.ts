@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import * as sdk from './index.js'
-import { compactMessages, compactMessagesStream } from './compact-messages.js'
+import { compactMessages, compactMessagesStream, type CompactMessagesResult } from './compact-messages.js'
 import { createAutoCompactState } from './utils/compact.js'
 import type { LLMProvider, NormalizedMessageParam, StreamChunk } from './providers/types.js'
+import type { SDKCompactMessage } from './types.js'
 
 function buildConversation(queries: number): NormalizedMessageParam[] {
   const messages: NormalizedMessageParam[] = []
@@ -93,5 +94,65 @@ describe('compactMessages', () => {
     expect(exports.compactConversation).toBeUndefined()
     expect(exports.compactConversationStream).toBeUndefined()
     expect(exports.compactConversationWithProtectedTail).toBeUndefined()
+  })
+})
+
+describe('compact error propagation (#109)', () => {
+  /** Provider that fails on BOTH code paths with the same message. */
+  function failingProvider(message: string): LLMProvider {
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error(message) },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        throw new Error(message)
+      },
+    }
+  }
+
+  it('provider failure propagates the sanitized error through the stream wrapper', async () => {
+    const events: SDKCompactMessage[] = []
+    const gen = compactMessagesStream({
+      provider: failingProvider('OpenAI API error: 429'),
+      model: 'test-model',
+      messages: buildConversation(5),
+      state: createAutoCompactState(),
+      protectedQueries: 2,
+    })
+    let result: CompactMessagesResult | undefined
+    while (true) {
+      const next = await gen.next()
+      if (next.done) { result = next.value; break }
+      events.push(next.value)
+    }
+    expect(result!.compacted).toBe(false)
+    expect(result!.error).toContain('429')
+    const end = events.at(-1)
+    expect(end?.type).toBe('compact')
+    expect(end?.phase).toBe('end')
+    expect(end?.error).toContain('429')
+  })
+
+  it('nothing-to-compact (identity) leaves error undefined', async () => {
+    const result = await compactMessages({
+      provider: provider(),
+      model: 'test-model',
+      messages: buildConversation(3),
+      state: createAutoCompactState(),
+      protectedQueries: 10, // ≥ all queries → cutoff 0 → identity return
+    })
+    expect(result.compacted).toBe(false)
+    expect(result.error).toBeUndefined()
+  })
+
+  it('success leaves error undefined', async () => {
+    const result = await compactMessages({
+      provider: provider(),
+      model: 'test-model',
+      messages: buildConversation(5),
+      state: createAutoCompactState(),
+      protectedQueries: 2,
+    })
+    expect(result.compacted).toBe(true)
+    expect(result.error).toBeUndefined()
   })
 })
