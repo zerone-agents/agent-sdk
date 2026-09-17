@@ -59,7 +59,10 @@ the terminal `compact` `end` event and `CompactMessagesResult` /
 `CompactSessionResult` include a sanitized `error` string (`err.message`, or
 `String(err)` for non-Error throws — trimmed, capped at 500 chars). `error` is
 undefined on success, nothing-to-compact, and cancellation, which makes it the
-signal that distinguishes a failed compaction from an identity return.
+signal that distinguishes a failed compaction from an identity return. An
+empty sanitized message falls back to the fixed constant
+`'compaction provider call failed'`, so a failed compaction always carries a
+non-empty error.
 
 **Compaction options** — two independent knobs control how much of the recent
 tail survives. `toolProtectedQueries` is new across all four surfaces;
