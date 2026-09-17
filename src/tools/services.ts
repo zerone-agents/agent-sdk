@@ -49,8 +49,11 @@ export type AskUserHandler = (
 export interface FindToolRegistry {
   deferredTools: ToolDefinition[]
   /**
-   * Names of tools activated via FindTool in the current query.
-   * Reset by the engine at the start of each new query.
+   * Names of tools activated via FindTool. Session-scoped: the engine
+   * deliberately does NOT reset this between queries (engine.ts keeps
+   * activations for the Agent's lifetime — registry identity per Agent is
+   * preserved across queries, see Agent.baseToolServices). Hosts must not
+   * clear it themselves or session-scoped activations break silently.
    * Used by engine.ts to merge activated deferred schemas into the per-turn tools array.
    */
   activatedTools: Set<string>
