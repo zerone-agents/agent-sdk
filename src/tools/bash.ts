@@ -3,7 +3,7 @@
  * Supports macOS (zsh > bash), Linux (bash), Windows (PowerShell > Git Bash > cmd)
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import crossSpawn from 'cross-spawn'
@@ -246,6 +246,26 @@ export const BashTool = defineTool({
     const timeoutSeconds = timeoutMs / 1000
     const cwd = input.workdir || context.cwd
 
+    // #112: validate the effective working directory up front. Node reports
+    // a missing cwd as `spawn <shell> ENOENT` — naming the BINARY, not the
+    // directory — which reads as "shell missing" and misleads callers (e.g.
+    // a removed git worktree used as workdir). undefined falls through:
+    // spawn then inherits process.cwd(), preserving the old behavior.
+    if (cwd !== undefined) {
+      let isDirectory = false
+      try {
+        isDirectory = statSync(cwd).isDirectory()
+      } catch {
+        isDirectory = false
+      }
+      if (!isDirectory) {
+        return {
+          data: `Error: working directory does not exist or is not a directory: ${cwd}`,
+          is_error: true,
+        }
+      }
+    }
+
     // Resolve which shell to use
     let activeShell: ShellConfig
     if (userShell) {
@@ -371,7 +391,17 @@ export const BashTool = defineTool({
 
       proc.on('error', (err: Error) => {
         clearTimeout(timeoutTimer)
-        resolve(`Error executing command: ${err.message}`)
+        // #112: spawn failures must carry is_error — a bare string resolves
+        // through defineTool as a silent success. After cwd validation an
+        // ENOENT means either the directory was removed concurrently or the
+        // shell binary itself is missing — name both, do not guess.
+        const hint = (err as NodeJS.ErrnoException).code === 'ENOENT'
+          ? ` (working directory removed concurrently, or shell binary missing: ${activeShell.shell})`
+          : ''
+        resolve({
+          data: `Error executing command: ${err.message}${hint}`,
+          is_error: true,
+        })
       })
     })
   },
