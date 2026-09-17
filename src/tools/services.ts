@@ -50,10 +50,11 @@ export interface FindToolRegistry {
   deferredTools: ToolDefinition[]
   /**
    * Names of tools activated via FindTool. Session-scoped: the engine
-   * deliberately does NOT reset this between queries (engine.ts keeps
-   * activations for the Agent's lifetime — registry identity per Agent is
-   * preserved across queries, see Agent.baseToolServices). Hosts must not
-   * clear it themselves or session-scoped activations break silently.
+   * deliberately does NOT reset this between queries — the registry
+   * survives for the Agent's lifetime through the default path (hosts that
+   * pass an explicit toolServices control its lifetime themselves). Hosts
+   * must not clear it themselves or session-scoped activations break
+   * silently.
    * Used by engine.ts to merge activated deferred schemas into the per-turn tools array.
    */
   activatedTools: Set<string>
