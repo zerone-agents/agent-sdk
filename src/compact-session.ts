@@ -143,6 +143,9 @@ export async function* compactSessionStream(
     summary: result.summary,
     lastInputTokens: result.state.lastInputTokens,
     lastOutputTokens: result.state.lastOutputTokens,
+    // issue #115: metadata is rebuilt field-by-field here — without this
+    // forwarding the activation set is silently dropped after compaction.
+    activatedTools: session.metadata.activatedTools,
   })
 
   return {
