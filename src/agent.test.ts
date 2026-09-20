@@ -6,7 +6,7 @@ import { tool } from './tool-helper.js'
 import type { AgentOptions, McpServerConfig, AgentInput, ContentBlockParam, SDKMessage } from './types.js'
 import type { LLMProvider, CreateMessageParams, CreateMessageResponse, StreamChunk, NormalizedMessageParam } from './providers/types.js'
 import type { HookInput } from './hooks.js'
-import { loadSession, deleteSession, saveSession } from './session.js'
+import { loadSession, deleteSession, saveSession, forkSession } from './session.js'
 import { PRUNE_THRESHOLD_CHARS } from './utils/compact.js'
 import { createMemoryService } from './memory/service.js'
 import { InMemoryMemoryStorage } from './memory/in-memory-storage.js'
@@ -1178,7 +1178,6 @@ function capturingToolsProvider(captured: CapturedRequest[]): LLMProvider {
 function memoryAgentOptions(overrides: {
   resume?: string
   toolServices?: ToolServices
-  disallowedTools?: string[]
 } & Partial<AgentOptions> = {}): { opts: AgentOptions; services: MemoryService[] } {
   const memoryService = createMemoryService({ storage: new InMemoryMemoryStorage() })
   const opts = makeBaseOptions({
@@ -1385,6 +1384,71 @@ describe('activation persistence at save sites (issue #115)', () => {
         assertFullToolEntry(capturedB[0].tools.find((t: any) => t.name === 'MemorySearch'), MemorySearchTool, MEMORY_SEARCH_TXT)
       } finally {
         await Promise.all(b.services.map(s => s.stop()))
+      }
+    })
+  })
+})
+
+describe('resume activation variants (issue #115)', () => {
+  it('disallowedTools drop restored activations from the request (lazy revalidation)', async () => {
+    await withTempHome(async () => {
+      await saveSession('perm-id', [], { cwd: process.cwd(), model: 'm', activatedTools: ['Memory', 'MemorySearch'] })
+      const captured: CapturedRequest[] = []
+      // disallowedTools lives on AgentCapabilities (types.ts:591), reached via
+      // the agent definition — a top-level AgentOptions field would be ignored.
+      const { opts, services } = memoryAgentOptions({
+        resume: 'perm-id',
+        agent: { description: 'Main agent', prompt: '', capabilities: { disallowedTools: ['Memory'] } },
+      })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        const names = captured[0].tools.map((t: any) => t.name)
+        expect(names).not.toContain('Memory')       // disallowed: stays unavailable
+        expect(names).toContain('MemorySearch')     // unaffected sibling restored
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+    })
+  })
+
+  it('forkSession carries activations; forked session resumes with schemas', async () => {
+    await withTempHome(async () => {
+      await saveSession('fork-src', [], { cwd: process.cwd(), model: 'm', activatedTools: ['Memory'] })
+      const forkId = await forkSession('fork-src', 'fork-dst')
+      expect(forkId).toBe('fork-dst')
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: forkId! })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        expect(captured[0].tools.map((t: any) => t.name)).toContain('Memory')
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+    })
+  })
+
+  it('constructor-level toolServices: restore flows through the host registry', async () => {
+    await withTempHome(async () => {
+      const hostServices = new DefaultToolServices()
+      await saveSession('host-id', [], { cwd: process.cwd(), model: 'm', activatedTools: ['MemorySearch'] })
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: 'host-id', toolServices: hostServices })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        expect(captured[0].tools.map((t: any) => t.name)).toContain('MemorySearch')
+        // Constructor-provided registry IS the session set (effectiveBaseServices)
+        expect(hostServices.findTool.activatedTools.has('MemorySearch')).toBe(true)
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
       }
     })
   })
