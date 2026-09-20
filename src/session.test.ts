@@ -127,3 +127,27 @@ describe('session timestamps (issue #54)', () => {
     expect('timestamp' in reloaded!.messages[0]).toBe(false)
   })
 })
+
+describe('activatedTools metadata (issue #115)', () => {
+  const sid = `act-tools-${crypto.randomUUID()}`
+  const sidNoField = `act-tools-none-${crypto.randomUUID()}`
+
+  afterAll(async () => {
+    await deleteSession(sid)
+    await deleteSession(sidNoField)
+  })
+
+  it('round-trips activatedTools in metadata; absent field stays absent', async () => {
+    await saveSession(sid, [{ role: 'user', content: 'hi', id: 'u1' }], {
+      cwd: process.cwd(),
+      model: 'test',
+      activatedTools: ['Memory', 'MemorySearch'],
+    })
+    const data = await loadSession(sid)
+    expect(data!.metadata.activatedTools).toEqual(['Memory', 'MemorySearch'])
+
+    // Sessions saved without the field (older SDK versions) keep the old shape
+    await saveSession(sidNoField, [], { cwd: process.cwd(), model: 'test' })
+    expect((await loadSession(sidNoField))!.metadata.activatedTools).toBeUndefined()
+  })
+})
