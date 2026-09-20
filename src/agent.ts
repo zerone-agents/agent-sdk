@@ -563,6 +563,16 @@ export class Agent {
         if (sessionData.metadata.lastOutputTokens) {
           this.lastOutputTokens = sessionData.metadata.lastOutputTokens
         }
+        // issue #115: restore deferred activations into the session-owned
+        // registry (unfiltered — availability is re-derived per turn by the
+        // engine's activatedTools ∩ deferredTools intersection).
+        const activated = sessionData.metadata.activatedTools
+        if (Array.isArray(activated)) {
+          const registry = this.effectiveBaseServices().findTool
+          for (const name of activated) {
+            if (typeof name === 'string') registry.activatedTools.add(name)
+          }
+        }
       }
     }
 

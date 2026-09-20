@@ -6,7 +6,7 @@ import { tool } from './tool-helper.js'
 import type { AgentOptions, McpServerConfig, AgentInput, ContentBlockParam, SDKMessage } from './types.js'
 import type { LLMProvider, CreateMessageParams, CreateMessageResponse, StreamChunk, NormalizedMessageParam } from './providers/types.js'
 import type { HookInput } from './hooks.js'
-import { loadSession, deleteSession } from './session.js'
+import { loadSession, deleteSession, saveSession } from './session.js'
 import { PRUNE_THRESHOLD_CHARS } from './utils/compact.js'
 import { createMemoryService } from './memory/service.js'
 import { InMemoryMemoryStorage } from './memory/in-memory-storage.js'
@@ -14,8 +14,11 @@ import type { MemoryService } from './memory/service.js'
 import { DefaultToolServices } from './tools/default-services.js'
 import type { ToolServices } from './tools/services.js'
 import { MemoryTool, MemorySearchTool } from './tools/memory.js'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 // Mocked pool — only the acquireMCPConnection symbol is replaced; the rest
 // of the module surface (types, internal helpers) stays intact.
@@ -1250,5 +1253,97 @@ describe('session-owned findTool registry across services overrides (issue #115)
     } finally {
       await Promise.all(services.map(s => s.stop()))
     }
+  })
+})
+
+/** HOME isolation for session storage ($HOME/.agents/sessions) — pattern from
+ * src/utils/agents-md.test.ts:170-188. */
+async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
+  const home = mkdtempSync(join(tmpdir(), 'agent115-'))
+  const prev = process.env.HOME
+  process.env.HOME = home
+  try {
+    return await fn(home)
+  } finally {
+    process.env.HOME = prev
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+describe('resume restores deferred activations (issue #115)', () => {
+  it('restored activations appear in the first resumed provider request (anchor ②)', async () => {
+    await withTempHome(async () => {
+      await saveSession('resume-id', [{ role: 'user', content: 'hi' } as NormalizedMessageParam],
+        { cwd: process.cwd(), model: 'm', activatedTools: ['Memory', 'MemorySearch'] })
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: 'resume-id' })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('continue')
+        const names = captured[0].tools.map((t: any) => t.name)   // FIRST request
+        expect(names).toContain('Memory')
+        expect(names).toContain('MemorySearch')
+        assertFullToolEntry(captured[0].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+    })
+  })
+
+  it('old session without the field: no crash, no activations', async () => {
+    await withTempHome(async () => {
+      await saveSession('old-id', [], { cwd: process.cwd(), model: 'm' })
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: 'old-id' })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        expect(captured[0].tools.map((t: any) => t.name)).not.toContain('Memory')
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+    })
+  })
+
+  it('corrupted field handled defensively (non-array ignored; non-string elements skipped)', async () => {
+    await withTempHome(async (home) => {
+      const writeRawSession = async (id: string, activatedTools: unknown) => {
+        const dir = join(home, '.agents', 'sessions', id)
+        await mkdir(dir, { recursive: true })
+        await writeFile(join(dir, 'transcript.json'), JSON.stringify({
+          metadata: { id, cwd: '/', model: 'm', createdAt: 'x', updatedAt: 'x', messageCount: 0, activatedTools },
+          messages: [],
+        }))
+      }
+
+      await writeRawSession('bad-id', [1, 'MemorySearch', null])
+      const { opts, services } = memoryAgentOptions({ resume: 'bad-id' })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider([])
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        const set = (agent as any).effectiveBaseServices().findTool.activatedTools
+        expect([...set]).toEqual(['MemorySearch'])   // only the valid string survived
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+
+      await writeRawSession('bad-id2', 'nope')   // non-array: ignored entirely
+      const b = memoryAgentOptions({ resume: 'bad-id2' })
+      const agent2 = new Agent(b.opts)
+      ;(agent2 as any).provider = capturingToolsProvider([])
+      await Promise.all(b.services.map(s => s.start()))
+      try {
+        await agent2.prompt('hi')
+        expect((agent2 as any).effectiveBaseServices().findTool.activatedTools.size).toBe(0)
+      } finally {
+        await Promise.all(b.services.map(s => s.stop()))
+      }
+    })
   })
 })
