@@ -1482,3 +1482,101 @@ describe('override services activation round-trip (issue #115)', () => {
     })
   })
 })
+
+describe('real FindTool execution chain regressions (PR #116 review)', () => {
+  /** Non-streaming scripted provider: turn 1 emits a FindTool tool_use
+   * (select:<names>) so the ENGINE executes the real FindTool call; later
+   * turns return text. Captures the tools array of every request.
+   * Pattern: lazyActivationSetup above. */
+  function findToolChainProvider(captured: CapturedRequest[], select: string): LLMProvider {
+    let call = 0
+    return {
+      apiType: 'anthropic-messages',
+      createMessage: vi.fn(async (params: any) => {
+        captured.push({ tools: params.tools ?? [], messages: [] })
+        call++
+        if (call === 1) {
+          return {
+            content: [{ type: 'tool_use', id: 'tu_ft', name: 'FindTool', input: { query: select } }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+            stop_reason: 'tool_use',
+          } as any
+        }
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: 'end_turn',
+        } as any
+      }),
+      createMessageStream: async function* () {},
+    }
+  }
+
+  it('activation via REAL FindTool execution: full schemas next turn and after resume', async () => {
+    await withTempHome(async () => {
+      const capturedA: CapturedRequest[] = []
+      const memoryServiceA = createMemoryService({ storage: new InMemoryMemoryStorage() })
+      const agentA = new Agent(makeBaseOptions({ memoryService: memoryServiceA, persistSession: true }))
+      ;(agentA as any).provider = findToolChainProvider(capturedA, 'select:Memory,MemorySearch')
+      await memoryServiceA.start()
+      let sid = ''
+      try {
+        await agentA.prompt('find and use memory tools')
+        sid = (agentA as any).sid as string
+        // Real chain anchor ①: the ENGINE executed FindTool (find-tool.ts:136
+        // added to the registry); the NEXT request carries full schemas.
+        expect(capturedA[0].tools.map((t: any) => t.name)).not.toContain('Memory')
+        const names1 = capturedA[1].tools.map((t: any) => t.name)
+        expect(names1).toContain('Memory')
+        expect(names1).toContain('MemorySearch')
+        assertFullToolEntry(capturedA[1].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+        assertFullToolEntry(capturedA[1].tools.find((t: any) => t.name === 'MemorySearch'), MemorySearchTool, MEMORY_SEARCH_TXT)
+      } finally {
+        await memoryServiceA.stop()
+      }
+
+      // Real chain anchor ②: activations earned via real FindTool survive a
+      // new-Agent resume (save → load → restore → first request).
+      const capturedB: CapturedRequest[] = []
+      const memoryServiceB = createMemoryService({ storage: new InMemoryMemoryStorage() })
+      const agentB = new Agent(makeBaseOptions({ memoryService: memoryServiceB, resume: sid, includePartialMessages: true }))
+      ;(agentB as any).provider = capturingToolsProvider(capturedB)
+      await memoryServiceB.start()
+      try {
+        await agentB.prompt('continue')
+        const names = capturedB[0].tools.map((t: any) => t.name)
+        expect(names).toContain('Memory')
+        expect(names).toContain('MemorySearch')
+        assertFullToolEntry(capturedB[0].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+      } finally {
+        await memoryServiceB.stop()
+      }
+    })
+  })
+
+  it('host protection enters the services.ts:142 as-is branch (no cron/memory override)', async () => {
+    const captured: CapturedRequest[] = []
+    const guardedTool = {
+      name: 'guarded_tool',
+      description: 'deferred test tool for the as-is branch',
+      deferred: true,
+      inputSchema: { type: 'object' as const, properties: {} },
+      call: async () => ({ type: 'tool_result' as const, tool_use_id: '', content: 'hi' }),
+    }
+    const hostServices = new DefaultToolServices()
+    const hostRegistryBefore = hostServices.findTool
+    // NO memoryService / cronService on this agent → resolveToolServices takes
+    // the as-is branch (services.ts:142) and returns the HOST object itself —
+    // the exact path where a non-copying wiring would corrupt the host.
+    const agent = new Agent(makeBaseOptions({ customTools: [guardedTool as any] }))
+    ;(agent as any).provider = findToolChainProvider(captured, 'select:guarded_tool')
+    await agent.prompt('go', { toolServices: hostServices } as any)
+    // Real FindTool activation DURING an override query → wired session registry
+    expect(captured[0].tools.map((t: any) => t.name)).not.toContain('guarded_tool')
+    expect(captured[1].tools.map((t: any) => t.name)).toContain('guarded_tool')
+    expect((agent as any).effectiveBaseServices().findTool.activatedTools.has('guarded_tool')).toBe(true)
+    // Host object survives the as-is branch untouched: same registry identity, still empty
+    expect(hostServices.findTool).toBe(hostRegistryBefore)
+    expect(hostServices.findTool.activatedTools.size).toBe(0)
+  })
+})
