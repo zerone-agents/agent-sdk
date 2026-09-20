@@ -1453,3 +1453,32 @@ describe('resume activation variants (issue #115)', () => {
     })
   })
 })
+
+describe('override services activation round-trip (issue #115)', () => {
+  it('restored activations drive override queries; override-earned activations persist', async () => {
+    await withTempHome(async () => {
+      await saveSession('ovr-id', [], { cwd: process.cwd(), model: 'm', activatedTools: ['Memory'] })
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: 'ovr-id', persistSession: true })
+      const agentA = new Agent(opts)
+      ;(agentA as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      let sid = ''
+      try {
+        // (a) restored activation effective under an override query — the
+        // override's combined services carry the session registry (spec §7.2)
+        await agentA.prompt('go', { toolServices: new DefaultToolServices() } as any)
+        expect(captured[0].tools.map((t: any) => t.name)).toContain('Memory')
+        // (b) activation EARNED during override queries lands in the session
+        // set (spec §7.2: save reads the base registry)
+        sid = (agentA as any).sid as string
+        activateInRegistry(agentA, 'MemorySearch')
+        await agentA.prompt('more', { toolServices: new DefaultToolServices() } as any)
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+      const data = await loadSession(sid)
+      expect(data?.metadata.activatedTools).toEqual(['Memory', 'MemorySearch'])
+    })
+  })
+})
