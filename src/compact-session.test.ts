@@ -532,4 +532,25 @@ describe('compactSessionStream error propagation (#109)', () => {
     expect(result.compacted).toBe(true)
     expect(result.error).toBeUndefined()
   })
+
+  it('persists activatedTools through compaction (issue #115)', async () => {
+    const sid = freshSessionId('act-tools')
+    await saveSession(sid, buildConversation(10), {
+      cwd: '/tmp/project',
+      model: 'test-model',
+      activatedTools: ['Memory', 'MemorySearch'],
+    })
+
+    const result = await compactSession({
+      sessionId: sid,
+      provider: makeNonStreamingProvider(),
+    })
+    expect(result.compacted).toBe(true)
+
+    // Compaction rebuilds metadata field-by-field; the activation set must be
+    // forwarded explicitly or it is silently dropped (spec §7.1).
+    const persisted = await loadSession(sid)
+    expect(persisted).not.toBeNull()
+    expect(persisted!.metadata.activatedTools).toEqual(['Memory', 'MemorySearch'])
+  })
 })

@@ -33,6 +33,9 @@ export interface SessionMetadata {
   summary?: string
   lastInputTokens?: number
   lastOutputTokens?: number
+  /** FindTool-activated deferred tool names (issue #115). Optional: sessions
+   * saved by older SDK versions have no such field. */
+  activatedTools?: string[]
 }
 
 /**
@@ -83,6 +86,7 @@ export async function saveSession(
       summary: metadata.summary,
       lastInputTokens: metadata.lastInputTokens,
       lastOutputTokens: metadata.lastOutputTokens,
+      activatedTools: metadata.activatedTools,
     },
     messages: messagesWithIds,
   }

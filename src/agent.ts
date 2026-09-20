@@ -209,6 +209,19 @@ export class Agent {
    * between queries.
    */
   private baseToolServices: ToolServices | null = null
+
+  /** Session-owned services (issue #115): get-or-init. `baseToolServices` stays
+   * null until first use, so setup()-time restore must go through here, never
+   * through direct field access. */
+  private effectiveBaseServices(): ToolServices {
+    return this.cfg.toolServices ?? (this.baseToolServices ??= new DefaultToolServices())
+  }
+
+  /** Snapshot of the session-owned activation set for persistence (issue #115).
+   * Single source shared by ALL saveSession call sites. */
+  private activatedToolsSnapshot(): string[] {
+    return [...this.effectiveBaseServices().findTool.activatedTools]
+  }
   private hookRegistry: HookRegistry
   private sink: DiagnosticsSink
   private lastInputTokens = 0
@@ -449,10 +462,16 @@ export class Agent {
     // DefaultToolServices per query would reset findTool.activatedTools —
     // FindTool activations would silently vanish for the next query even
     // though the engine treats them as session-scoped.
-    const baseServices = opts.toolServices
-      ?? this.baseToolServices
-      ?? (this.baseToolServices = new DefaultToolServices())
-    const toolServices = resolveToolServices(baseServices, miscConfig.cronService, miscConfig.memoryService)
+    const baseServices = opts.toolServices ?? this.effectiveBaseServices()
+    // issue #115: the session owns the activation set. resolveToolServices may
+    // return the HOST's object as-is (services.ts:142 — no cron/memory override),
+    // so always wrap in a fresh copy and wire findTool to the session registry:
+    // per-query overrides never swap the activation set away, and the host
+    // object is never mutated (it may be shared with other Agents).
+    const toolServices = {
+      ...resolveToolServices(baseServices, miscConfig.cronService, miscConfig.memoryService),
+      findTool: this.effectiveBaseServices().findTool,
+    }
 
     return {
       provider,
@@ -549,6 +568,16 @@ export class Agent {
         }
         if (sessionData.metadata.lastOutputTokens) {
           this.lastOutputTokens = sessionData.metadata.lastOutputTokens
+        }
+        // issue #115: restore deferred activations into the session-owned
+        // registry (unfiltered — availability is re-derived per turn by the
+        // engine's activatedTools ∩ deferredTools intersection).
+        const activated = sessionData.metadata.activatedTools
+        if (Array.isArray(activated)) {
+          const registry = this.effectiveBaseServices().findTool
+          for (const name of activated) {
+            if (typeof name === 'string') registry.activatedTools.add(name)
+          }
         }
       }
     }
@@ -744,6 +773,7 @@ export class Agent {
             summary: undefined,
             lastInputTokens: this.lastInputTokens,
             lastOutputTokens: this.lastOutputTokens,
+            activatedTools: this.activatedToolsSnapshot(),
           })
         } catch {
           // best-effort
@@ -879,6 +909,7 @@ export class Agent {
         provider: this.apiType,
         lastInputTokens: this.lastInputTokens,
         lastOutputTokens: this.lastOutputTokens,
+        activatedTools: this.activatedToolsSnapshot(),
       })
     } catch {
       // best-effort
@@ -952,6 +983,7 @@ export class Agent {
           summary: undefined,
           lastInputTokens: this.lastInputTokens,
           lastOutputTokens: this.lastOutputTokens,
+          activatedTools: this.activatedToolsSnapshot(),
         })
       } catch {
         // best-effort
@@ -1117,6 +1149,7 @@ export class Agent {
           summary: undefined,
           lastInputTokens: this.lastInputTokens,
           lastOutputTokens: this.lastOutputTokens,
+          activatedTools: this.activatedToolsSnapshot(),
         })
       } catch {
         // Session persistence is best-effort

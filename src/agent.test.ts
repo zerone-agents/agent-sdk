@@ -6,8 +6,19 @@ import { tool } from './tool-helper.js'
 import type { AgentOptions, McpServerConfig, AgentInput, ContentBlockParam, SDKMessage } from './types.js'
 import type { LLMProvider, CreateMessageParams, CreateMessageResponse, StreamChunk, NormalizedMessageParam } from './providers/types.js'
 import type { HookInput } from './hooks.js'
-import { loadSession, deleteSession } from './session.js'
+import { loadSession, deleteSession, saveSession, forkSession } from './session.js'
 import { PRUNE_THRESHOLD_CHARS } from './utils/compact.js'
+import { createMemoryService } from './memory/service.js'
+import { InMemoryMemoryStorage } from './memory/in-memory-storage.js'
+import type { MemoryService } from './memory/service.js'
+import { DefaultToolServices } from './tools/default-services.js'
+import type { ToolServices } from './tools/services.js'
+import { MemoryTool, MemorySearchTool } from './tools/memory.js'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 // Mocked pool — only the acquireMCPConnection symbol is replaced; the rest
 // of the module surface (types, internal helpers) stays intact.
@@ -1140,5 +1151,432 @@ describe('Agent lazy-load activation persistence across queries', () => {
     advanceQuery()
     await agent.prompt('hi again')
     expect(seenNames[2]).toContain('lazy_hello')
+  })
+})
+
+// ============================================================================
+// issue #115 — deferred tool activation resume. Shared helpers.
+// ============================================================================
+
+type CapturedRequest = { tools: any[]; messages: any[] }
+
+/** Captures tools+messages of every provider request; never scripts tool_use. */
+function capturingToolsProvider(captured: CapturedRequest[]): LLMProvider {
+  return {
+    apiType: 'anthropic-messages',
+    async createMessage() { throw new Error('not used') },
+    async *createMessageStream(params: any) {
+      captured.push({ tools: params.tools ?? [], messages: params.messages ?? [] })
+      yield { type: 'text', index: 0, delta: 'ok' }
+      yield { type: 'done', index: -1 }
+    },
+  }
+}
+
+/** Agent options with a real MemoryService so Memory/MemorySearch are mounted
+ * as deferred tools. Caller MUST start/stop the returned services. */
+function memoryAgentOptions(overrides: {
+  resume?: string
+  toolServices?: ToolServices
+} & Partial<AgentOptions> = {}): { opts: AgentOptions; services: MemoryService[] } {
+  const memoryService = createMemoryService({ storage: new InMemoryMemoryStorage() })
+  const opts = makeBaseOptions({
+    memoryService,
+    includePartialMessages: true,
+    ...overrides,
+  })
+  return { opts, services: [memoryService] }
+}
+
+/** Direct registry activation. FindTool.call's ONLY activation side effect is
+ * `registry.activatedTools.add(m.name)` (find-tool.ts:136) — same downstream
+ * path, deterministic, no scripted tool_use providers needed. */
+function activateInRegistry(agent: Agent, ...names: string[]): void {
+  const services = (agent as any).effectiveBaseServices() as ToolServices
+  for (const n of names) services.findTool.activatedTools.add(n)
+}
+
+const MEMORY_TXT = readFileSync(fileURLToPath(new URL('./tools/memory.txt', import.meta.url)), 'utf-8')
+const MEMORY_SEARCH_TXT = readFileSync(fileURLToPath(new URL('./tools/memory-search.txt', import.meta.url)), 'utf-8')
+
+/** Strict provider-boundary assertion (spec §10): full description text +
+ * deep schema equality — catches body/param-description truncation. The
+ * provider entry carries the schema as `input_schema` (engine.ts:78). */
+function assertFullToolEntry(entry: any, def: typeof MemoryTool, expectedDescription: string): void {
+  expect(entry.description).toBe(expectedDescription)
+  expect(entry.input_schema).toEqual(def.inputSchema)
+}
+
+describe('session-owned findTool registry across services overrides (issue #115)', () => {
+  it('query without override: activation reaches the next provider request with full schema (anchor ①)', async () => {
+    const captured: CapturedRequest[] = []
+    const { opts, services } = memoryAgentOptions()
+    const agent = new Agent(opts)
+    ;(agent as any).provider = capturingToolsProvider(captured)
+    await Promise.all(services.map(s => s.start()))
+    try {
+      await agent.prompt('first')               // request 1: Memory NOT yet in tools
+      activateInRegistry(agent, 'Memory', 'MemorySearch')
+      await agent.prompt('second')              // request 2: both present
+      const names1 = captured[0].tools.map((t: any) => t.name)
+      const names2 = captured[1].tools.map((t: any) => t.name)
+      expect(names1).not.toContain('Memory')
+      expect(names2).toContain('Memory')
+      expect(names2).toContain('MemorySearch')
+      assertFullToolEntry(captured[1].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+    } finally {
+      await Promise.all(services.map(s => s.stop()))
+    }
+  })
+
+  it('override services: session registry drives the request; host object untouched (services.ts:142 as-is path)', async () => {
+    const captured: CapturedRequest[] = []
+    const hostServices = new DefaultToolServices()
+    const hostRegistryBefore = hostServices.findTool
+    const { opts, services } = memoryAgentOptions()
+    const agent = new Agent(opts)
+    ;(agent as any).provider = capturingToolsProvider(captured)
+    await Promise.all(services.map(s => s.start()))
+    try {
+      activateInRegistry(agent, 'Memory')
+      // NO cronService/memoryService override alongside → resolveToolServices
+      // returns the host object AS-IS; the wiring must still protect it.
+      await agent.prompt('go', { toolServices: hostServices } as any)
+      // (a) the session registry drove the request
+      expect(captured[0].tools.map((t: any) => t.name)).toContain('Memory')
+      // (b) activation is visible in the session set
+      expect((agent as any).effectiveBaseServices().findTool.activatedTools.has('Memory')).toBe(true)
+      // (c) host object never mutated: same registry instance, still empty
+      expect(hostServices.findTool).toBe(hostRegistryBefore)
+      expect(hostServices.findTool.activatedTools.size).toBe(0)
+    } finally {
+      await Promise.all(services.map(s => s.stop()))
+    }
+  })
+})
+
+/** HOME isolation for session storage ($HOME/.agents/sessions) — pattern from
+ * src/utils/agents-md.test.ts:170-188. */
+async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
+  const home = mkdtempSync(join(tmpdir(), 'agent115-'))
+  const prev = process.env.HOME
+  process.env.HOME = home
+  try {
+    return await fn(home)
+  } finally {
+    process.env.HOME = prev
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+describe('resume restores deferred activations (issue #115)', () => {
+  it('restored activations appear in the first resumed provider request (anchor ②)', async () => {
+    await withTempHome(async () => {
+      await saveSession('resume-id', [{ role: 'user', content: 'hi' } as NormalizedMessageParam],
+        { cwd: process.cwd(), model: 'm', activatedTools: ['Memory', 'MemorySearch'] })
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: 'resume-id' })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('continue')
+        const names = captured[0].tools.map((t: any) => t.name)   // FIRST request
+        expect(names).toContain('Memory')
+        expect(names).toContain('MemorySearch')
+        assertFullToolEntry(captured[0].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+    })
+  })
+
+  it('old session without the field: no crash, no activations', async () => {
+    await withTempHome(async () => {
+      await saveSession('old-id', [], { cwd: process.cwd(), model: 'm' })
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: 'old-id' })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        expect(captured[0].tools.map((t: any) => t.name)).not.toContain('Memory')
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+    })
+  })
+
+  it('corrupted field handled defensively (non-array ignored; non-string elements skipped)', async () => {
+    await withTempHome(async (home) => {
+      const writeRawSession = async (id: string, activatedTools: unknown) => {
+        const dir = join(home, '.agents', 'sessions', id)
+        await mkdir(dir, { recursive: true })
+        await writeFile(join(dir, 'transcript.json'), JSON.stringify({
+          metadata: { id, cwd: '/', model: 'm', createdAt: 'x', updatedAt: 'x', messageCount: 0, activatedTools },
+          messages: [],
+        }))
+      }
+
+      await writeRawSession('bad-id', [1, 'MemorySearch', null])
+      const { opts, services } = memoryAgentOptions({ resume: 'bad-id' })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider([])
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        const set = (agent as any).effectiveBaseServices().findTool.activatedTools
+        expect([...set]).toEqual(['MemorySearch'])   // only the valid string survived
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+
+      await writeRawSession('bad-id2', 'nope')   // non-array: ignored entirely
+      const b = memoryAgentOptions({ resume: 'bad-id2' })
+      const agent2 = new Agent(b.opts)
+      ;(agent2 as any).provider = capturingToolsProvider([])
+      await Promise.all(b.services.map(s => s.start()))
+      try {
+        await agent2.prompt('hi')
+        expect((agent2 as any).effectiveBaseServices().findTool.activatedTools.size).toBe(0)
+      } finally {
+        await Promise.all(b.services.map(s => s.stop()))
+      }
+    })
+  })
+})
+
+describe('activation persistence at save sites (issue #115)', () => {
+  it('main chain: activate → save → close → new Agent resume → first request has full schemas', async () => {
+    await withTempHome(async () => {
+      const capturedA: CapturedRequest[] = []
+      const a = memoryAgentOptions({ persistSession: true })
+      const agentA = new Agent(a.opts)
+      ;(agentA as any).provider = capturingToolsProvider(capturedA)
+      await Promise.all(a.services.map(s => s.start()))
+      let sid = ''
+      try {
+        await agentA.prompt('work')
+        sid = (agentA as any).sid as string
+        activateInRegistry(agentA, 'Memory', 'MemorySearch')
+        await agentA.prompt('more')   // post-activation query → auto-save carries the set
+      } finally {
+        await Promise.all(a.services.map(s => s.stop()))
+      }
+      // The save site carried the activation set (single source: snapshot helper)
+      const data = await loadSession(sid)
+      expect(data?.metadata.activatedTools).toEqual(['Memory', 'MemorySearch'])
+
+      // Close A (drop references); resume in a NEW Agent — same process here,
+      // cross-process is the Task 8 e2e.
+      const capturedB: CapturedRequest[] = []
+      const b = memoryAgentOptions({ resume: sid })
+      const agentB = new Agent(b.opts)
+      ;(agentB as any).provider = capturingToolsProvider(capturedB)
+      await Promise.all(b.services.map(s => s.start()))
+      try {
+        await agentB.prompt('continue')
+        const names = capturedB[0].tools.map((t: any) => t.name)
+        expect(names).toContain('Memory')
+        expect(names).toContain('MemorySearch')
+        assertFullToolEntry(capturedB[0].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+        assertFullToolEntry(capturedB[0].tools.find((t: any) => t.name === 'MemorySearch'), MemorySearchTool, MEMORY_SEARCH_TXT)
+      } finally {
+        await Promise.all(b.services.map(s => s.stop()))
+      }
+    })
+  })
+})
+
+describe('resume activation variants (issue #115)', () => {
+  it('disallowedTools drop restored activations from the request (lazy revalidation)', async () => {
+    await withTempHome(async () => {
+      await saveSession('perm-id', [], { cwd: process.cwd(), model: 'm', activatedTools: ['Memory', 'MemorySearch'] })
+      const captured: CapturedRequest[] = []
+      // disallowedTools lives on AgentCapabilities (types.ts:591), reached via
+      // the agent definition — a top-level AgentOptions field would be ignored.
+      const { opts, services } = memoryAgentOptions({
+        resume: 'perm-id',
+        agent: { description: 'Main agent', prompt: '', capabilities: { disallowedTools: ['Memory'] } },
+      })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        const names = captured[0].tools.map((t: any) => t.name)
+        expect(names).not.toContain('Memory')       // disallowed: stays unavailable
+        expect(names).toContain('MemorySearch')     // unaffected sibling restored
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+    })
+  })
+
+  it('forkSession carries activations; forked session resumes with schemas', async () => {
+    await withTempHome(async () => {
+      await saveSession('fork-src', [], { cwd: process.cwd(), model: 'm', activatedTools: ['Memory'] })
+      const forkId = await forkSession('fork-src', 'fork-dst')
+      expect(forkId).toBe('fork-dst')
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: forkId! })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        expect(captured[0].tools.map((t: any) => t.name)).toContain('Memory')
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+    })
+  })
+
+  it('constructor-level toolServices: restore flows through the host registry', async () => {
+    await withTempHome(async () => {
+      const hostServices = new DefaultToolServices()
+      await saveSession('host-id', [], { cwd: process.cwd(), model: 'm', activatedTools: ['MemorySearch'] })
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: 'host-id', toolServices: hostServices })
+      const agent = new Agent(opts)
+      ;(agent as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      try {
+        await agent.prompt('hi')
+        expect(captured[0].tools.map((t: any) => t.name)).toContain('MemorySearch')
+        // Constructor-provided registry IS the session set (effectiveBaseServices)
+        expect(hostServices.findTool.activatedTools.has('MemorySearch')).toBe(true)
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+    })
+  })
+})
+
+describe('override services activation round-trip (issue #115)', () => {
+  it('restored activations drive override queries; override-earned activations persist', async () => {
+    await withTempHome(async () => {
+      await saveSession('ovr-id', [], { cwd: process.cwd(), model: 'm', activatedTools: ['Memory'] })
+      const captured: CapturedRequest[] = []
+      const { opts, services } = memoryAgentOptions({ resume: 'ovr-id', persistSession: true })
+      const agentA = new Agent(opts)
+      ;(agentA as any).provider = capturingToolsProvider(captured)
+      await Promise.all(services.map(s => s.start()))
+      let sid = ''
+      try {
+        // (a) restored activation effective under an override query — the
+        // override's combined services carry the session registry (spec §7.2)
+        await agentA.prompt('go', { toolServices: new DefaultToolServices() } as any)
+        expect(captured[0].tools.map((t: any) => t.name)).toContain('Memory')
+        // (b) activation EARNED during override queries lands in the session
+        // set (spec §7.2: save reads the base registry)
+        sid = (agentA as any).sid as string
+        activateInRegistry(agentA, 'MemorySearch')
+        await agentA.prompt('more', { toolServices: new DefaultToolServices() } as any)
+      } finally {
+        await Promise.all(services.map(s => s.stop()))
+      }
+      const data = await loadSession(sid)
+      expect(data?.metadata.activatedTools).toEqual(['Memory', 'MemorySearch'])
+    })
+  })
+})
+
+describe('real FindTool execution chain regressions (PR #116 review)', () => {
+  /** Non-streaming scripted provider: turn 1 emits a FindTool tool_use
+   * (select:<names>) so the ENGINE executes the real FindTool call; later
+   * turns return text. Captures the tools array of every request.
+   * Pattern: lazyActivationSetup above. */
+  function findToolChainProvider(captured: CapturedRequest[], select: string): LLMProvider {
+    let call = 0
+    return {
+      apiType: 'anthropic-messages',
+      createMessage: vi.fn(async (params: any) => {
+        captured.push({ tools: params.tools ?? [], messages: [] })
+        call++
+        if (call === 1) {
+          return {
+            content: [{ type: 'tool_use', id: 'tu_ft', name: 'FindTool', input: { query: select } }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+            stop_reason: 'tool_use',
+          } as any
+        }
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: 'end_turn',
+        } as any
+      }),
+      createMessageStream: async function* () {},
+    }
+  }
+
+  it('activation via REAL FindTool execution: full schemas next turn and after resume', async () => {
+    await withTempHome(async () => {
+      const capturedA: CapturedRequest[] = []
+      const memoryServiceA = createMemoryService({ storage: new InMemoryMemoryStorage() })
+      const agentA = new Agent(makeBaseOptions({ memoryService: memoryServiceA, persistSession: true }))
+      ;(agentA as any).provider = findToolChainProvider(capturedA, 'select:Memory,MemorySearch')
+      await memoryServiceA.start()
+      let sid = ''
+      try {
+        await agentA.prompt('find and use memory tools')
+        sid = (agentA as any).sid as string
+        // Real chain anchor ①: the ENGINE executed FindTool (find-tool.ts:136
+        // added to the registry); the NEXT request carries full schemas.
+        expect(capturedA[0].tools.map((t: any) => t.name)).not.toContain('Memory')
+        const names1 = capturedA[1].tools.map((t: any) => t.name)
+        expect(names1).toContain('Memory')
+        expect(names1).toContain('MemorySearch')
+        assertFullToolEntry(capturedA[1].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+        assertFullToolEntry(capturedA[1].tools.find((t: any) => t.name === 'MemorySearch'), MemorySearchTool, MEMORY_SEARCH_TXT)
+      } finally {
+        await memoryServiceA.stop()
+      }
+
+      // Real chain anchor ②: activations earned via real FindTool survive a
+      // new-Agent resume (save → load → restore → first request).
+      const capturedB: CapturedRequest[] = []
+      const memoryServiceB = createMemoryService({ storage: new InMemoryMemoryStorage() })
+      const agentB = new Agent(makeBaseOptions({ memoryService: memoryServiceB, resume: sid, includePartialMessages: true }))
+      ;(agentB as any).provider = capturingToolsProvider(capturedB)
+      await memoryServiceB.start()
+      try {
+        await agentB.prompt('continue')
+        const names = capturedB[0].tools.map((t: any) => t.name)
+        expect(names).toContain('Memory')
+        expect(names).toContain('MemorySearch')
+        assertFullToolEntry(capturedB[0].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+      } finally {
+        await memoryServiceB.stop()
+      }
+    })
+  })
+
+  it('host protection enters the services.ts:142 as-is branch (no cron/memory override)', async () => {
+    const captured: CapturedRequest[] = []
+    const guardedTool = {
+      name: 'guarded_tool',
+      description: 'deferred test tool for the as-is branch',
+      deferred: true,
+      inputSchema: { type: 'object' as const, properties: {} },
+      call: async () => ({ type: 'tool_result' as const, tool_use_id: '', content: 'hi' }),
+    }
+    const hostServices = new DefaultToolServices()
+    const hostRegistryBefore = hostServices.findTool
+    // NO memoryService / cronService on this agent → resolveToolServices takes
+    // the as-is branch (services.ts:142) and returns the HOST object itself —
+    // the exact path where a non-copying wiring would corrupt the host.
+    const agent = new Agent(makeBaseOptions({ customTools: [guardedTool as any] }))
+    ;(agent as any).provider = findToolChainProvider(captured, 'select:guarded_tool')
+    await agent.prompt('go', { toolServices: hostServices } as any)
+    // Real FindTool activation DURING an override query → wired session registry
+    expect(captured[0].tools.map((t: any) => t.name)).not.toContain('guarded_tool')
+    expect(captured[1].tools.map((t: any) => t.name)).toContain('guarded_tool')
+    expect((agent as any).effectiveBaseServices().findTool.activatedTools.has('guarded_tool')).toBe(true)
+    // Host object survives the as-is branch untouched: same registry identity, still empty
+    expect(hostServices.findTool).toBe(hostRegistryBefore)
+    expect(hostServices.findTool.activatedTools.size).toBe(0)
   })
 })
