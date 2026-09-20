@@ -216,6 +216,12 @@ export class Agent {
   private effectiveBaseServices(): ToolServices {
     return this.cfg.toolServices ?? (this.baseToolServices ??= new DefaultToolServices())
   }
+
+  /** Snapshot of the session-owned activation set for persistence (issue #115).
+   * Single source shared by ALL saveSession call sites. */
+  private activatedToolsSnapshot(): string[] {
+    return [...this.effectiveBaseServices().findTool.activatedTools]
+  }
   private hookRegistry: HookRegistry
   private sink: DiagnosticsSink
   private lastInputTokens = 0
@@ -767,6 +773,7 @@ export class Agent {
             summary: undefined,
             lastInputTokens: this.lastInputTokens,
             lastOutputTokens: this.lastOutputTokens,
+            activatedTools: this.activatedToolsSnapshot(),
           })
         } catch {
           // best-effort
@@ -902,6 +909,7 @@ export class Agent {
         provider: this.apiType,
         lastInputTokens: this.lastInputTokens,
         lastOutputTokens: this.lastOutputTokens,
+        activatedTools: this.activatedToolsSnapshot(),
       })
     } catch {
       // best-effort
@@ -975,6 +983,7 @@ export class Agent {
           summary: undefined,
           lastInputTokens: this.lastInputTokens,
           lastOutputTokens: this.lastOutputTokens,
+          activatedTools: this.activatedToolsSnapshot(),
         })
       } catch {
         // best-effort
@@ -1140,6 +1149,7 @@ export class Agent {
           summary: undefined,
           lastInputTokens: this.lastInputTokens,
           lastOutputTokens: this.lastOutputTokens,
+          activatedTools: this.activatedToolsSnapshot(),
         })
       } catch {
         // Session persistence is best-effort

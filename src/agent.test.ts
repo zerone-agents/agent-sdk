@@ -1347,3 +1347,45 @@ describe('resume restores deferred activations (issue #115)', () => {
     })
   })
 })
+
+describe('activation persistence at save sites (issue #115)', () => {
+  it('main chain: activate → save → close → new Agent resume → first request has full schemas', async () => {
+    await withTempHome(async () => {
+      const capturedA: CapturedRequest[] = []
+      const a = memoryAgentOptions({ persistSession: true })
+      const agentA = new Agent(a.opts)
+      ;(agentA as any).provider = capturingToolsProvider(capturedA)
+      await Promise.all(a.services.map(s => s.start()))
+      let sid = ''
+      try {
+        await agentA.prompt('work')
+        sid = (agentA as any).sid as string
+        activateInRegistry(agentA, 'Memory', 'MemorySearch')
+        await agentA.prompt('more')   // post-activation query → auto-save carries the set
+      } finally {
+        await Promise.all(a.services.map(s => s.stop()))
+      }
+      // The save site carried the activation set (single source: snapshot helper)
+      const data = await loadSession(sid)
+      expect(data?.metadata.activatedTools).toEqual(['Memory', 'MemorySearch'])
+
+      // Close A (drop references); resume in a NEW Agent — same process here,
+      // cross-process is the Task 8 e2e.
+      const capturedB: CapturedRequest[] = []
+      const b = memoryAgentOptions({ resume: sid })
+      const agentB = new Agent(b.opts)
+      ;(agentB as any).provider = capturingToolsProvider(capturedB)
+      await Promise.all(b.services.map(s => s.start()))
+      try {
+        await agentB.prompt('continue')
+        const names = capturedB[0].tools.map((t: any) => t.name)
+        expect(names).toContain('Memory')
+        expect(names).toContain('MemorySearch')
+        assertFullToolEntry(capturedB[0].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+        assertFullToolEntry(capturedB[0].tools.find((t: any) => t.name === 'MemorySearch'), MemorySearchTool, MEMORY_SEARCH_TXT)
+      } finally {
+        await Promise.all(b.services.map(s => s.stop()))
+      }
+    })
+  })
+})
