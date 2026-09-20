@@ -8,6 +8,14 @@ import type { LLMProvider, CreateMessageParams, CreateMessageResponse, StreamChu
 import type { HookInput } from './hooks.js'
 import { loadSession, deleteSession } from './session.js'
 import { PRUNE_THRESHOLD_CHARS } from './utils/compact.js'
+import { createMemoryService } from './memory/service.js'
+import { InMemoryMemoryStorage } from './memory/in-memory-storage.js'
+import type { MemoryService } from './memory/service.js'
+import { DefaultToolServices } from './tools/default-services.js'
+import type { ToolServices } from './tools/services.js'
+import { MemoryTool, MemorySearchTool } from './tools/memory.js'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 // Mocked pool — only the acquireMCPConnection symbol is replaced; the rest
 // of the module surface (types, internal helpers) stays intact.
@@ -1140,5 +1148,107 @@ describe('Agent lazy-load activation persistence across queries', () => {
     advanceQuery()
     await agent.prompt('hi again')
     expect(seenNames[2]).toContain('lazy_hello')
+  })
+})
+
+// ============================================================================
+// issue #115 — deferred tool activation resume. Shared helpers.
+// ============================================================================
+
+type CapturedRequest = { tools: any[]; messages: any[] }
+
+/** Captures tools+messages of every provider request; never scripts tool_use. */
+function capturingToolsProvider(captured: CapturedRequest[]): LLMProvider {
+  return {
+    apiType: 'anthropic-messages',
+    async createMessage() { throw new Error('not used') },
+    async *createMessageStream(params: any) {
+      captured.push({ tools: params.tools ?? [], messages: params.messages ?? [] })
+      yield { type: 'text', index: 0, delta: 'ok' }
+      yield { type: 'done', index: -1 }
+    },
+  }
+}
+
+/** Agent options with a real MemoryService so Memory/MemorySearch are mounted
+ * as deferred tools. Caller MUST start/stop the returned services. */
+function memoryAgentOptions(overrides: {
+  resume?: string
+  toolServices?: ToolServices
+  disallowedTools?: string[]
+} & Partial<AgentOptions> = {}): { opts: AgentOptions; services: MemoryService[] } {
+  const memoryService = createMemoryService({ storage: new InMemoryMemoryStorage() })
+  const opts = makeBaseOptions({
+    memoryService,
+    includePartialMessages: true,
+    ...overrides,
+  })
+  return { opts, services: [memoryService] }
+}
+
+/** Direct registry activation. FindTool.call's ONLY activation side effect is
+ * `registry.activatedTools.add(m.name)` (find-tool.ts:136) — same downstream
+ * path, deterministic, no scripted tool_use providers needed. */
+function activateInRegistry(agent: Agent, ...names: string[]): void {
+  const services = (agent as any).effectiveBaseServices() as ToolServices
+  for (const n of names) services.findTool.activatedTools.add(n)
+}
+
+const MEMORY_TXT = readFileSync(fileURLToPath(new URL('./tools/memory.txt', import.meta.url)), 'utf-8')
+const MEMORY_SEARCH_TXT = readFileSync(fileURLToPath(new URL('./tools/memory-search.txt', import.meta.url)), 'utf-8')
+
+/** Strict provider-boundary assertion (spec §10): full description text +
+ * deep schema equality — catches body/param-description truncation. The
+ * provider entry carries the schema as `input_schema` (engine.ts:78). */
+function assertFullToolEntry(entry: any, def: typeof MemoryTool, expectedDescription: string): void {
+  expect(entry.description).toBe(expectedDescription)
+  expect(entry.input_schema).toEqual(def.inputSchema)
+}
+
+describe('session-owned findTool registry across services overrides (issue #115)', () => {
+  it('query without override: activation reaches the next provider request with full schema (anchor ①)', async () => {
+    const captured: CapturedRequest[] = []
+    const { opts, services } = memoryAgentOptions()
+    const agent = new Agent(opts)
+    ;(agent as any).provider = capturingToolsProvider(captured)
+    await Promise.all(services.map(s => s.start()))
+    try {
+      await agent.prompt('first')               // request 1: Memory NOT yet in tools
+      activateInRegistry(agent, 'Memory', 'MemorySearch')
+      await agent.prompt('second')              // request 2: both present
+      const names1 = captured[0].tools.map((t: any) => t.name)
+      const names2 = captured[1].tools.map((t: any) => t.name)
+      expect(names1).not.toContain('Memory')
+      expect(names2).toContain('Memory')
+      expect(names2).toContain('MemorySearch')
+      assertFullToolEntry(captured[1].tools.find((t: any) => t.name === 'Memory'), MemoryTool, MEMORY_TXT)
+    } finally {
+      await Promise.all(services.map(s => s.stop()))
+    }
+  })
+
+  it('override services: session registry drives the request; host object untouched (services.ts:142 as-is path)', async () => {
+    const captured: CapturedRequest[] = []
+    const hostServices = new DefaultToolServices()
+    const hostRegistryBefore = hostServices.findTool
+    const { opts, services } = memoryAgentOptions()
+    const agent = new Agent(opts)
+    ;(agent as any).provider = capturingToolsProvider(captured)
+    await Promise.all(services.map(s => s.start()))
+    try {
+      activateInRegistry(agent, 'Memory')
+      // NO cronService/memoryService override alongside → resolveToolServices
+      // returns the host object AS-IS; the wiring must still protect it.
+      await agent.prompt('go', { toolServices: hostServices } as any)
+      // (a) the session registry drove the request
+      expect(captured[0].tools.map((t: any) => t.name)).toContain('Memory')
+      // (b) activation is visible in the session set
+      expect((agent as any).effectiveBaseServices().findTool.activatedTools.has('Memory')).toBe(true)
+      // (c) host object never mutated: same registry instance, still empty
+      expect(hostServices.findTool).toBe(hostRegistryBefore)
+      expect(hostServices.findTool.activatedTools.size).toBe(0)
+    } finally {
+      await Promise.all(services.map(s => s.stop()))
+    }
   })
 })

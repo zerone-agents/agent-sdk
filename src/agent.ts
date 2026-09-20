@@ -209,6 +209,13 @@ export class Agent {
    * between queries.
    */
   private baseToolServices: ToolServices | null = null
+
+  /** Session-owned services (issue #115): get-or-init. `baseToolServices` stays
+   * null until first use, so setup()-time restore must go through here, never
+   * through direct field access. */
+  private effectiveBaseServices(): ToolServices {
+    return this.cfg.toolServices ?? (this.baseToolServices ??= new DefaultToolServices())
+  }
   private hookRegistry: HookRegistry
   private sink: DiagnosticsSink
   private lastInputTokens = 0
@@ -449,10 +456,16 @@ export class Agent {
     // DefaultToolServices per query would reset findTool.activatedTools —
     // FindTool activations would silently vanish for the next query even
     // though the engine treats them as session-scoped.
-    const baseServices = opts.toolServices
-      ?? this.baseToolServices
-      ?? (this.baseToolServices = new DefaultToolServices())
-    const toolServices = resolveToolServices(baseServices, miscConfig.cronService, miscConfig.memoryService)
+    const baseServices = opts.toolServices ?? this.effectiveBaseServices()
+    // issue #115: the session owns the activation set. resolveToolServices may
+    // return the HOST's object as-is (services.ts:142 — no cron/memory override),
+    // so always wrap in a fresh copy and wire findTool to the session registry:
+    // per-query overrides never swap the activation set away, and the host
+    // object is never mutated (it may be shared with other Agents).
+    const toolServices = {
+      ...resolveToolServices(baseServices, miscConfig.cronService, miscConfig.memoryService),
+      findTool: this.effectiveBaseServices().findTool,
+    }
 
     return {
       provider,
