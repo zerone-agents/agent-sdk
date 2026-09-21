@@ -101,3 +101,14 @@ describe('FindTool activation', () => {
     expect(result.content).toContain('- CronList: ' + 'B'.repeat(200) + '...(more)')
   })
 })
+
+describe('FindTool description: deferred-tool recovery guidance', () => {
+  it('instructs the model to re-run FindTool when a deferred tool is unavailable', () => {
+    const description = FindToolTool.description
+    // Trigger + recovery action both pinned; phrasing must stay discoverable
+    // for a model that hit an unavailable deferred tool.
+    expect(description).toContain('If a deferred tool is unavailable')
+    expect(description).toContain('meaningless loop')
+    expect(description).toContain('call FindTool again')
+  })
+})
