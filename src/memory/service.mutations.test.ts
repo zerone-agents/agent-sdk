@@ -127,6 +127,25 @@ describe('replace/remove + revision', () => {
     await service.stop()
   })
 
+  it('replace/remove on a deleted record report transition.invalid even with a stale revision', async () => {
+    const service = await running()
+    const session = await service.bind({ actor: 'session' })
+    const { record } = await session.add({ scope: 'global', content: 'x', importance: 50 })
+    await session.remove(record!.id, 1) // rev 2, status 'deleted'
+    // Stale revision on purpose: 'deleted' is terminal at ANY revision, so the
+    // status guard must fire before the revision guard — a conflict error here
+    // would invite a retry that can never succeed (observed live: wasted round).
+    await expect(session.replace(record!.id, 99, { content: 'y' })).rejects.toSatisfy(
+      (e) => e instanceof MemoryValidationError
+        && e.findings.some((f) => f.code === 'transition.invalid' && f.message.includes('create a new record')),
+    )
+    await expect(session.remove(record!.id, 99)).rejects.toSatisfy(
+      (e) => e instanceof MemoryValidationError
+        && e.findings.some((f) => f.code === 'transition.invalid'),
+    )
+    await service.stop()
+  })
+
   it('unknown ID → MemoryNotFoundError; foreign-workspace ID → MemoryAccessError', async () => {
     const service = await running()
     const a = await service.bind({ actor: 'session', workspace: '/repo/a' })
@@ -158,6 +177,23 @@ describe('admin.mutate state machine', () => {
     expect(purged.record).toBeNull()
     await expect(service.admin.mutate({ type: 'delete', recordId: id, expectedRevision: 5 }, ctx))
       .rejects.toThrow(MemoryNotFoundError)
+    await service.stop()
+  })
+
+  it('update on a deleted record reports transition.invalid even with a stale revision', async () => {
+    const service = await running()
+    const ctx = { actor: 'host' as const }
+    const { record } = await service.admin.mutate(
+      { type: 'create', scope: 'global', content: 'x', importance: 50 }, ctx)
+    await service.admin.mutate({ type: 'delete', recordId: record!.id, expectedRevision: 1 }, ctx)
+    // Same rationale as the session path: 'deleted' is terminal at any
+    // revision, so the status guard precedes the revision guard.
+    await expect(service.admin.mutate(
+      { type: 'update', recordId: record!.id, expectedRevision: 99, changes: { content: 'y' } }, ctx))
+      .rejects.toSatisfy(
+        (e) => e instanceof MemoryValidationError
+          && e.findings.some((f) => f.code === 'transition.invalid'),
+      )
     await service.stop()
   })
 
