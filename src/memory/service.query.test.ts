@@ -52,6 +52,20 @@ describe('session.search', () => {
     await expect(s.search({ text: 'x', limit: 0 })).rejects.toThrow(/limit/i)
     await service.stop()
   })
+
+  it('pipe-separated OR alternatives recall records matching any candidate', async () => {
+    const service = createMemoryService({ storage: new InMemoryMemoryStorage() })
+    await service.start()
+    const s = await service.bind({ actor: 'session' })
+    await s.add({ scope: 'global', content: '巴斯克蛋糕的做法', importance: 50 })
+    await s.add({ scope: 'global', content: '合并 PR 的硬性规则', importance: 50 })
+    await s.add({ scope: 'global', content: '完全无关的记录', importance: 50 })
+    const hits = await s.search({ text: '巴斯克|合并' })
+    expect(hits).toHaveLength(2)
+    expect(hits.map((r) => r.content)).toEqual(
+      expect.arrayContaining(['巴斯克蛋糕的做法', '合并 PR 的硬性规则']))
+    await service.stop()
+  })
 })
 
 describe('session.renderContext', () => {

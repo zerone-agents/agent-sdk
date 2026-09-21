@@ -23,13 +23,23 @@ function queryTerms(normalizedQuery: string): string[] {
 /**
  * A record matches when the normalized content contains the complete
  * normalized query, or every non-empty query term appears as a substring.
+ *
+ * The query may carry '|'-separated OR alternatives (e.g. `foo|bar baz`):
+ * a record matches if ANY alternative matches — each alternative keeps full
+ * single-query semantics (complete substring, then all-terms within it) —
+ * and a complete match on any alternative wins the match kind. Degenerate
+ * pipes (`a|`, `||`) degrade to the remaining non-empty alternatives.
  */
 export function matchMemoryRecord(normalizedContent: string, normalizedQuery: string): MemoryMatchKind | null {
   if (normalizedQuery.length === 0) return null
-  if (normalizedContent.includes(normalizedQuery)) return 'complete'
-  const terms = queryTerms(normalizedQuery)
-  if (terms.length >= 1 && terms.every((t) => normalizedContent.includes(t))) return 'terms'
-  return null
+  const alternatives = normalizedQuery.split('|').map((a) => a.trim()).filter((a) => a.length > 0)
+  let best: MemoryMatchKind | null = null
+  for (const alternative of alternatives) {
+    if (normalizedContent.includes(alternative)) return 'complete'
+    const terms = queryTerms(alternative)
+    if (terms.length >= 1 && terms.every((t) => normalizedContent.includes(t))) best = 'terms'
+  }
+  return best
 }
 
 /**
