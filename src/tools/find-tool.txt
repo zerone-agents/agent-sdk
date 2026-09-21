@@ -3,6 +3,7 @@ Search for and activate tools that exist but are not yet loaded into your tool s
 ## When to use
 - You've checked `<available_deferred_tools>` in the system prompt and found a tool that fits your task
 - You need a capability (e.g. scheduling, config, structured prompting) that isn't in your current tool set
+- If a deferred tool is unavailable (missing from your tool set when you expected it, or you want to use a tool but are stuck in a meaningless loop) — call FindTool again to search for it and re-activate it
 
 ## Query syntax
 - Exact name: `select:ToolName` (or comma-separated `select:A,B,C` to activate multiple in one call). Use this when you know the name from the `<available_deferred_tools>` catalog.
