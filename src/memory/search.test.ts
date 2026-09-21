@@ -51,6 +51,30 @@ describe('matchMemoryRecord', () => {
   it('empty query never matches', () => {
     expect(matchMemoryRecord(normalizeMemoryText('anything'), '')).toBeNull()
   })
+
+  describe('OR alternatives (|)', () => {
+    it('matches a record containing EITHER pipe-separated candidate', () => {
+      expect(matchMemoryRecord(normalizeMemoryText('巴斯克蛋糕的做法'), normalizeMemoryText('巴斯克|提拉米苏'))).toBe('complete')
+      expect(matchMemoryRecord(normalizeMemoryText('提拉米苏配咖啡'), normalizeMemoryText('巴斯克|提拉米苏'))).toBe('complete')
+    })
+
+    it('keeps full single-query semantics inside each alternative (terms AND within)', () => {
+      // '发版 流程' requires BOTH terms; 'tag' alone suffices
+      expect(matchMemoryRecord(normalizeMemoryText('发版有完整流程'), normalizeMemoryText('发版 流程|tag'))).toBe('terms')
+      expect(matchMemoryRecord(normalizeMemoryText('git 打 tag 记录'), normalizeMemoryText('发版 流程|tag'))).toBe('complete')
+      expect(matchMemoryRecord(normalizeMemoryText('完全无关内容'), normalizeMemoryText('发版 流程|tag'))).toBeNull()
+    })
+
+    it('a complete match on any alternative wins the match kind', () => {
+      expect(matchMemoryRecord(normalizeMemoryText('打 tag 同时走发版 与流程'), normalizeMemoryText('发版 流程|tag'))).toBe('complete')
+    })
+
+    it('degenerate pipes degrade gracefully', () => {
+      expect(matchMemoryRecord(normalizeMemoryText('hello world'), normalizeMemoryText('hello|'))).toBe('complete')
+      expect(matchMemoryRecord(normalizeMemoryText('hello world'), normalizeMemoryText('|'))).toBeNull()
+      expect(matchMemoryRecord(normalizeMemoryText('hello world'), normalizeMemoryText('||'))).toBeNull()
+    })
+  })
 })
 
 describe('compareMemorySearchResults', () => {

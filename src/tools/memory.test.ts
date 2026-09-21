@@ -267,6 +267,12 @@ describe('MemorySearchTool model-facing contract (issue #105)', () => {
     expect(description).toContain('refine')
   })
 
+  it('documents pipe-separated OR alternatives for broad recall', () => {
+    expect(MemorySearchTool.description).toContain('|')
+    expect(MemorySearchTool.description).toContain('ANY candidate')
+    expect(MemorySearchTool.inputSchema.properties.query.description).toContain('|')
+  })
+
   it('bounds limit structurally and documents the default/cap', () => {
     const limit = MemorySearchTool.inputSchema.properties.limit
     expect(limit.minimum).toBe(1)

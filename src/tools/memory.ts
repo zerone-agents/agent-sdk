@@ -256,7 +256,8 @@ export const MemorySearchTool: ToolDefinition = {
         type: 'string',
         description:
           'Required search text. Prefer a short distinctive phrase or specific terms from the expected memory ' +
-          'content. Complete phrase matches rank before all-term matches.',
+          'content. Complete phrase matches rank before all-term matches. Separate OR-alternatives with | ' +
+          '(e.g. alpha|beta) to match ANY candidate.',
       },
       limit: {
         type: 'number',
