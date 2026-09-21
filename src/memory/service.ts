@@ -233,8 +233,11 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 
   /** Illegal state-machine migration → transition.invalid (never silent no-op). */
   function invalidTransition(operation: MemoryOperation, status: MemoryStatus): MemoryValidationError {
+    const hint = status === 'deleted'
+      ? ' A deleted record cannot be changed at any revision — create a new record instead of retrying.'
+      : ''
     return new MemoryValidationError([
-      { code: 'transition.invalid', severity: 'error', message: `Cannot ${operation} a "${status}" memory record.` },
+      { code: 'transition.invalid', severity: 'error', message: `Cannot ${operation} a "${status}" memory record.${hint}` },
     ])
   }
 
@@ -449,12 +452,18 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
     return result
   }
 
-  /** Admin trusted load: no session checks; revision verified immediately before the commit. */
-  async function loadCurrent(recordId: string, expectedRevision: number): Promise<MemoryRecord> {
+  /** Admin trusted load (no session checks). Callers run the per-op status
+   * guard BEFORE verifyRevision: a terminal status (deleted) must surface as
+   * transition.invalid even with a stale expectedRevision — a conflict error
+   * would invite a retry that can never succeed. */
+  async function loadCurrent(recordId: string): Promise<MemoryRecord> {
     const record = await options.storage.getRecord(recordId)
     if (!record) throw new MemoryNotFoundError(recordId)
-    if (expectedRevision !== record.revision) throw new MemoryConflictError(record)
     return record
+  }
+
+  function verifyRevision(record: MemoryRecord, expectedRevision: number): void {
+    if (expectedRevision !== record.revision) throw new MemoryConflictError(record)
   }
 
   /** Status transition shared by archive/restore/delete: revision+1, updatedAt bumped. */
@@ -659,10 +668,12 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
           // R3-P2: replace/remove carry NO target scope — writability is checked
           // against the RECORD's own scope + this session's binding.
           assertWritable(session, record.scope)
-          if (expectedRevision !== record.revision) throw new MemoryConflictError(record)
+          // Status guard precedes the revision guard: 'deleted' is terminal at
+          // ANY revision, so a conflict error would invite a doomed retry.
           if (record.status !== 'active' && record.status !== 'archived') {
             throw invalidTransition('update', record.status)
           }
+          if (expectedRevision !== record.revision) throw new MemoryConflictError(record)
           const content = changes.content !== undefined
             ? validateContent(changes.content, record.scope, record.workspaceId)
             : record.content
@@ -701,10 +712,11 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
           const record = await loadAccessibleRecord(session, recordId, options.storage)
           // R3-P2: same as replace — writability follows the record's own scope.
           assertWritable(session, record.scope)
-          if (expectedRevision !== record.revision) throw new MemoryConflictError(record)
+          // Same ordering as replace: status guard before revision guard.
           if (record.status !== 'active' && record.status !== 'archived') {
             throw invalidTransition('delete', record.status)
           }
+          if (expectedRevision !== record.revision) throw new MemoryConflictError(record)
           const timestamp = now()
           const updated: MemoryRecord = {
             ...record,
@@ -824,10 +836,11 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
           }
           case 'update': {
             const { recordId, expectedRevision, changes } = command
-            const record = await loadCurrent(recordId, expectedRevision)
+            const record = await loadCurrent(recordId)
             if (record.status !== 'active' && record.status !== 'archived') {
               throw invalidTransition('update', record.status)
             }
+            verifyRevision(record, expectedRevision)
             const content = changes.content !== undefined
               ? validateContent(changes.content, record.scope, record.workspaceId)
               : record.content
@@ -861,15 +874,17 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
           }
           case 'archive': {
             const { recordId, expectedRevision } = command
-            const record = await loadCurrent(recordId, expectedRevision)
+            const record = await loadCurrent(recordId)
             if (record.status !== 'active') throw invalidTransition('archive', record.status)
+            verifyRevision(record, expectedRevision)
             const { updated, audit } = applyTransition(record, context, 'archive', 'archived')
             return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], redactAuditForRecords: [], audit: [audit] }
           }
           case 'restore': {
             const { recordId, expectedRevision } = command
-            const record = await loadCurrent(recordId, expectedRevision)
+            const record = await loadCurrent(recordId)
             if (record.status !== 'archived') throw invalidTransition('restore', record.status)
+            verifyRevision(record, expectedRevision)
             // §18-L: the single-record over-budget rule covers restore — a record
             // archived under an OLDER budget may exceed the CURRENT one (budgets
             // are per-instance config, e.g. a smaller-budget restart). Without
@@ -890,16 +905,18 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
           }
           case 'delete': {
             const { recordId, expectedRevision } = command
-            const record = await loadCurrent(recordId, expectedRevision)
+            const record = await loadCurrent(recordId)
             if (record.status !== 'active' && record.status !== 'archived') {
               throw invalidTransition('delete', record.status)
             }
+            verifyRevision(record, expectedRevision)
             const { updated, audit } = applyTransition(record, context, 'delete', 'deleted', { deletedAt: now().toISOString() })
             return { primary: updated, insertRecords: [], replaceRecords: [updated], deleteRecords: [], redactAuditForRecords: [], audit: [audit] }
           }
           case 'purge': {
             const { recordId, expectedRevision } = command
-            const record = await loadCurrent(recordId, expectedRevision)
+            const record = await loadCurrent(recordId)
+            verifyRevision(record, expectedRevision)
             // Any status (pinned decision 4) → hard delete. Task 9: prior
             // audit events for this record are REDACTED in the same commit
             // (redactAuditForRecords nulls their before/after content) and the
