@@ -23,12 +23,26 @@ export interface SessionStorage {
     sessionId: string,
     messages: NormalizedMessageParam[],
     metadata: SessionMetadata,
+    opts?: SaveOptions,
   ): Promise<void>
   /** Delete a session. SDK wrappers throw "not implemented" when absent. */
   delete?(sessionId: string): Promise<boolean>
   /** Enumerate session metadata. SDK wrappers throw "not implemented" when absent. */
   list?(): Promise<SessionMetadata[]>
 }
+
+export interface SaveOptions {
+  /**
+   * 三态（spec §5）：
+   * - 省略：legacy upsert——无条件覆盖，不启用并发守卫，写入数据不含 revision
+   * - null：create-only——会话必须不存在，否则抛 SessionConflictError
+   * - 数字：CAS——必须等于存储中的当前 revision，否则抛 SessionConflictError
+   */
+  expectedRevision?: number | null
+}
+
+/** How SDK-side read-modify-write cores guard their saves (spec §8). */
+export type ConcurrencyGuard = 'none' | 'source-revision' | 'create-only'
 
 /** 乐观并发冲突：expectedRevision 与存储当前值不匹配，或 create-only 撞已有会话。 */
 export class SessionConflictError extends Error {
@@ -79,6 +93,7 @@ function normalizeMetadata(
   sessionId: string,
   messages: NormalizedMessageParam[],
   partial: Partial<SessionMetadata>,
+  expectedRevision?: number | null,
 ): SessionMetadata {
   return {
     id: sessionId,
@@ -93,7 +108,10 @@ function normalizeMetadata(
     lastOutputTokens: partial.lastOutputTokens,
     activatedTools: partial.activatedTools,
     tag: partial.tag,
-    revision: partial.revision,
+    // Tri-state (spec §5): omitted → no revision key (legacy byte-compat);
+    // create-only (null) → 1; CAS number → expected + 1. partial.revision is
+    // deliberately ignored — the guard is the only source of truth.
+    revision: expectedRevision === undefined ? undefined : (expectedRevision ?? 0) + 1,
   }
 }
 
@@ -107,10 +125,11 @@ export async function saveSessionTo(
   sessionId: string,
   messages: NormalizedMessageParam[],
   partial: Partial<SessionMetadata>,
+  opts?: SaveOptions,
 ): Promise<void> {
   const messagesWithIds = ensureMessageIds(messages)
-  const metadata = normalizeMetadata(sessionId, messagesWithIds, partial)
-  await storage.save(sessionId, messagesWithIds, metadata)
+  const metadata = normalizeMetadata(sessionId, messagesWithIds, partial, opts?.expectedRevision)
+  await storage.save(sessionId, messagesWithIds, metadata, opts)
 }
 
 /**
@@ -164,7 +183,27 @@ export class FileSessionStorage implements SessionStorage {
     }
   }
 
-  async save(sessionId: string, messages: NormalizedMessageParam[], metadata: SessionMetadata): Promise<void> {
+  async save(sessionId: string, messages: NormalizedMessageParam[], metadata: SessionMetadata, opts?: SaveOptions): Promise<void> {
+    // Best-effort CAS (spec §6): read-check-write has a cross-process race
+    // window; single-process sequential operations are correct. True CAS
+    // belongs to transactional backends (SQLite/Postgres in-transaction).
+    if (opts?.expectedRevision !== undefined) {
+      const existing = await this.load(sessionId)
+      if (opts.expectedRevision === null) {
+        if (existing) {
+          throw new SessionConflictError(sessionId, null, existing.metadata.revision ?? 0)
+        }
+      } else {
+        if (!existing) {
+          throw new SessionConflictError(sessionId, opts.expectedRevision, undefined)
+        }
+        const actual = existing.metadata.revision ?? 0
+        if (actual !== opts.expectedRevision) {
+          throw new SessionConflictError(sessionId, opts.expectedRevision, actual)
+        }
+      }
+    }
+
     const dir = this.sessionPath(sessionId)
     await mkdir(dir, { recursive: true })
 

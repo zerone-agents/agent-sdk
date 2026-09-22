@@ -4,6 +4,7 @@ import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   FileSessionStorage,
+  SessionConflictError,
   SessionDataInvalidError,
   defaultSessionStorage,
   loadSessionFrom,
@@ -97,5 +98,41 @@ describe('FileSessionStorage + wrappers (issue #4)', () => {
     }))
     await expect(loadSessionFrom(new FileSessionStorage({ baseDir: root }), 'bad'))
       .rejects.toThrow(SessionDataInvalidError)
+  })
+})
+
+describe('revision tri-state CAS (issue #4)', () => {
+  it('omitted opts: upsert, no revision key written (byte-compat)', async () => {
+    const storage = new FileSessionStorage({ baseDir: freshDir() })
+    await saveSessionTo(storage, 's1', [msg('v1')], { cwd: '/w', model: 'm' })
+    await saveSessionTo(storage, 's1', [msg('v2')], { cwd: '/w', model: 'm' })  // overwrite OK
+    const raw = JSON.parse(readFileSync(join(tmpRoot, 's1', 'transcript.json'), 'utf-8'))
+    expect(Object.keys(raw.metadata)).not.toContain('revision')
+  })
+
+  it('expectedRevision null: create-only → revision 1; existing → SessionConflictError', async () => {
+    const storage = new FileSessionStorage({ baseDir: freshDir() })
+    await saveSessionTo(storage, 's1', [msg('v1')], { cwd: '/w', model: 'm' }, { expectedRevision: null })
+    const data = await loadSessionFrom(storage, 's1')
+    expect(data!.metadata.revision).toBe(1)
+    await expect(saveSessionTo(storage, 's1', [msg('x')], { cwd: '/w', model: 'm' }, { expectedRevision: null }))
+      .rejects.toThrow(SessionConflictError)
+  })
+
+  it('expectedRevision number: match writes expected+1; mismatch throws with actualRevision', async () => {
+    const storage = new FileSessionStorage({ baseDir: freshDir() })
+    await saveSessionTo(storage, 's1', [msg('v1')], { cwd: '/w', model: 'm' }, { expectedRevision: null }) // rev 1
+    await saveSessionTo(storage, 's1', [msg('v2')], { cwd: '/w', model: 'm' }, { expectedRevision: 1 })    // rev 2
+    expect((await loadSessionFrom(storage, 's1'))!.metadata.revision).toBe(2)
+    const err = await saveSessionTo(storage, 's1', [msg('x')], { cwd: '/w', model: 'm' }, { expectedRevision: 5 })
+      .catch((e) => e)
+    expect(err).toBeInstanceOf(SessionConflictError)
+    expect(err.actualRevision).toBe(2)
+  })
+
+  it('CAS on absent session with numeric expected → conflict', async () => {
+    const storage = new FileSessionStorage({ baseDir: freshDir() })
+    await expect(saveSessionTo(storage, 'ghost', [msg('x')], { cwd: '/w', model: 'm' }, { expectedRevision: 0 }))
+      .rejects.toThrow(SessionConflictError)
   })
 })
