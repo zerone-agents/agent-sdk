@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Agent } from './agent.js'
-import type { AgentOptions } from './types.js'
+import type { AgentOptions, SDKMessage } from './types.js'
 import { InMemorySessionStorage } from './session-storage-fake.js'
 import { SessionConflictError, SessionNotFoundError, saveSessionTo } from './session-storage.js'
+import type { NormalizedMessageParam } from './providers/types.js'
+import type { Logger } from './utils/logger.js'
 
 /** Mirrors agent.test.ts makeBaseOptions — no MCP, no disk writes. */
 function base(overrides: Partial<AgentOptions> = {}): AgentOptions {
@@ -13,6 +15,35 @@ function base(overrides: Partial<AgentOptions> = {}): AgentOptions {
     enableFileRevert: false,
     mcpServers: {},
     ...overrides,
+  }
+}
+
+/**
+ * Typed test seam for Agent internals under test. The fields are private at
+ * runtime; this structured cast documents exactly what the tests touch
+ * (CONTRIBUTING: no unjustified `any`).
+ */
+interface AgentInternals {
+  history: NormalizedMessageParam[]
+  setupDone: Promise<void>
+  persistCheckpoint(): Promise<void>
+}
+function internals(agent: Agent): AgentInternals {
+  return agent as unknown as AgentInternals
+}
+
+/** User message with a stable id (matches the persisted transcript shape). */
+function histMsg(id: string, text: string): NormalizedMessageParam {
+  return { id, role: 'user', content: text } as NormalizedMessageParam
+}
+
+/** Logger stub capturing error() output for sink assertions. */
+function capturingLogger(logs: unknown[][]): Logger {
+  return {
+    debug: () => {},
+    trace: () => {},
+    error: (...args: unknown[]) => { logs.push(args) },
+    child: () => capturingLogger(logs),
   }
 }
 
@@ -40,7 +71,7 @@ describe('close() ordering + bounded checkpoint wait (issue #4)', () => {
     const held = new Promise<void>((r) => { release = r })
     fake.save = async () => { await held }        // hang the save
     const agent = new Agent(base({ persistSession: true, sessionStorage: fake, sessionCloseTimeoutMs: 50 }))
-    ;(agent as any).history = [{ id: 'm1', role: 'user', content: 'x' }]
+    internals(agent).history = [histMsg('m1', 'x')]
     const t0 = Date.now()
     await agent.close()
     expect(Date.now() - t0).toBeLessThan(2000)
@@ -50,12 +81,12 @@ describe('close() ordering + bounded checkpoint wait (issue #4)', () => {
   it('history checkpoint goes through the injected storage', async () => {
     const fake = new InMemorySessionStorage()
     const agent = new Agent(base({ persistSession: true, sessionStorage: fake }))
-    ;(agent as any).history = [{ id: 'm1', role: 'user', content: 'x' }]
+    internals(agent).history = [histMsg('m1', 'x')]
     await agent.close()
     expect(fake.saveCalls.map((c) => c.sessionId)).toHaveLength(1)
     // custom storage without explicit mode → strict (spec §7 inference);
     // new session → first checkpoint is create-only (expectedRevision: null).
-    // The explicit best-effort override is covered by the T6 test below.
+    // The explicit best-effort override is covered by the CAS tests below.
     expect(fake.saveCalls[0].opts?.expectedRevision).toBeNull()
   })
 })
@@ -73,16 +104,16 @@ describe('strict resume (issue #4 spec §7)', () => {
 describe('strict checkpoint CAS (issue #4 spec §7)', () => {
   it('tracks loaded revision; each checkpoint CAS-matches and bumps', async () => {
     const fake = new InMemorySessionStorage()
-    await saveSessionTo(fake, 's1', [{ id: 'm0', role: 'user', content: 'seed' } as any],
+    await saveSessionTo(fake, 's1', [histMsg('m0', 'seed')],
       { cwd: '/w', model: 'm' }, { expectedRevision: null })          // revision 1 (saveCalls[0])
     const agent = new Agent(base({ persistSession: true, sessionStorage: fake, resume: 's1' }))
-    await (agent as any).setupDone
-    ;(agent as any).history = [{ id: 'm1', role: 'user', content: 'x' }]
-    await (agent as any).persistCheckpoint()
+    await internals(agent).setupDone
+    internals(agent).history = [histMsg('m1', 'x')]
+    await internals(agent).persistCheckpoint()
     expect(fake.saveCalls[1].opts?.expectedRevision).toBe(1)           // CAS-matched the loaded revision
     expect(fake.store.get('s1')!.metadata.revision).toBe(2)
-    ;(agent as any).history = [{ id: 'm2', role: 'user', content: 'y' }]
-    await (agent as any).persistCheckpoint()
+    internals(agent).history = [histMsg('m2', 'y')]
+    await internals(agent).persistCheckpoint()
     expect(fake.saveCalls[2].opts?.expectedRevision).toBe(2)           // bumped and re-matched
     expect(fake.store.get('s1')!.metadata.revision).toBe(3)
     // createdAt stability: both checkpoints reuse the loaded value
@@ -92,22 +123,22 @@ describe('strict checkpoint CAS (issue #4 spec §7)', () => {
 
   it('external writer advances revision → next checkpoint throws SessionConflictError', async () => {
     const fake = new InMemorySessionStorage()
-    await saveSessionTo(fake, 's1', [{ id: 'm0', role: 'user', content: 'seed' } as any],
+    await saveSessionTo(fake, 's1', [histMsg('m0', 'seed')],
       { cwd: '/w', model: 'm' }, { expectedRevision: null })          // revision 1
     const agent = new Agent(base({ persistSession: true, sessionStorage: fake, resume: 's1' }))
-    await (agent as any).setupDone
+    await internals(agent).setupDone
     // external writer (another process) bumps to 2 — AFTER the agent's resume load
     const cur = fake.store.get('s1')!
     await saveSessionTo(fake, 's1', cur.messages, cur.metadata, { expectedRevision: 1 })
-    ;(agent as any).history = [{ id: 'm1', role: 'user', content: 'x' }]
-    await expect((agent as any).persistCheckpoint()).rejects.toThrow(SessionConflictError)
+    internals(agent).history = [histMsg('m1', 'x')]
+    await expect(internals(agent).persistCheckpoint()).rejects.toThrow(SessionConflictError)
   })
 
   it('best-effort mode never CAS-checks even with a custom storage override', async () => {
     const fake = new InMemorySessionStorage()
     const agent = new Agent(base({ persistSession: true, sessionStorage: fake, sessionErrorMode: 'best-effort' }))
-    ;(agent as any).history = [{ id: 'm1', role: 'user', content: 'x' }]
-    await (agent as any).persistCheckpoint()
+    internals(agent).history = [histMsg('m1', 'x')]
+    await internals(agent).persistCheckpoint()
     expect(fake.saveCalls[0].opts).toBeUndefined()
   })
 })
@@ -116,11 +147,11 @@ describe('strict checkpoint CAS (issue #4 spec §7)', () => {
 // vi.mock is hoisted file-wide; the close/validation tests above never touch
 // submitMessage, so they are unaffected.
 vi.mock('./engine.js', async (importOriginal) => {
-  const actual = await importOriginal() as any
+  const actual = await importOriginal() as { QueryEngine: new (...args: unknown[]) => object }
   return {
     ...actual,
     QueryEngine: class extends actual.QueryEngine {
-      async *submitMessage(): AsyncGenerator<any> {
+      async *submitMessage(): AsyncGenerator<SDKMessage> {
         throw new Error('engine boom')
       }
     },
@@ -135,9 +166,9 @@ describe('query() finally masking guard (issue #4 spec §7)', () => {
     const agent = new Agent(base({
       persistSession: true,
       sessionStorage: fake,
-      logger: { debug() {}, info() {}, warn() {}, error: (...a: unknown[]) => { logs.push(a) } } as any,
+      logger: capturingLogger(logs),
     }))
-    ;(agent as any).history = [{ id: 'seed', role: 'user', content: 's' }]
+    internals(agent).history = [histMsg('seed', 's')]
     await expect(agent.prompt('hi')).rejects.toThrow('engine boom')   // ORIGINAL error wins
     expect(logs.some((a) => String(a[0]).includes('[session] checkpoint failed'))).toBe(true)
   })
@@ -145,8 +176,21 @@ describe('query() finally masking guard (issue #4 spec §7)', () => {
   it('healthy save + engine error → only the engine error surfaces', async () => {
     const fake = new InMemorySessionStorage()
     const agent = new Agent(base({ persistSession: true, sessionStorage: fake }))
-    ;(agent as any).history = [{ id: 'seed', role: 'user', content: 's' }]
+    internals(agent).history = [histMsg('seed', 's')]
     await expect(agent.prompt('hi')).rejects.toThrow('engine boom')
     expect(fake.saveCalls.length).toBeGreaterThanOrEqual(1)           // checkpoint still ran in finally
+  })
+})
+
+describe('tag preservation across checkpoints (issue #4 PR review)', () => {
+  it('tag survives Agent resume + checkpoint', async () => {
+    const fake = new InMemorySessionStorage()
+    await saveSessionTo(fake, 's1', [histMsg('m0', 'seed')],
+      { cwd: '/w', model: 'm', tag: 'important' }, { expectedRevision: null })
+    const agent = new Agent(base({ persistSession: true, sessionStorage: fake, resume: 's1' }))
+    await internals(agent).setupDone
+    internals(agent).history = [histMsg('m1', 'more')]
+    await internals(agent).persistCheckpoint()
+    expect(fake.store.get('s1')!.metadata.tag).toBe('important')
   })
 })
