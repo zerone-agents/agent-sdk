@@ -230,9 +230,26 @@ export class Agent {
   /** Per-agent skill registry: defaultRegistry (programmatic) as base + own filesystem overlay. */
   readonly skillRegistry = new SkillRegistry(defaultRegistry)
 
+  /** issue #122 + review P2: retention counts are host-facing — reject garbage
+   *  at BOTH entry points (construction and per-query override merge).
+   *  Otherwise #92 semantics silently degrade auto-compaction to
+   *  fully-clearable at trigger time, summarizing the whole protected window. */
+  private validateAutoCompactionRetention(opts: AgentOptions): void {
+    for (const [field, value] of [
+      ['autoCompactionProtectedQueries', opts.autoCompactionProtectedQueries],
+      ['autoCompactionToolProtectedQueries', opts.autoCompactionToolProtectedQueries],
+    ] as Array<[string, number | undefined]>) {
+      if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+        throw new TypeError(`AgentOptions.${field} must be a positive integer, got ${value}.`)
+      }
+    }
+  }
+
   constructor(options: AgentOptions = {}) {
     // Shallow copy to avoid mutating caller's object
     this.cfg = { ...options }
+
+    this.validateAutoCompactionRetention(this.cfg)
 
     // Merge credentials from options.env map, direct options, and process.env
     this.apiCredentials = this.pickCredentials()
@@ -633,6 +650,10 @@ export class Agent {
 
     const opts = { ...this.cfg, ...omitUndefined(overrides) }
 
+    // Review P2: per-query overrides bypass the constructor check — validate
+    // the MERGED view (overrides win the spread, so this re-checks the winner).
+    this.validateAutoCompactionRetention(opts)
+
     // Create abort controller for this query
     this.abortCtrl = opts.abortController || new AbortController()
     if (opts.abortSignal) {
@@ -714,6 +735,10 @@ export class Agent {
       contextWindow: opts.contextWindow,
       maxRequestBodyBytes: opts.maxRequestBodyBytes,
       maxSessionQueries: opts.maxSessionQueries,
+      // issue #122: host-configurable retention for the automatic compaction
+      // path (engine reads these at its auto-compact call site).
+      autoCompactionProtectedQueries: opts.autoCompactionProtectedQueries,
+      autoCompactionToolProtectedQueries: opts.autoCompactionToolProtectedQueries,
       effort: opts.effort,
       snapshotEngine: opts.snapshotEngine ?? this.cfg.snapshotEngine,
       // #78 R5: engine-scoped query logger (pre-existing capability):

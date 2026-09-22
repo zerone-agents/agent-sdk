@@ -135,6 +135,8 @@ integrations to `compactSessionStream()` or `compactSession()`.
 | `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` / `auto` |
 | `canUseTool`         | `function`                              | —                      | Custom permission callback                                           |
 | `maxSessionQueries` | `number`                                | —                      | Max queries included in LLM context; older queries trigger halved compaction |
+| `autoCompactionProtectedQueries` | `number`                       | `4`                    | Retained protected queries for automatic token-threshold compaction (issue #122); explicit `compact()`/`compactStream()` args take precedence |
+| `autoCompactionToolProtectedQueries` | `number`                     | `2`                    | Queries within the automatic-compaction tail keeping full tool_result payloads; oversized results outside the window are cleared |
 | `maxBudgetUsd`       | `number`                                | —                      | Spending cap                                                         |
 | `thinking`           | `ThinkingConfig`                        | —                      | Extended thinking (`{ type: 'adaptive' \| 'enabled' \| 'disabled', budgetTokens? }`); disabled unless set |
 | `effort`             | `string`                                | —                      | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`; not sent unless set |
@@ -157,6 +159,40 @@ integrations to `compactSessionStream()` or `compactSession()`.
 > **AGENTS.md size limit**: each file is capped at 32 KiB. Files exceeding this
 > size are skipped; an `[ERROR]` message is injected into the system prompt in
 > their place.
+
+#### Automatic compaction retention (issue #122)
+
+`autoCompactionProtectedQueries` / `autoCompactionToolProtectedQueries` control
+the retention window of the **automatic** token-threshold compaction, with the
+same meanings as the `protectedQueries` / `toolProtectedQueries` arguments of
+`agent.compactStream()`. They do NOT affect:
+
+- explicit `compact()` / `compactStream()` calls — passed arguments take
+  precedence;
+- the `maxSessionQueries` halved compaction (keeps its own formula);
+- trigger thresholds, target occupancy, summary size, or retry strategy.
+
+Both must be positive integers (validated at construction; omitting either
+keeps the `4` / `2` defaults). Host-side policy example — post-compaction
+occupancy scales with the retained tail, so smaller context windows warrant
+smaller windows:
+
+```ts
+// Same wire model ID can resolve to different context windows (e.g. K3 256K
+// vs K3 1M) — branch on the RESOLVED selection, not the model name.
+const contextWindow = resolvedSelection.contextWindow
+const sub1M = contextWindow < 1_000_000
+const agent = new Agent({
+  // ...
+  autoCompactionProtectedQueries: sub1M ? 2 : 4,
+  autoCompactionToolProtectedQueries: sub1M ? 1 : 2,
+})
+```
+
+| Context window          | protectedQueries | toolProtectedQueries |
+| ----------------------- | ---------------- | -------------------- |
+| < 1,000,000 tokens      | 2                | 1                    |
+| ≥ 1,000,000 tokens      | 4 (default)      | 2 (default)          |
 
 ### Subagent capability isolation (3.0)
 

@@ -843,7 +843,7 @@ export interface AgentOptions {
   onSkillsUpdated?: (event: import('./types.js').SDKSkillsUpdatedMessage) => void
 
   // ===========================================================================
-  // === MiscConfig === (11 fields)
+  // === MiscConfig === (15 fields)
   // Miscellaneous: agent identity, tools, budget, plugins, debug, hooks.
   // ===========================================================================
 
@@ -891,6 +891,28 @@ export interface AgentOptions {
    *  Session transcript still persists full history; only the API call
    *  is truncated. Undefined = no limit (current behavior). */
   maxSessionQueries?: number
+  /**
+   * Retention window for AUTOMATIC token-threshold compaction: how many
+   * recent real user queries survive verbatim (not summarized). Same meaning
+   * as the `protectedQueries` argument of `Agent.compactStream()`. Default: 4.
+   *
+   * Applies ONLY to the automatic path; explicit `compact()` / `compactStream()`
+   * arguments take precedence when passed. The `maxSessionQueries` halved
+   * compaction keeps its own formula. Must be a positive integer (validated at
+   * construction). The just-submitted query does not consume a boundary slot.
+   *
+   * Host example — sub-1M-context models (e.g. 256K) keep post-compaction
+   * occupancy low with 2; at 1M+ context the default 4 is appropriate.
+   */
+  autoCompactionProtectedQueries?: number
+  /**
+   * Queries within the automatic-compaction protected tail that keep FULL
+   * tool_result payloads; oversized tool results outside this window are
+   * cleared at compaction time. Same meaning as the `toolProtectedQueries`
+   * argument of `Agent.compactStream()`. Default: 2. Positive integer
+   * (validated at construction). The pending user query occupies one slot.
+   */
+  autoCompactionToolProtectedQueries?: number
 }
 
 export interface QueryResult {
@@ -956,6 +978,10 @@ export interface QueryEngineConfig {
   maxRequestBodyBytes?: number
   /** Maximum user queries to send to LLM. See AgentOptions.maxSessionQueries. */
   maxSessionQueries?: number
+  /** Retained protected queries for AUTOMATIC token-threshold compaction. See AgentOptions.autoCompactionProtectedQueries. */
+  autoCompactionProtectedQueries?: number
+  /** Queries within the automatic-compaction tail keeping FULL tool_result payloads. See AgentOptions.autoCompactionToolProtectedQueries. */
+  autoCompactionToolProtectedQueries?: number
   /** Effort level for reasoning. See AgentOptions.effort. */
   effort?: string
   /** Snapshot engine for file system tracking (enables file revert). Optional. */
