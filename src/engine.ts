@@ -315,9 +315,14 @@ export class QueryEngine {
         break
       }
 
-      // Auto-compact if context is too large
+      // Auto-compact if context is too large. Retention window is host-
+      // configurable (issue #122); undefined falls through to the 4/2
+      // defaults inside compactStream — omitting config changes nothing.
       if (shouldAutoCompact(this.compactState, this.config.runtime.model, this.config.contextWindow)) {
-        for await (const ev of this.compactStream()) {
+        for await (const ev of this.compactStream(
+          this.config.autoCompactionProtectedQueries,
+          this.config.autoCompactionToolProtectedQueries,
+        )) {
           yield ev
         }
       }

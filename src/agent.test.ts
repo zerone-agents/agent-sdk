@@ -1580,3 +1580,32 @@ describe('real FindTool execution chain regressions (PR #116 review)', () => {
     expect(hostServices.findTool.activatedTools.size).toBe(0)
   })
 })
+
+describe('auto-compaction retention options (issue #122)', () => {
+  it('rejects non-positive or non-integer retention counts at construction', () => {
+    expect(() => new Agent(makeBaseOptions({ autoCompactionProtectedQueries: 0 }))).toThrow(/autoCompactionProtectedQueries/)
+    expect(() => new Agent(makeBaseOptions({ autoCompactionProtectedQueries: -1 }))).toThrow(/autoCompactionProtectedQueries/)
+    expect(() => new Agent(makeBaseOptions({ autoCompactionToolProtectedQueries: 1.5 }))).toThrow(/autoCompactionToolProtectedQueries/)
+  })
+
+  it('accepts 2/1 (sub-1M-context policy) and defaults when omitted', () => {
+    expect(() => new Agent(makeBaseOptions({ autoCompactionProtectedQueries: 2, autoCompactionToolProtectedQueries: 1 }))).not.toThrow()
+    expect(() => new Agent(makeBaseOptions())).not.toThrow()
+  })
+
+  it('rejects invalid retention values passed as per-query overrides (review P2)', async () => {
+    // QueryOverrides = Partial<AgentOptions>: the merged opts reach the
+    // engine WITHOUT the constructor check unless query() re-validates.
+    // An invalid value would hit #92 semantics at auto-compact time —
+    // fully clearable, the whole protected window silently summarized.
+    const agent = new Agent(makeBaseOptions())
+    const drain = async () => {
+      const events: unknown[] = []
+      for await (const ev of agent.query('hi', { autoCompactionToolProtectedQueries: 1.5 })) {
+        events.push(ev)
+      }
+      return events
+    }
+    await expect(drain()).rejects.toThrow(/autoCompactionToolProtectedQueries/)
+  })
+})

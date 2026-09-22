@@ -704,6 +704,94 @@ describe('QueryEngine.compact option threading (issue #86)', () => {
   })
 })
 
+describe('auto-compaction retention settings (issue #122)', () => {
+  /** Dual-method provider: summary via createMessage, final answer via stream. */
+  function autoCompactProvider(): LLMProvider {
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        return {
+          content: [{ type: 'text', text: 'SUMMARY' }],
+          stopReason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1, totalInputTokens: 1 },
+        } as any
+      },
+      async *createMessageStream(params: any): AsyncGenerator<StreamChunk> {
+        const isCompaction = params.messages?.length === 1
+          && typeof params.messages[0].content === 'string'
+          && params.messages[0].content.includes('Please summarize')
+        yield { type: 'text', index: 0, delta: isCompaction ? 'SUMMARY' : 'final answer' } as StreamChunk
+        yield { type: 'usage', usage: { input_tokens: 10, output_tokens: 5, totalInputTokens: 10 } } as any
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+  }
+
+  /**
+   * Engine seeded with n big-tool rounds + a final assistant message, then
+   * constructed with a 500K lastInputTokens seed — above the test-model
+   * auto-compact threshold — so the FIRST loop iteration of submitMessage
+   * takes the REAL automatic token-threshold compaction path (engine.ts:319),
+   * not the manual compact()/compactStream() helper.
+   */
+  function makeAutoCompactEngine(
+    n: number,
+    retention: Partial<Record<'autoCompactionProtectedQueries' | 'autoCompactionToolProtectedQueries', number>> = {},
+  ): QueryEngine {
+    const engine = new QueryEngine({
+      ...makeConfig(autoCompactProvider()),
+      ...retention,
+    }, { lastInputTokens: 500_000 })
+    for (let i = 1; i <= n; i++) {
+      engine.messages.push(
+        { role: 'user', content: `query ${i}` } as never,
+        { role: 'assistant', content: [{ type: 'tool_use', id: `id-${i}`, name: 'Read', input: {} }] } as never,
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: `id-${i}`, content: 'x'.repeat(PRUNE_THRESHOLD_CHARS + 1) }] } as never,
+      )
+    }
+    engine.messages.push({ role: 'assistant', content: 'final' } as never)
+    return engine
+  }
+
+  /** Count user tool_result blocks whose payload was cleared by pruning. */
+  function countAutoCleared(messages: NormalizedMessageParam[]): number {
+    return messages.filter((m) => {
+      if (m.role !== 'user' || !Array.isArray(m.content)) return false
+      const first = m.content[0] as { type?: string; content?: unknown }
+      return first?.type === 'tool_result' && first?.content === '[Old tool result content cleared]'
+    }).length
+  }
+
+  it('automatic token-threshold compaction honors configured 2/1 retention', async () => {
+    const engine = makeAutoCompactEngine(6, { autoCompactionProtectedQueries: 2, autoCompactionToolProtectedQueries: 1 })
+    await run(engine)
+    const json = JSON.stringify(engine.messages)
+    expect(json).toContain('SUMMARY')
+    // Boundary is computed on history EXCLUDING the just-submitted 'hi'
+    // (compactConversationWithProtectedTail): protectedQueries=2 over the 6
+    // seeded query starts → tail starts at query 5; queries 1-4 summarized.
+    expect(json).not.toContain('query 4')
+    expect(json).toContain('query 5')
+    // Prune window = [q5, q6, final, hi] and the pending 'hi' occupies a
+    // tool-protection slot: toolProtectedQueries=1 → only 'hi' keeps full
+    // payloads → query 5 AND query 6 tool results cleared (2 sentinels).
+    expect(countAutoCleared(engine.messages)).toBe(2)
+  })
+
+  it('omitting the settings keeps the 4/2 defaults', async () => {
+    const engine = makeAutoCompactEngine(6)
+    await run(engine)
+    const json = JSON.stringify(engine.messages)
+    expect(json).toContain('SUMMARY')
+    // Defaults 4/2 → tail starts at query 3 (queries 1-2 summarized);
+    // prune window [q3..q6, final, hi] with tool window {q6, hi} →
+    // queries 3/4/5 tool results cleared (3 sentinels).
+    expect(json).not.toContain('query 2')
+    expect(json).toContain('query 3')
+    expect(countAutoCleared(engine.messages)).toBe(3)
+  })
+})
+
 describe('QueryEngine logging (issue #28)', () => {
   const SECRET = 'sk-live-secret-12345'
 
