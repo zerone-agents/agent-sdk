@@ -151,6 +151,9 @@ export async function* compactSessionStreamWith(
     // issue #115: metadata is rebuilt field-by-field here — without this
     // forwarding the activation set is silently dropped after compaction.
     activatedTools: session.metadata.activatedTools,
+    // issue #4 PR review: same class of bug as activatedTools above — the
+    // formalized tag must survive compaction.
+    tag: session.metadata.tag,
   }, guard === 'source-revision' ? { expectedRevision: session.metadata.revision ?? 0 } : undefined)
 
   return {

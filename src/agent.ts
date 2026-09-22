@@ -233,6 +233,8 @@ export class Agent {
   private sessionRevision: number | null = null
   /** Stable creation time: minted once at construction, overwritten on resume (issue #4). */
   private sessionCreatedAt: string
+  /** Stable session tag: captured on resume, preserved by every checkpoint (issue #4 review). */
+  private sessionTag?: string | null
 
   /** Per-agent skill registry: defaultRegistry (programmatic) as base + own filesystem overlay. */
   readonly skillRegistry = new SkillRegistry(defaultRegistry)
@@ -610,6 +612,7 @@ export class Agent {
         this.sid = this.cfg.resume
         this.sessionCreatedAt = sessionData.metadata.createdAt
         this.sessionRevision = sessionData.metadata.revision ?? 0
+        this.sessionTag = sessionData.metadata.tag
         if (sessionData.metadata.lastInputTokens) {
           this.lastInputTokens = sessionData.metadata.lastInputTokens
         }
@@ -960,6 +963,7 @@ export class Agent {
       model: this.modelId,
       provider: this.apiType,
       createdAt: this.sessionCreatedAt,
+      tag: this.sessionTag,
       lastInputTokens: this.lastInputTokens,
       lastOutputTokens: this.lastOutputTokens,
       activatedTools: this.activatedToolsSnapshot(),
@@ -1216,15 +1220,22 @@ export class Agent {
     if (this.cfg.persistSession === false || this.history.length === 0) return
 
     let timedOut = false
+    let timerHandle: ReturnType<typeof setTimeout> | undefined
     const timer = new Promise<void>((resolve) => {
-      setTimeout(() => { timedOut = true; resolve() }, timeoutMs)
+      timerHandle = setTimeout(() => { timedOut = true; resolve() }, timeoutMs)
     })
     // close() never propagates checkpoint failures (spec §9); persistCheckpoint
     // already logs best-effort failures, strict failures log here.
     const checkpoint = this.persistCheckpoint().catch((err) => {
       this.sink.error('[session] close checkpoint failed', { errorType: stableErrorType(err) }, err)
     })
-    await Promise.race([checkpoint, timer])
+    try {
+      await Promise.race([checkpoint, timer])
+    } finally {
+      // PR review P2: a ref'd timer that lost the race would keep the Node
+      // process (and repeated close() calls) alive until it fired.
+      clearTimeout(timerHandle)
+    }
     if (timedOut) {
       this.sink.error('[session] close checkpoint timed out', { timeoutMs })
     }
