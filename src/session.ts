@@ -5,19 +5,8 @@
  * Manages session lifecycle (create, resume, list, fork).
  */
 
-import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'fs/promises'
-import { join } from 'path'
+import { defaultSessionStorage, loadSessionFrom, saveSessionTo } from './session-storage.js'
 import type { NormalizedMessageParam } from './providers/types.js'
-
-/**
- * Ensure every message has a stable id.
- */
-function ensureMessageIds(messages: NormalizedMessageParam[]): NormalizedMessageParam[] {
-  for (const msg of messages) {
-    if (!msg.id) msg.id = crypto.randomUUID()
-  }
-  return messages
-}
 
 /**
  * Session metadata.
@@ -36,6 +25,10 @@ export interface SessionMetadata {
   /** FindTool-activated deferred tool names (issue #115). Optional: sessions
    * saved by older SDK versions have no such field. */
   activatedTools?: string[]
+  /** 会话标签（tagSession）。原为 as any 写入，issue #4 正式入型。 */
+  tag?: string | null
+  /** 乐观并发版本号，单调递增。仅 CAS 写路径写入；legacy 路径不写。 */
+  revision?: number
 }
 
 /**
@@ -47,21 +40,6 @@ export interface SessionData {
 }
 
 /**
- * Get the sessions directory path.
- */
-function getSessionsDir(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
-  return join(home, '.agents', 'sessions')
-}
-
-/**
- * Get the path for a specific session.
- */
-function getSessionPath(sessionId: string): string {
-  return join(getSessionsDir(), sessionId)
-}
-
-/**
  * Save session to disk.
  */
 export async function saveSession(
@@ -69,86 +47,21 @@ export async function saveSession(
   messages: NormalizedMessageParam[],
   metadata: Partial<SessionMetadata>,
 ): Promise<void> {
-  const dir = getSessionPath(sessionId)
-  await mkdir(dir, { recursive: true })
-
-  const messagesWithIds = ensureMessageIds(messages)
-
-  const data: SessionData = {
-    metadata: {
-      id: sessionId,
-      cwd: metadata.cwd || process.cwd(),
-      model: metadata.model || 'claude-sonnet-4-6',
-      provider: metadata.provider,
-      createdAt: metadata.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      messageCount: messagesWithIds.length,
-      summary: metadata.summary,
-      lastInputTokens: metadata.lastInputTokens,
-      lastOutputTokens: metadata.lastOutputTokens,
-      activatedTools: metadata.activatedTools,
-    },
-    messages: messagesWithIds,
-  }
-
-  // Atomic replacement (review #47 P1): write to a temporary sibling file,
-  // then rename over transcript.json. A crash mid-write can never leave the
-  // existing transcript truncated or partially replaced — readers see either
-  // the old file or the complete new one. Same directory guarantees the same
-  // filesystem, so rename is atomic (POSIX) / REPLACE_EXISTING (Windows).
-  const finalPath = join(dir, 'transcript.json')
-  const tmpPath = join(dir, `transcript.json.tmp-${crypto.randomUUID()}`)
-  try {
-    await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8')
-    await rename(tmpPath, finalPath)
-  } catch (err) {
-    await unlink(tmpPath).catch(() => {}) // best-effort tmp cleanup
-    throw err
-  }
+  return saveSessionTo(defaultSessionStorage, sessionId, messages, metadata)
 }
 
 /**
  * Load session from disk.
  */
 export async function loadSession(sessionId: string): Promise<SessionData | null> {
-  try {
-    const filePath = join(getSessionPath(sessionId), 'transcript.json')
-    const content = await readFile(filePath, 'utf-8')
-    const data = JSON.parse(content) as SessionData
-    data.messages = ensureMessageIds(data.messages)
-    return data
-  } catch {
-    return null
-  }
+  return loadSessionFrom(defaultSessionStorage, sessionId)
 }
 
 /**
  * List all sessions.
  */
 export async function listSessions(): Promise<SessionMetadata[]> {
-  try {
-    const dir = getSessionsDir()
-    const entries = await readdir(dir)
-    const sessions: SessionMetadata[] = []
-
-    for (const entry of entries) {
-      try {
-        const data = await loadSession(entry)
-        if (data?.metadata) {
-          sessions.push(data.metadata)
-        }
-      } catch {
-        // Skip invalid sessions
-      }
-    }
-
-    // Sort by updatedAt descending
-    sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-
-    return sessions
-  } catch {
-    return []
-  }
+  return (await defaultSessionStorage.list?.()) ?? []
 }
 
 /**
@@ -259,13 +172,7 @@ export async function appendToSession(
  * Delete a session.
  */
 export async function deleteSession(sessionId: string): Promise<boolean> {
-  try {
-    const { rm } = await import('fs/promises')
-    await rm(getSessionPath(sessionId), { recursive: true, force: true })
-    return true
-  } catch {
-    return false
-  }
+  return (await defaultSessionStorage.delete?.(sessionId)) ?? false
 }
 
 /**
@@ -307,7 +214,7 @@ export async function tagSession(
   const data = await loadSession(sessionId)
   if (!data) return
 
-  ;(data.metadata as any).tag = tag
+  data.metadata.tag = tag
   data.metadata.updatedAt = new Date().toISOString()
 
   await saveSession(sessionId, data.messages, data.metadata)
