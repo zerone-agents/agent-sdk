@@ -40,7 +40,7 @@ import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
 import { resolveTransportKind } from './mcp/client.js'
 import { adaptToDiagnosticsSink, createDiagnosticsSink, sanitizeLogField, stableErrorType, type DiagnosticsSink } from './utils/diagnostics.js'
-import { defaultSessionStorage, loadSessionFrom, saveSessionTo, type SessionStorage } from './session-storage.js'
+import { defaultSessionStorage, loadSessionFrom, saveSessionTo, SessionNotFoundError, type SaveOptions, type SessionStorage } from './session-storage.js'
 import type { SessionMetadata } from './session.js'
 import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
@@ -598,6 +598,13 @@ export class Agent {
     // Resume or continue session
     if (this.cfg.resume) {
       const sessionData = await loadSessionFrom(this.storage, this.cfg.resume)
+      if (!sessionData && this.strict) {
+        // spec §7: strict resume must fail explicitly — a silent new session
+        // would leave the host's session mapping pointing at a dead ID.
+        throw new SessionNotFoundError(this.cfg.resume)
+      }
+      // best-effort default with a missing session: silent new session
+      // (pre-existing behavior).
       if (sessionData) {
         this.history = sessionData.messages
         this.sid = this.cfg.resume
@@ -779,6 +786,7 @@ export class Agent {
     }
 
     // Run the engine (try/finally ensures persistence even on abort)
+    let inFlightError: unknown
     try {
       for await (const event of engine.submitMessage(input)) {
         // messageLog is a PROJECTION of engine events (issue #54): entries
@@ -806,13 +814,27 @@ export class Agent {
 
         yield event
       }
+    } catch (e) {
+      inFlightError = e
+      throw e
     } finally {
       this.history = engine.getMessages()
       const engineState = engine.getState()
       this.lastInputTokens = engineState.lastInputTokens
       this.lastOutputTokens = engineState.lastOutputTokens
 
-      await this.persistCheckpoint()
+      try {
+        await this.persistCheckpoint()
+      } catch (saveErr) {
+        if (inFlightError) {
+          // spec §7 masking guard: the original error always wins; the
+          // checkpoint failure is logged, never thrown over it.
+          this.sink.error('[session] checkpoint failed (original error preserved)',
+            { errorType: stableErrorType(saveErr) }, saveErr)
+        } else {
+          throw saveErr
+        }
+      }
     }
   }
 
@@ -946,16 +968,23 @@ export class Agent {
 
   /**
    * Persist the current history as a session checkpoint (issue #4).
-   * T5: best-effort only — log + swallow (pre-existing semantics). Strict
-   * propagation + CAS land with sessionErrorMode in Task 6.
+   * Best-effort mode: log + swallow (pre-existing semantics). Strict mode:
+   * CAS-guarded — save failures and conflicts propagate; query() masks
+   * behind any in-flight error.
    */
   private async persistCheckpoint(): Promise<void> {
     if (this.cfg.persistSession === false || this.history.length === 0) return
-    try {
-      await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata())
-    } catch (err) {
-      this.sink.error('[session] checkpoint failed', { errorType: stableErrorType(err) }, err)
+    if (!this.strict) {
+      try {
+        await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata())
+      } catch (err) {
+        this.sink.error('[session] checkpoint failed', { errorType: stableErrorType(err) }, err)
+      }
+      return
     }
+    const opts: SaveOptions = { expectedRevision: this.sessionRevision }
+    await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata(), opts)
+    this.sessionRevision = (this.sessionRevision ?? 0) + 1
   }
 
   /**
