@@ -40,10 +40,8 @@ import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
 import { resolveTransportKind } from './mcp/client.js'
 import { adaptToDiagnosticsSink, createDiagnosticsSink, sanitizeLogField, stableErrorType, type DiagnosticsSink } from './utils/diagnostics.js'
-import {
-  saveSession,
-  loadSession,
-} from './session.js'
+import { defaultSessionStorage, loadSessionFrom, saveSessionTo, SessionNotFoundError, type SaveOptions, type SessionStorage } from './session-storage.js'
+import type { SessionMetadata } from './session.js'
 import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
 import { createHookRegistry, type HookRegistry, type HookEvent, type HookInput, type HookOutput } from './hooks.js'
@@ -133,6 +131,9 @@ interface SessionConfig {
   snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   enableFileRevert?: boolean
   snapshotTimeoutMs?: number
+  sessionStorage?: import('./session-storage.js').SessionStorage
+  sessionErrorMode?: 'best-effort' | 'strict'
+  sessionCloseTimeoutMs?: number
 }
 
 /** Permission and access control */
@@ -226,6 +227,14 @@ export class Agent {
   private sink: DiagnosticsSink
   private lastInputTokens = 0
   private lastOutputTokens = 0
+  private storage: SessionStorage
+  private strict: boolean
+  /** Optimistic-concurrency revision of the persisted session; null = not yet persisted (issue #4). */
+  private sessionRevision: number | null = null
+  /** Stable creation time: minted once at construction, overwritten on resume (issue #4). */
+  private sessionCreatedAt: string
+  /** Stable session tag: captured on resume, preserved by every checkpoint (issue #4 review). */
+  private sessionTag?: string | null
 
   /** Per-agent skill registry: defaultRegistry (programmatic) as base + own filesystem overlay. */
   readonly skillRegistry = new SkillRegistry(defaultRegistry)
@@ -255,6 +264,20 @@ export class Agent {
     this.apiCredentials = this.pickCredentials()
     this.modelId = this.cfg.model ?? this.readEnv('ZERONE_AGENT_MODEL') ?? 'claude-sonnet-4-6'
     this.sid = this.cfg.sessionId ?? crypto.randomUUID()
+
+    // Session storage binding (issue #4): one-shot at construction.
+    if (this.cfg.sessionCloseTimeoutMs !== undefined) {
+      const t = this.cfg.sessionCloseTimeoutMs
+      if (typeof t !== 'number' || Number.isNaN(t) || !Number.isFinite(t) || t < 0) {
+        throw new TypeError(
+          `AgentOptions.sessionCloseTimeoutMs must be a non-negative finite number, got ${String(this.cfg.sessionCloseTimeoutMs)}`,
+        )
+      }
+    }
+    this.storage = this.cfg.sessionStorage ?? defaultSessionStorage
+    this.strict = this.cfg.sessionErrorMode === 'strict'
+      || (this.cfg.sessionErrorMode === undefined && this.cfg.sessionStorage !== undefined)
+    this.sessionCreatedAt = new Date().toISOString()
 
     // Resolve API type
     this.apiType = this.resolveApiType()
@@ -576,10 +599,20 @@ export class Agent {
 
     // Resume or continue session
     if (this.cfg.resume) {
-      const sessionData = await loadSession(this.cfg.resume)
+      const sessionData = await loadSessionFrom(this.storage, this.cfg.resume)
+      if (!sessionData && this.strict) {
+        // spec §7: strict resume must fail explicitly — a silent new session
+        // would leave the host's session mapping pointing at a dead ID.
+        throw new SessionNotFoundError(this.cfg.resume)
+      }
+      // best-effort default with a missing session: silent new session
+      // (pre-existing behavior).
       if (sessionData) {
         this.history = sessionData.messages
         this.sid = this.cfg.resume
+        this.sessionCreatedAt = sessionData.metadata.createdAt
+        this.sessionRevision = sessionData.metadata.revision ?? 0
+        this.sessionTag = sessionData.metadata.tag
         if (sessionData.metadata.lastInputTokens) {
           this.lastInputTokens = sessionData.metadata.lastInputTokens
         }
@@ -756,6 +789,7 @@ export class Agent {
     }
 
     // Run the engine (try/finally ensures persistence even on abort)
+    let inFlightError: unknown
     try {
       for await (const event of engine.submitMessage(input)) {
         // messageLog is a PROJECTION of engine events (issue #54): entries
@@ -783,25 +817,25 @@ export class Agent {
 
         yield event
       }
+    } catch (e) {
+      inFlightError = e
+      throw e
     } finally {
       this.history = engine.getMessages()
       const engineState = engine.getState()
       this.lastInputTokens = engineState.lastInputTokens
       this.lastOutputTokens = engineState.lastOutputTokens
 
-      if (this.cfg.persistSession !== false && this.history.length > 0) {
-        try {
-          await saveSession(this.sid, this.history, {
-            cwd: this.cfg.cwd || process.cwd(),
-            model: this.modelId,
-            provider: this.apiType,
-            summary: undefined,
-            lastInputTokens: this.lastInputTokens,
-            lastOutputTokens: this.lastOutputTokens,
-            activatedTools: this.activatedToolsSnapshot(),
-          })
-        } catch {
-          // best-effort
+      try {
+        await this.persistCheckpoint()
+      } catch (saveErr) {
+        if (inFlightError) {
+          // spec §7 masking guard: the original error always wins; the
+          // checkpoint failure is logged, never thrown over it.
+          this.sink.error('[session] checkpoint failed (original error preserved)',
+            { errorType: stableErrorType(saveErr) }, saveErr)
+        } else {
+          throw saveErr
         }
       }
     }
@@ -922,23 +956,39 @@ export class Agent {
     return [...this.history]
   }
 
-  /**
-   * Persist current history to session file.
-   */
-  private async persistSession(): Promise<void> {
-    if (this.cfg.persistSession === false || this.history.length === 0) return
-    try {
-      await saveSession(this.sid, this.history, {
-        cwd: this.cfg.cwd || process.cwd(),
-        model: this.modelId,
-        provider: this.apiType,
-        lastInputTokens: this.lastInputTokens,
-        lastOutputTokens: this.lastOutputTokens,
-        activatedTools: this.activatedToolsSnapshot(),
-      })
-    } catch {
-      // best-effort
+  /** Converged checkpoint metadata (issue #4): replaces the 4 former inline literals. */
+  private buildCheckpointMetadata(): Partial<SessionMetadata> {
+    return {
+      cwd: this.cfg.cwd || process.cwd(),
+      model: this.modelId,
+      provider: this.apiType,
+      createdAt: this.sessionCreatedAt,
+      tag: this.sessionTag,
+      lastInputTokens: this.lastInputTokens,
+      lastOutputTokens: this.lastOutputTokens,
+      activatedTools: this.activatedToolsSnapshot(),
     }
+  }
+
+  /**
+   * Persist the current history as a session checkpoint (issue #4).
+   * Best-effort mode: log + swallow (pre-existing semantics). Strict mode:
+   * CAS-guarded — save failures and conflicts propagate; query() masks
+   * behind any in-flight error.
+   */
+  private async persistCheckpoint(): Promise<void> {
+    if (this.cfg.persistSession === false || this.history.length === 0) return
+    if (!this.strict) {
+      try {
+        await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata())
+      } catch (err) {
+        this.sink.error('[session] checkpoint failed', { errorType: stableErrorType(err) }, err)
+      }
+      return
+    }
+    const opts: SaveOptions = { expectedRevision: this.sessionRevision }
+    await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata(), opts)
+    this.sessionRevision = (this.sessionRevision ?? 0) + 1
   }
 
   /**
@@ -999,21 +1049,7 @@ export class Agent {
       // Leave history unchanged on failure; skip PostCompact
     }
 
-    if (this.cfg.persistSession !== false && this.history.length > 0) {
-      try {
-        await saveSession(this.sid, this.history, {
-          cwd: this.cfg.cwd || process.cwd(),
-          model: this.modelId,
-          provider: this.apiType,
-          summary: undefined,
-          lastInputTokens: this.lastInputTokens,
-          lastOutputTokens: this.lastOutputTokens,
-          activatedTools: this.activatedToolsSnapshot(),
-        })
-      } catch {
-        // best-effort
-      }
-    }
+    await this.persistCheckpoint()
   }
 
   /**
@@ -1164,23 +1200,8 @@ export class Agent {
    * Optionally persist session to disk.
    */
   async close(): Promise<void> {
-    // Persist session if enabled
-    if (this.cfg.persistSession !== false && this.history.length > 0) {
-      try {
-        await saveSession(this.sid, this.history, {
-          cwd: this.cfg.cwd || process.cwd(),
-          model: this.modelId,
-          provider: this.apiType,
-          summary: undefined,
-          lastInputTokens: this.lastInputTokens,
-          lastOutputTokens: this.lastOutputTokens,
-          activatedTools: this.activatedToolsSnapshot(),
-        })
-      } catch {
-        // Session persistence is best-effort
-      }
-    }
-
+    // Cleanup FIRST (issue #4): a hanging checkpoint must never block MCP
+    // teardown. The bounded best-effort checkpoint runs last.
     for (const conn of this.mcpLinks) {
       await conn.close()
     }
@@ -1192,6 +1213,31 @@ export class Agent {
       await this.cfg.snapshotEngine?.gc()
     } catch {
       // ignore
+    }
+
+    const timeoutMs = this.cfg.sessionCloseTimeoutMs ?? 5000
+    if (timeoutMs === 0) return
+    if (this.cfg.persistSession === false || this.history.length === 0) return
+
+    let timedOut = false
+    let timerHandle: ReturnType<typeof setTimeout> | undefined
+    const timer = new Promise<void>((resolve) => {
+      timerHandle = setTimeout(() => { timedOut = true; resolve() }, timeoutMs)
+    })
+    // close() never propagates checkpoint failures (spec §9); persistCheckpoint
+    // already logs best-effort failures, strict failures log here.
+    const checkpoint = this.persistCheckpoint().catch((err) => {
+      this.sink.error('[session] close checkpoint failed', { errorType: stableErrorType(err) }, err)
+    })
+    try {
+      await Promise.race([checkpoint, timer])
+    } finally {
+      // PR review P2: a ref'd timer that lost the race would keep the Node
+      // process (and repeated close() calls) alive until it fired.
+      clearTimeout(timerHandle)
+    }
+    if (timedOut) {
+      this.sink.error('[session] close checkpoint timed out', { timeoutMs })
     }
   }
 }

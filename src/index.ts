@@ -243,6 +243,16 @@ export { revertSession } from './session-revert.js'
 export type { RevertSessionOptions, RevertResult } from './session-revert.js'
 
 // --------------------------------------------------------------------------
+// Session Storage (issue #4)
+// --------------------------------------------------------------------------
+
+export { FileSessionStorage, defaultSessionStorage } from './session-storage.js'
+export type { SessionStorage, SaveOptions } from './session-storage.js'
+export { SessionConflictError, SessionNotFoundError, SessionDataInvalidError } from './session-storage.js'
+export { createSessionManager } from './session-manager.js'
+export type { SessionManager } from './session-manager.js'
+
+// --------------------------------------------------------------------------
 // Engine Snapshot
 // --------------------------------------------------------------------------
 

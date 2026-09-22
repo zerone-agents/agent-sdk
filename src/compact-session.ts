@@ -22,7 +22,10 @@
 
 import type { LLMProvider, NormalizedMessageParam } from './providers/types.js'
 import type { SDKCompactMessage } from './types.js'
-import { loadSession, saveSession } from './session.js'
+import {
+  defaultSessionStorage, loadSessionFrom, saveSessionTo,
+  type ConcurrencyGuard, type SessionStorage,
+} from './session-storage.js'
 import { compactMessagesStream } from './compact-messages.js'
 import { PRUNE_PROTECTED_QUERIES, TOOL_PROTECTED_QUERIES, type AutoCompactState } from './utils/compact.js'
 
@@ -73,14 +76,16 @@ export interface CompactSessionResult {
  *
  * @throws when the session does not exist or cannot be read.
  */
-export async function* compactSessionStream(
+export async function* compactSessionStreamWith(
+  storage: SessionStorage,
   opts: CompactSessionOptions,
+  guard: ConcurrencyGuard = 'none',
 ): AsyncGenerator<SDKCompactMessage, CompactSessionResult> {
   const { sessionId, provider } = opts
 
   // Load the persisted session (throws to the caller when missing/unreadable
   // — nothing to compact and nothing to persist).
-  const session = await loadSession(sessionId)
+  const session = await loadSessionFrom(storage, sessionId)
   if (!session) {
     throw new Error(`Session not found: ${sessionId}`)
   }
@@ -135,7 +140,7 @@ export async function* compactSessionStream(
   // is used ONLY for the summarization request and must not leak into the
   // persisted metadata (a host compacting with a cheaper model must not
   // silently change the model the session resumes with).
-  await saveSession(sessionId, result.messages, {
+  await saveSessionTo(storage, sessionId, result.messages, {
     cwd: session.metadata.cwd,
     model: session.metadata.model,
     provider: session.metadata.provider,
@@ -146,7 +151,10 @@ export async function* compactSessionStream(
     // issue #115: metadata is rebuilt field-by-field here — without this
     // forwarding the activation set is silently dropped after compaction.
     activatedTools: session.metadata.activatedTools,
-  })
+    // issue #4 PR review: same class of bug as activatedTools above — the
+    // formalized tag must survive compaction.
+    tag: session.metadata.tag,
+  }, guard === 'source-revision' ? { expectedRevision: session.metadata.revision ?? 0 } : undefined)
 
   return {
     summary: result.summary,
@@ -154,6 +162,13 @@ export async function* compactSessionStream(
     messages: result.messages,
     state: result.state,
   }
+}
+
+/** Legacy public API — default file backend, NO CAS (spec §8 legacy rules). */
+export function compactSessionStream(
+  opts: CompactSessionOptions,
+): AsyncGenerator<SDKCompactMessage, CompactSessionResult> {
+  return compactSessionStreamWith(defaultSessionStorage, opts)
 }
 
 /**
