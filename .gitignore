@@ -15,3 +15,6 @@ docs/superpowers/
 prompt-dump.txt
 CONTEXT.md
 docs/adr/
+
+# isolated workspaces
+.worktrees/
