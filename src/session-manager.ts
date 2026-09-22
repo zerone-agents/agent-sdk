@@ -6,9 +6,9 @@
  * module-level functions stay bound to the default file backend.
  */
 import type { NormalizedMessageParam } from './providers/types.js'
-import { forkSessionWith } from './session.js'
+import { appendToSessionWith, forkSessionWith, renameSessionWith, tagSessionWith } from './session.js'
 import type { ForkOptions, ForkSource, SessionData, SessionMetadata } from './session.js'
-import { loadSessionFrom, saveSessionTo, type SessionStorage } from './session-storage.js'
+import { loadSessionFrom, type SessionStorage } from './session-storage.js'
 import { revertSessionWith } from './session-revert.js'
 import { compactSessionStreamWith } from './compact-session.js'
 import type { RevertResult, RevertSessionOptions } from './session-revert.js'
@@ -66,23 +66,13 @@ export function createSessionManager(init: { storage: SessionStorage }): Session
       }
     },
     async append(sessionId, message) {
-      const data = await loadSessionFrom(storage, sessionId)
-      if (!data) return
-      const messages = [...data.messages, message.id ? message : { ...message, id: crypto.randomUUID() }]
-      await saveSessionTo(storage, sessionId, messages, data.metadata,
-        { expectedRevision: data.metadata.revision ?? 0 })
+      return appendToSessionWith(storage, sessionId, message, 'source-revision')
     },
     async rename(sessionId, title) {
-      const data = await loadSessionFrom(storage, sessionId)
-      if (!data) return
-      await saveSessionTo(storage, sessionId, data.messages, { ...data.metadata, summary: title },
-        { expectedRevision: data.metadata.revision ?? 0 })
+      return renameSessionWith(storage, sessionId, title, 'source-revision')
     },
     async tag(sessionId, tag) {
-      const data = await loadSessionFrom(storage, sessionId)
-      if (!data) return
-      await saveSessionTo(storage, sessionId, data.messages, { ...data.metadata, tag },
-        { expectedRevision: data.metadata.revision ?? 0 })
+      return tagSessionWith(storage, sessionId, tag, 'source-revision')
     },
   }
 }

@@ -42,7 +42,7 @@ export interface SaveOptions {
 }
 
 /** How SDK-side read-modify-write cores guard their saves (spec §8). */
-export type ConcurrencyGuard = 'none' | 'source-revision' | 'create-only'
+export type ConcurrencyGuard = 'none' | 'source-revision'
 
 /** 乐观并发冲突：expectedRevision 与存储当前值不匹配，或 create-only 撞已有会话。 */
 export class SessionConflictError extends Error {

@@ -5,7 +5,7 @@
  * Manages session lifecycle (create, resume, list, fork).
  */
 
-import { defaultSessionStorage, loadSessionFrom, saveSessionTo, type SessionStorage, type SaveOptions } from './session-storage.js'
+import { defaultSessionStorage, loadSessionFrom, saveSessionTo, type ConcurrencyGuard, type SessionStorage, type SaveOptions } from './session-storage.js'
 import type { NormalizedMessageParam } from './providers/types.js'
 
 /**
@@ -173,14 +173,72 @@ export async function appendToSession(
   sessionId: string,
   message: NormalizedMessageParam,
 ): Promise<void> {
-  const data = await loadSession(sessionId)
+  return appendToSessionWith(defaultSessionStorage, sessionId, message)
+}
+
+/**
+ * Rename a session.
+ */
+export async function renameSession(
+  sessionId: string,
+  title: string,
+  options?: { dir?: string },
+): Promise<void> {
+  return renameSessionWith(defaultSessionStorage, sessionId, title)
+}
+
+/**
+ * Tag a session.
+ */
+export async function tagSession(
+  sessionId: string,
+  tag: string | null,
+  options?: { dir?: string },
+): Promise<void> {
+  return tagSessionWith(defaultSessionStorage, sessionId, tag)
+}
+
+/**
+ * storage-aware append core (issue #4). Legacy `appendToSession` binds the
+ * default file backend with NO guard; SessionManager passes 'source-revision'.
+ */
+export async function appendToSessionWith(
+  storage: SessionStorage,
+  sessionId: string,
+  message: NormalizedMessageParam,
+  guard: ConcurrencyGuard = 'none',
+): Promise<void> {
+  const data = await loadSessionFrom(storage, sessionId)
   if (!data) return
+  const messages = [...data.messages, message.id ? message : { ...message, id: crypto.randomUUID() }]
+  await saveSessionTo(storage, sessionId, messages, data.metadata,
+    guard === 'source-revision' ? { expectedRevision: data.metadata.revision ?? 0 } : undefined)
+}
 
-  data.messages.push(message.id ? message : { ...message, id: crypto.randomUUID() })
-  data.metadata.updatedAt = new Date().toISOString()
-  data.metadata.messageCount = data.messages.length
+/** storage-aware rename core — see {@link appendToSessionWith} for guard semantics. */
+export async function renameSessionWith(
+  storage: SessionStorage,
+  sessionId: string,
+  title: string,
+  guard: ConcurrencyGuard = 'none',
+): Promise<void> {
+  const data = await loadSessionFrom(storage, sessionId)
+  if (!data) return
+  await saveSessionTo(storage, sessionId, data.messages, { ...data.metadata, summary: title },
+    guard === 'source-revision' ? { expectedRevision: data.metadata.revision ?? 0 } : undefined)
+}
 
-  await saveSession(sessionId, data.messages, data.metadata)
+/** storage-aware tag core — see {@link appendToSessionWith} for guard semantics. */
+export async function tagSessionWith(
+  storage: SessionStorage,
+  sessionId: string,
+  tag: string | null,
+  guard: ConcurrencyGuard = 'none',
+): Promise<void> {
+  const data = await loadSessionFrom(storage, sessionId)
+  if (!data) return
+  await saveSessionTo(storage, sessionId, data.messages, { ...data.metadata, tag },
+    guard === 'source-revision' ? { expectedRevision: data.metadata.revision ?? 0 } : undefined)
 }
 
 /**
@@ -199,38 +257,4 @@ export async function getSessionInfo(
 ): Promise<SessionMetadata | null> {
   const data = await loadSession(sessionId)
   return data?.metadata || null
-}
-
-/**
- * Rename a session.
- */
-export async function renameSession(
-  sessionId: string,
-  title: string,
-  options?: { dir?: string },
-): Promise<void> {
-  const data = await loadSession(sessionId)
-  if (!data) return
-
-  data.metadata.summary = title
-  data.metadata.updatedAt = new Date().toISOString()
-
-  await saveSession(sessionId, data.messages, data.metadata)
-}
-
-/**
- * Tag a session.
- */
-export async function tagSession(
-  sessionId: string,
-  tag: string | null,
-  options?: { dir?: string },
-): Promise<void> {
-  const data = await loadSession(sessionId)
-  if (!data) return
-
-  data.metadata.tag = tag
-  data.metadata.updatedAt = new Date().toISOString()
-
-  await saveSession(sessionId, data.messages, data.metadata)
 }
