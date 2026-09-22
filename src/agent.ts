@@ -40,10 +40,8 @@ import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
 import { resolveTransportKind } from './mcp/client.js'
 import { adaptToDiagnosticsSink, createDiagnosticsSink, sanitizeLogField, stableErrorType, type DiagnosticsSink } from './utils/diagnostics.js'
-import {
-  saveSession,
-  loadSession,
-} from './session.js'
+import { defaultSessionStorage, loadSessionFrom, saveSessionTo, type SessionStorage } from './session-storage.js'
+import type { SessionMetadata } from './session.js'
 import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
 import { createHookRegistry, type HookRegistry, type HookEvent, type HookInput, type HookOutput } from './hooks.js'
@@ -133,6 +131,9 @@ interface SessionConfig {
   snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   enableFileRevert?: boolean
   snapshotTimeoutMs?: number
+  sessionStorage?: import('./session-storage.js').SessionStorage
+  sessionErrorMode?: 'best-effort' | 'strict'
+  sessionCloseTimeoutMs?: number
 }
 
 /** Permission and access control */
@@ -226,6 +227,12 @@ export class Agent {
   private sink: DiagnosticsSink
   private lastInputTokens = 0
   private lastOutputTokens = 0
+  private storage: SessionStorage
+  private strict: boolean
+  /** Optimistic-concurrency revision of the persisted session; null = not yet persisted (issue #4). */
+  private sessionRevision: number | null = null
+  /** Stable creation time: minted once at construction, overwritten on resume (issue #4). */
+  private sessionCreatedAt: string
 
   /** Per-agent skill registry: defaultRegistry (programmatic) as base + own filesystem overlay. */
   readonly skillRegistry = new SkillRegistry(defaultRegistry)
@@ -255,6 +262,20 @@ export class Agent {
     this.apiCredentials = this.pickCredentials()
     this.modelId = this.cfg.model ?? this.readEnv('ZERONE_AGENT_MODEL') ?? 'claude-sonnet-4-6'
     this.sid = this.cfg.sessionId ?? crypto.randomUUID()
+
+    // Session storage binding (issue #4): one-shot at construction.
+    if (this.cfg.sessionCloseTimeoutMs !== undefined) {
+      const t = this.cfg.sessionCloseTimeoutMs
+      if (typeof t !== 'number' || Number.isNaN(t) || !Number.isFinite(t) || t < 0) {
+        throw new TypeError(
+          `AgentOptions.sessionCloseTimeoutMs must be a non-negative finite number, got ${String(this.cfg.sessionCloseTimeoutMs)}`,
+        )
+      }
+    }
+    this.storage = this.cfg.sessionStorage ?? defaultSessionStorage
+    this.strict = this.cfg.sessionErrorMode === 'strict'
+      || (this.cfg.sessionErrorMode === undefined && this.cfg.sessionStorage !== undefined)
+    this.sessionCreatedAt = new Date().toISOString()
 
     // Resolve API type
     this.apiType = this.resolveApiType()
@@ -576,10 +597,12 @@ export class Agent {
 
     // Resume or continue session
     if (this.cfg.resume) {
-      const sessionData = await loadSession(this.cfg.resume)
+      const sessionData = await loadSessionFrom(this.storage, this.cfg.resume)
       if (sessionData) {
         this.history = sessionData.messages
         this.sid = this.cfg.resume
+        this.sessionCreatedAt = sessionData.metadata.createdAt
+        this.sessionRevision = sessionData.metadata.revision ?? 0
         if (sessionData.metadata.lastInputTokens) {
           this.lastInputTokens = sessionData.metadata.lastInputTokens
         }
@@ -789,21 +812,7 @@ export class Agent {
       this.lastInputTokens = engineState.lastInputTokens
       this.lastOutputTokens = engineState.lastOutputTokens
 
-      if (this.cfg.persistSession !== false && this.history.length > 0) {
-        try {
-          await saveSession(this.sid, this.history, {
-            cwd: this.cfg.cwd || process.cwd(),
-            model: this.modelId,
-            provider: this.apiType,
-            summary: undefined,
-            lastInputTokens: this.lastInputTokens,
-            lastOutputTokens: this.lastOutputTokens,
-            activatedTools: this.activatedToolsSnapshot(),
-          })
-        } catch {
-          // best-effort
-        }
-      }
+      await this.persistCheckpoint()
     }
   }
 
@@ -922,22 +931,30 @@ export class Agent {
     return [...this.history]
   }
 
+  /** Converged checkpoint metadata (issue #4): replaces the 4 former inline literals. */
+  private buildCheckpointMetadata(): Partial<SessionMetadata> {
+    return {
+      cwd: this.cfg.cwd || process.cwd(),
+      model: this.modelId,
+      provider: this.apiType,
+      createdAt: this.sessionCreatedAt,
+      lastInputTokens: this.lastInputTokens,
+      lastOutputTokens: this.lastOutputTokens,
+      activatedTools: this.activatedToolsSnapshot(),
+    }
+  }
+
   /**
-   * Persist current history to session file.
+   * Persist the current history as a session checkpoint (issue #4).
+   * T5: best-effort only — log + swallow (pre-existing semantics). Strict
+   * propagation + CAS land with sessionErrorMode in Task 6.
    */
-  private async persistSession(): Promise<void> {
+  private async persistCheckpoint(): Promise<void> {
     if (this.cfg.persistSession === false || this.history.length === 0) return
     try {
-      await saveSession(this.sid, this.history, {
-        cwd: this.cfg.cwd || process.cwd(),
-        model: this.modelId,
-        provider: this.apiType,
-        lastInputTokens: this.lastInputTokens,
-        lastOutputTokens: this.lastOutputTokens,
-        activatedTools: this.activatedToolsSnapshot(),
-      })
-    } catch {
-      // best-effort
+      await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata())
+    } catch (err) {
+      this.sink.error('[session] checkpoint failed', { errorType: stableErrorType(err) }, err)
     }
   }
 
@@ -999,21 +1016,7 @@ export class Agent {
       // Leave history unchanged on failure; skip PostCompact
     }
 
-    if (this.cfg.persistSession !== false && this.history.length > 0) {
-      try {
-        await saveSession(this.sid, this.history, {
-          cwd: this.cfg.cwd || process.cwd(),
-          model: this.modelId,
-          provider: this.apiType,
-          summary: undefined,
-          lastInputTokens: this.lastInputTokens,
-          lastOutputTokens: this.lastOutputTokens,
-          activatedTools: this.activatedToolsSnapshot(),
-        })
-      } catch {
-        // best-effort
-      }
-    }
+    await this.persistCheckpoint()
   }
 
   /**
@@ -1164,23 +1167,8 @@ export class Agent {
    * Optionally persist session to disk.
    */
   async close(): Promise<void> {
-    // Persist session if enabled
-    if (this.cfg.persistSession !== false && this.history.length > 0) {
-      try {
-        await saveSession(this.sid, this.history, {
-          cwd: this.cfg.cwd || process.cwd(),
-          model: this.modelId,
-          provider: this.apiType,
-          summary: undefined,
-          lastInputTokens: this.lastInputTokens,
-          lastOutputTokens: this.lastOutputTokens,
-          activatedTools: this.activatedToolsSnapshot(),
-        })
-      } catch {
-        // Session persistence is best-effort
-      }
-    }
-
+    // Cleanup FIRST (issue #4): a hanging checkpoint must never block MCP
+    // teardown. The bounded best-effort checkpoint runs last.
     for (const conn of this.mcpLinks) {
       await conn.close()
     }
@@ -1192,6 +1180,24 @@ export class Agent {
       await this.cfg.snapshotEngine?.gc()
     } catch {
       // ignore
+    }
+
+    const timeoutMs = this.cfg.sessionCloseTimeoutMs ?? 5000
+    if (timeoutMs === 0) return
+    if (this.cfg.persistSession === false || this.history.length === 0) return
+
+    let timedOut = false
+    const timer = new Promise<void>((resolve) => {
+      setTimeout(() => { timedOut = true; resolve() }, timeoutMs)
+    })
+    // close() never propagates checkpoint failures (spec §9); persistCheckpoint
+    // already logs best-effort failures, strict failures log here.
+    const checkpoint = this.persistCheckpoint().catch((err) => {
+      this.sink.error('[session] close checkpoint failed', { errorType: stableErrorType(err) }, err)
+    })
+    await Promise.race([checkpoint, timer])
+    if (timedOut) {
+      this.sink.error('[session] close checkpoint timed out', { timeoutMs })
     }
   }
 }

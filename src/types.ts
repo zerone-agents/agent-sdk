@@ -771,7 +771,7 @@ export interface AgentOptions {
   memoryService?: import('./memory/service.js').MemoryService
 
   // ===========================================================================
-  // === SessionConfig === (9 fields)
+  // === SessionConfig === (12 fields)
   // Session management: continuation, persistence, checkpointing, and snapshots.
   // ===========================================================================
 
@@ -797,6 +797,21 @@ export interface AgentOptions {
   enableFileRevert?: boolean
   /** Timeout for snapshot git operations in milliseconds. Defaults to 5000. */
   snapshotTimeoutMs?: number
+  /** Custom session storage backend (issue #4). Defaults to the JSON-file backend. */
+  sessionStorage?: import('./session-storage.js').SessionStorage
+  /**
+   * Session persistence error mode (issue #4).
+   * - 'best-effort': save failures are logged and swallowed (pre-existing behavior)
+   * - 'strict': save failures / conflicts / missing resume sessions fail explicitly
+   * Defaults to 'strict' when `sessionStorage` is provided, else 'best-effort'.
+   */
+  sessionErrorMode?: 'best-effort' | 'strict'
+  /**
+   * Bounded wait for the close() checkpoint, in milliseconds (issue #4).
+   * Default 5000. 0 = skip the close checkpoint entirely (no save issued).
+   * NaN / Infinity / negative values throw TypeError at construction.
+   */
+  sessionCloseTimeoutMs?: number
 
   // ===========================================================================
   // === PermissionConfig === (5 fields)
