@@ -12,7 +12,10 @@
 
 import type { NormalizedMessageParam } from './providers/types.js'
 import { SnapshotEngine } from './snapshot/index.js'
-import { loadSession, saveSession } from './session.js'
+import {
+  defaultSessionStorage, loadSessionFrom, saveSessionTo,
+  type ConcurrencyGuard, type SessionStorage,
+} from './session-storage.js'
 
 export interface RevertSessionOptions {
   /** Working directory for file revert. Defaults to process.cwd(). */
@@ -74,12 +77,14 @@ function detectCompactBoundary(messages: NormalizedMessageParam[]): string | und
  *
  * The next `createAgent({ resume })` will load the reverted transcript.
  */
-export async function revertSession(
+export async function revertSessionWith(
+  storage: SessionStorage,
   sessionId: string,
   messageId: string,
   opts: RevertSessionOptions = {},
+  guard: ConcurrencyGuard = 'none',
 ): Promise<RevertResult> {
-  const data = await loadSession(sessionId)
+  const data = await loadSessionFrom(storage, sessionId)
   if (!data) {
     throw new Error(`Session not found: ${sessionId}`)
   }
@@ -148,11 +153,23 @@ export async function revertSession(
   }
   delete (metadata as any).revert
 
-  await saveSession(sessionId, truncated, metadata)
+  await saveSessionTo(
+    storage, sessionId, truncated, metadata,
+    guard === 'source-revision' ? { expectedRevision: data.metadata.revision ?? 0 } : undefined,
+  )
 
   return {
     messageId,
     changedFiles,
     diff,
   }
+}
+
+/** Legacy public API — default file backend, NO CAS (spec §8 legacy rules). */
+export function revertSession(
+  sessionId: string,
+  messageId: string,
+  opts: RevertSessionOptions = {},
+): Promise<RevertResult> {
+  return revertSessionWith(defaultSessionStorage, sessionId, messageId, opts)
 }

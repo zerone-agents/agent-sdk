@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createSessionManager } from './session-manager.js'
 import { InMemorySessionStorage } from './session-storage-fake.js'
 import { SessionConflictError, saveSessionTo } from './session-storage.js'
 import type { NormalizedMessageParam } from './providers/types.js'
+import type { AutoCompactState } from './utils/compact.js'
 
 const msg = (text: string): NormalizedMessageParam =>
   ({ role: 'user', content: text } as NormalizedMessageParam)
@@ -92,5 +93,73 @@ describe('SessionManager delete/list (issue #4)', () => {
     const bare = createSessionManager({ storage: minimal })
     await expect(bare.delete('x')).rejects.toThrow('SessionStorage.delete not implemented by backend')
     await expect(bare.list()).rejects.toThrow('SessionStorage.list not implemented by backend')
+  })
+})
+
+// Mock the summarizer so compact tests need no provider. compact-session.ts
+// imports './compact-messages.js'; both files live in src/ so the specifier
+// resolves to the same mocked module.
+vi.mock('./compact-messages.js', () => ({
+  compactMessagesStream: vi.fn(async function* () {
+    const state: AutoCompactState = { compacted: true, turnCounter: 0, consecutiveFailures: 0, lastInputTokens: 0, lastOutputTokens: 0 }
+    return { compacted: true, summary: 'sum', messages: [{ id: 'k1', role: 'user', content: 'kept' }], state, error: undefined }
+  }),
+}))
+
+describe('SessionManager revert / compact / append / rename / tag (issue #4)', () => {
+  it('revert truncates at anchor and CAS-guards the write', async () => {
+    const fake = await seededFake()
+    const mgr = createSessionManager({ storage: fake })
+    const result = await mgr.revert('src-1', 'u3')
+    expect(result.messageId).toBe('u3')
+    expect((await mgr.getMessages('src-1')).map((m) => m.id)).toEqual(['u1', 'u2'])
+    // The revert save was CAS-guarded with the revision observed at load time
+    const srcSaves = fake.saveCalls.filter((c) => c.sessionId === 'src-1')
+    expect(srcSaves[srcSaves.length - 1].opts?.expectedRevision).toBe(1)   // seeded revision
+
+    // Conflict: an external writer lands between revert's load and save.
+    // The armed load returns the pre-bump snapshot, then synchronously bumps
+    // the stored revision — simulating interleaved concurrent writes.
+    const originalLoad = fake.load.bind(fake)
+    let armed = false
+    fake.load = async (id: string) => {
+      const data = await originalLoad(id)
+      if (armed && id === 'src-1' && data) {
+        const cur = fake.store.get('src-1')!
+        fake.store.set('src-1', structuredClone({
+          ...cur,
+          metadata: { ...cur.metadata, revision: (cur.metadata.revision ?? 0) + 1 },
+        }))
+      }
+      return data
+    }
+    armed = true
+    await expect(mgr.revert('src-1', 'u2')).rejects.toThrow(SessionConflictError)
+  })
+
+  it('compactStream streams through the injected storage with source-revision CAS', async () => {
+    const fake = await seededFake()
+    const mgr = createSessionManager({ storage: fake })
+    const provider = { apiType: 'test' as any, createMessage: async () => { throw new Error('unused') } }
+    const result = await mgr.compact({ sessionId: 'src-1', provider: provider as any })
+    expect(result.compacted).toBe(true)
+    const stored = fake.store.get('src-1')!
+    expect(stored.metadata.summary).toBe('sum')
+    const lastCall = fake.saveCalls[fake.saveCalls.length - 1]
+    expect(lastCall.opts?.expectedRevision).toBe(1)   // seeded revision 1 → CAS matched → written 2
+    expect(stored.metadata.revision).toBe(2)
+  })
+
+  it('append / rename / tag round-trip through the backend with CAS', async () => {
+    const fake = await seededFake()
+    const mgr = createSessionManager({ storage: fake })
+    await mgr.append('src-1', msg('four'))
+    expect((await mgr.getMessages('src-1'))).toHaveLength(4)
+    await mgr.rename('src-1', 'My Title')
+    expect((await mgr.get('src-1'))!.metadata.summary).toBe('My Title')
+    await mgr.tag('src-1', 'important')
+    const meta = (await mgr.get('src-1'))!.metadata
+    expect(meta.tag).toBe('important')
+    expect(meta.revision).toBeGreaterThanOrEqual(4)   // every op bumped revision
   })
 })
