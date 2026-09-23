@@ -186,3 +186,15 @@ describe('SessionManager revert / compact / append / rename / tag (issue #4)', (
     expect(fake.store.get('src-1')!.metadata.tag).toBe('important')
   })
 })
+
+describe('SessionManager todos (issue #128)', () => {
+  it('getTodos/clearTodos route through the bound storage', async () => {
+    const fake = new InMemorySessionStorage()
+    await fake.saveTodos('a', [{ content: 'x', status: 'pending', priority: 'high' }])
+    const mgr = createSessionManager({ storage: fake })
+    expect(await mgr.getTodos('a')).toHaveLength(1)
+    await mgr.clearTodos('a')
+    expect(await mgr.getTodos('a')).toEqual([])
+    expect(fake.todoSaveCalls.map((c) => c.sessionId)).toEqual(['a', 'a'])
+  })
+})
