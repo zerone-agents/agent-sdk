@@ -103,7 +103,7 @@ describe('SessionManager delete/list (issue #4)', () => {
     expect(await mgr.get('src-1')).toBeNull()
     expect(await mgr.getMessages('src-1')).toEqual([])
 
-    const minimal = { load: async () => null, save: async () => {} }
+    const minimal = { load: async () => null, save: async () => {}, loadTodos: async () => [], saveTodos: async () => {} }
     const bare = createSessionManager({ storage: minimal })
     await expect(bare.delete('x')).rejects.toThrow('SessionStorage.delete not implemented by backend')
     await expect(bare.list()).rejects.toThrow('SessionStorage.list not implemented by backend')

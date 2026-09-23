@@ -64,7 +64,8 @@ describe('todo/transcript integration matrix (issue #128)', () => {
     expect(existsSync(join(root, 'd1'))).toBe(false)             // whole dir gone — todos too
 
     const forkId = await mgr.fork({ sessionId: 'f1', messageId: 'm1' }, 'fork-todos')
-    expect(await storage.loadTodos(forkId)).toEqual([])          // fork does NOT copy todo state
+    expect(forkId).not.toBeNull()
+    expect(await storage.loadTodos(forkId!)).toEqual([])          // fork does NOT copy todo state
   })
 
   it('#5b: revert does not touch todos', async () => {
