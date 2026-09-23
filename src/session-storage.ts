@@ -13,6 +13,24 @@ import { readFile, writeFile, mkdir, readdir, rename, unlink, rm } from 'fs/prom
 import { join } from 'path'
 import type { NormalizedMessageParam } from './providers/types.js'
 import type { SessionData, SessionMetadata } from './session.js'
+import { TODO_PRIORITIES, TODO_STATUSES, type TodoInfo, type TodoStatus, type TodoPriority } from './types.js'
+
+function isNodeError(e: unknown): e is NodeJS.ErrnoException {
+  return e instanceof Error && 'code' in e
+}
+
+const SESSION_ID_RE = /^[a-zA-Z0-9_-]+$/
+
+/**
+ * File backend sessionId guard (issue #128): the sessions directory is built
+ * by `join(baseDir, sessionId)` — reject anything that could traverse out of
+ * it. Covers direct storage calls, SessionManager and legacy wrappers alike.
+ */
+function assertSafeSessionId(sessionId: string): void {
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new Error(`Invalid sessionId: ${sessionId}. Must match /^[a-zA-Z0-9_-]+$/`)
+  }
+}
 
 /** Storage adapter for session transcripts. Load/save are the only true primitives. */
 export interface SessionStorage {
@@ -25,6 +43,17 @@ export interface SessionStorage {
     metadata: SessionMetadata,
     opts?: SaveOptions,
   ): Promise<void>
+  /**
+   * Session-scoped todos sidecar (issue #128). Required — custom backends must
+   * implement it (TS compile-time enforcement; Agent construction additionally
+   * validates at runtime for JS consumers).
+   * - [] = nothing saved yet
+   * - SessionDataInvalidError = unparseable/malformed stored data
+   * - other throws = storage failure (propagated with cause)
+   */
+  loadTodos(sessionId: string): Promise<TodoInfo[]>
+  /** Full-list last-write-wins rewrite. Never touches the transcript or its revision. */
+  saveTodos(sessionId: string, todos: TodoInfo[]): Promise<void>
   /** Delete a session. SDK wrappers throw "not implemented" when absent. */
   delete?(sessionId: string): Promise<boolean>
   /** Enumerate session metadata. SDK wrappers throw "not implemented" when absent. */
@@ -245,6 +274,54 @@ export class FileSessionStorage implements SessionStorage {
       return sessions
     } catch {
       return []
+    }
+  }
+
+  async loadTodos(sessionId: string): Promise<TodoInfo[]> {
+    assertSafeSessionId(sessionId)
+    let content: string
+    try {
+      content = await readFile(join(this.sessionPath(sessionId), 'todos.json'), 'utf-8')
+    } catch (err) {
+      // Missing file = nothing saved yet; any other IO failure propagates with
+      // its cause — corruption/IO is never disguised as an empty list (spec §5).
+      if (isNodeError(err) && err.code === 'ENOENT') return []
+      throw err
+    }
+    try {
+      const data = JSON.parse(content) as { todos?: unknown }
+      if (!Array.isArray(data.todos)) {
+        throw new SessionDataInvalidError(sessionId, 'todos.json: todos must be an array')
+      }
+      for (const t of data.todos as Array<Partial<TodoInfo>>) {
+        if (
+          !t || typeof t.content !== 'string' ||
+          !TODO_STATUSES.includes(t.status as TodoStatus) ||
+          !TODO_PRIORITIES.includes(t.priority as TodoPriority)
+        ) {
+          throw new SessionDataInvalidError(sessionId, 'todos.json: invalid todo entry')
+        }
+      }
+      return data.todos as TodoInfo[]
+    } catch (err) {
+      if (err instanceof SessionDataInvalidError) throw err
+      throw new SessionDataInvalidError(sessionId, `todos.json is not valid JSON: ${String(err)}`)
+    }
+  }
+
+  async saveTodos(sessionId: string, todos: TodoInfo[]): Promise<void> {
+    assertSafeSessionId(sessionId)
+    const dir = this.sessionPath(sessionId)
+    await mkdir(dir, { recursive: true })
+    // Atomic replacement — same pattern as the transcript save above.
+    const finalPath = join(dir, 'todos.json')
+    const tmpPath = join(dir, `todos.json.tmp-${crypto.randomUUID()}`)
+    try {
+      await writeFile(tmpPath, JSON.stringify({ updatedAt: new Date().toISOString(), todos }, null, 2), 'utf-8')
+      await rename(tmpPath, finalPath)
+    } catch (err) {
+      await unlink(tmpPath).catch(() => {})
+      throw err
     }
   }
 }

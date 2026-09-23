@@ -346,6 +346,17 @@ export interface ToolInputSchema {
   required?: string[]
 }
 
+/** TodoWrite tool types (issue #128): moved here so SessionStorage can reference them. */
+export const TODO_STATUSES = ['pending', 'in_progress', 'completed', 'cancelled'] as const
+export const TODO_PRIORITIES = ['high', 'medium', 'low'] as const
+export type TodoStatus = typeof TODO_STATUSES[number]
+export type TodoPriority = typeof TODO_PRIORITIES[number]
+export interface TodoInfo {
+  content: string
+  status: TodoStatus
+  priority: TodoPriority
+}
+
 export interface ToolContext {
   cwd: string
   abortSignal?: AbortSignal
@@ -363,6 +374,11 @@ export interface ToolContext {
   /** Diagnostics sink surfaced to tools (#78) — subagent launchers forward
    *  it so child engines inherit the parent's diagnostics channel. */
   diagnostics?: import('./utils/diagnostics.js').DiagnosticsSink
+  /** Session-scoped storage for sidecars (issue #128): TodoWrite persists
+   *  through this backend instead of hardcoded files. Optional at the type
+   *  level — non-engine callers may omit it and get an explicit is_error
+   *  result (never a silent file fallback). */
+  sessionStorage?: import('./session-storage.js').SessionStorage
 }
 
 /** Context available to the Skill tool: resolved skill set + registry. */

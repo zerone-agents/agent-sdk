@@ -4,6 +4,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
+import { TODO_PRIORITIES, TODO_STATUSES, type TodoInfo } from '../types.js'
+
+export type { TodoInfo, TodoStatus, TodoPriority } from '../types.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -13,18 +16,6 @@ try {
 } catch {
   _description = 'Manage a structured task list for your current coding session.'
 }
-
-export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
-export type TodoPriority = 'high' | 'medium' | 'low'
-
-export interface TodoInfo {
-  content: string
-  status: TodoStatus
-  priority: TodoPriority
-}
-
-const VALID_STATUSES: readonly string[] = ['pending', 'in_progress', 'completed', 'cancelled']
-const VALID_PRIORITIES: readonly string[] = ['high', 'medium', 'low']
 
 function getTodosDir(): string {
   const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
@@ -79,11 +70,11 @@ function validateTodos(todos: any[]): string | null {
     if (!item.content || typeof item.content !== 'string' || item.content.trim() === '') {
       return `todos[${i}].content must be a non-empty string`
     }
-    if (!VALID_STATUSES.includes(item.status)) {
-      return `todos[${i}].status must be one of: ${VALID_STATUSES.join(', ')}`
+    if (!TODO_STATUSES.includes(item.status)) {
+      return `todos[${i}].status must be one of: ${TODO_STATUSES.join(', ')}`
     }
-    if (!VALID_PRIORITIES.includes(item.priority)) {
-      return `todos[${i}].priority must be one of: ${VALID_PRIORITIES.join(', ')}`
+    if (!TODO_PRIORITIES.includes(item.priority)) {
+      return `todos[${i}].priority must be one of: ${TODO_PRIORITIES.join(', ')}`
     }
   }
 
