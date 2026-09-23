@@ -1,10 +1,10 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
 import { TODO_PRIORITIES, TODO_STATUSES, type TodoInfo } from '../types.js'
+import { defaultSessionStorage } from '../session-storage.js'
 
 export type { TodoInfo, TodoStatus, TodoPriority } from '../types.js'
 
@@ -15,51 +15,6 @@ try {
   _description = readFileSync(join(__dirname, 'todowrite.txt'), 'utf-8')
 } catch {
   _description = 'Manage a structured task list for your current coding session.'
-}
-
-function getTodosDir(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
-  return join(home, '.agents', 'sessions')
-}
-
-function getTodosPath(sessionId: string): string {
-  return join(getTodosDir(), sessionId, 'todos.json')
-}
-
-interface TodoFile {
-  updatedAt: string
-  todos: TodoInfo[]
-}
-
-function validateSessionId(sessionId: string): string {
-  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
-    throw new Error(`Invalid sessionId: ${sessionId}. Must match /^[a-zA-Z0-9_-]+$/`)
-  }
-  return sessionId
-}
-
-async function saveTodos(sessionId: string, todos: TodoInfo[]): Promise<void> {
-  validateSessionId(sessionId)
-  const dir = join(getTodosDir(), sessionId)
-  await mkdir(dir, { recursive: true })
-
-  const data: TodoFile = {
-    updatedAt: new Date().toISOString(),
-    todos,
-  }
-
-  await writeFile(getTodosPath(sessionId), JSON.stringify(data, null, 2), 'utf-8')
-}
-
-async function loadTodos(sessionId: string): Promise<TodoInfo[]> {
-  validateSessionId(sessionId)
-  try {
-    const raw = await readFile(getTodosPath(sessionId), 'utf-8')
-    const data = JSON.parse(raw) as TodoFile
-    return data.todos || []
-  } catch {
-    return []
-  }
 }
 
 function validateTodos(todos: any[]): string | null {
@@ -105,12 +60,18 @@ export function formatTodosReminder(todos: TodoInfo[]): string {
   ].join('\n')
 }
 
+/**
+ * @deprecated 仅操作默认文件存储（`~/.agents/sessions/<sid>/todos.json`）——
+ * 不会使用 Agent 注入的自定义 storage。改用
+ * `createSessionManager({ storage }).getTodos/clearTodos`（issue #128）。
+ */
 export async function getTodos(sessionId: string): Promise<TodoInfo[]> {
-  return loadTodos(sessionId)
+  return defaultSessionStorage.loadTodos(sessionId)
 }
 
+/** @deprecated 同上——改用 SessionManager（issue #128）。 */
 export async function clearTodos(sessionId: string): Promise<void> {
-  await saveTodos(sessionId, [])
+  return defaultSessionStorage.saveTodos(sessionId, [])
 }
 
 /**
@@ -172,13 +133,18 @@ export const TodoWriteTool: ToolDefinition = {
 
     const sessionId = context.sessionId || 'default'
 
-    try {
-      validateSessionId(sessionId)
-    } catch (e: any) {
-      return { type: 'tool_result', tool_use_id: '', content: e.message, is_error: true }
+    // Tool-layer format guard (defense in depth — the storage boundary
+    // validates too, issue #128).
+    if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+      return { type: 'tool_result', tool_use_id: '', content: `Invalid sessionId: ${sessionId}. Must match /^[a-zA-Z0-9_-]+$/`, is_error: true }
     }
 
-    await saveTodos(sessionId, todos)
+    const storage = context.sessionStorage
+    if (!storage) {
+      return { type: 'tool_result', tool_use_id: '', content: 'TodoWrite requires a session storage context (missing sessionStorage).', is_error: true }
+    }
+
+    await storage.saveTodos(sessionId, todos)
 
     const formatted = formatTodos(todos)
     const warning = validationError ? `\n\nNote: ${validationError}` : ''
