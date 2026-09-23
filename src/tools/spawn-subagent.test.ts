@@ -4,8 +4,10 @@ import type {
   AgentDefinition,
   RuntimeEnvironment,
   SDKSubagentMessage,
+  QueryEngineConfig,
 } from '../types.js'
 import { createEmptyServices } from './services.js'
+import { InMemorySessionStorage } from '../session-storage-fake.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
 vi.mock('../engine.js', () => ({
@@ -328,5 +330,42 @@ describe('runSubagent resolution diagnostics (R2)', () => {
     await runSubagent(baseOpts({ agentName: 'child-r', subAgents: restrictive, diagnostics: sink as any }))
     expect(events.some((x) => x.msg.includes('agent resolved to zero tools'))).toBe(true)
     expect(events.some((x) => x.msg.includes('[tools] allowedTools entry "Nope*"'))).toBe(true)
+  })
+})
+
+describe('subagent todo storage wiring (issue #128)', () => {
+  beforeEach(() => {
+    capturedConfig = undefined
+    ;(QueryEngine as any).mockReset()
+  })
+
+  function mockEngineRecording(configs: QueryEngineConfig[]): void {
+    ;(QueryEngine as any).mockImplementation(function (this: any, config: any) {
+      configs.push(config)
+      this.submitMessage = async function* () {
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
+        yield { type: 'result', subtype: 'success' }
+      }
+    })
+  }
+
+  it('spawn passes the same storage instance to the child engine', async () => {
+    const storage = new InMemorySessionStorage()
+    const configs: QueryEngineConfig[] = []
+    mockEngineRecording(configs)
+    await runSubagent(baseOpts({ sessionStorage: storage }))
+    expect(configs.at(-1)!.sessionStorage).toBe(storage)
+  })
+
+  it('sibling spawns: distinct sessionIds on the same storage instance', async () => {
+    const storage = new InMemorySessionStorage()
+    const configs: QueryEngineConfig[] = []
+    mockEngineRecording(configs)
+    await runSubagent(baseOpts({ sessionStorage: storage }))
+    await runSubagent(baseOpts({ sessionStorage: storage }))
+    expect(configs).toHaveLength(2)
+    expect(configs[0].sessionStorage).toBe(storage)
+    expect(configs[1].sessionStorage).toBe(storage)
+    expect(configs[0].sessionId).not.toBe(configs[1].sessionId)   // sibling isolation by sessionId
   })
 })

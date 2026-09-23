@@ -135,6 +135,7 @@ export const MultiTaskTool: ToolDefinition = {
         taskIndex: index,
         abortSignal: context.abortSignal,
         diagnostics: context.diagnostics, // #78: child inherits diagnostics
+        sessionStorage: context.sessionStorage, // #128: same backend as the parent
         emitEvent: ctx.emitEvent ? (event) => ctx.emitEvent?.(event) : undefined,
       })
       return {

@@ -72,6 +72,7 @@ export const TaskTool: ToolDefinition = {
       taskIndex: 0,
       abortSignal: context.abortSignal,
       diagnostics: context.diagnostics, // #78: child inherits diagnostics
+      sessionStorage: context.sessionStorage, // #128: child persists sidecars through the same backend
       emitEvent: ctx.emitEvent
         ? (event) => ctx.emitEvent?.(event)
         : undefined,

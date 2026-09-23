@@ -9,6 +9,7 @@ import type {
   RuntimeEnvironment,
 } from '../types.js'
 import { createEmptyServices } from './services.js'
+import { InMemorySessionStorage } from '../session-storage-fake.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
 vi.mock('../engine.js', () => ({
@@ -477,5 +478,32 @@ describe('TaskTool', () => {
         expect(e.task_description).toBe('Regression')
       }
     })
+  })
+})
+
+describe('todo storage threading (issue #128)', () => {
+  // Self-contained reset: this describe sits OUTSIDE describe('TaskTool')'s
+  // beforeEach scope — never rely on (or let leaked) prior suites' mockImpls.
+  beforeEach(() => {
+    vi.mocked(QueryEngine).mockReset()
+    vi.mocked(QueryEngine).mockImplementation(function (this: any, config: any) {
+      this.config = config
+      this.submitMessage = async function* () {
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
+      }
+    })
+  })
+
+  it('call() threads ctx.sessionStorage into the child engine config', async () => {
+    const storage = new InMemorySessionStorage()
+    const result = await TaskTool.call({
+      prompt: 'test',
+      description: 'test task',
+      subagent_type: 'General',
+      subagent_name: 'general',
+    }, makeContext({ sessionStorage: storage }))
+    expect(result.is_error).toBeFalsy()
+    const config = vi.mocked(QueryEngine).mock.calls.at(-1)![0] as { sessionStorage?: unknown }
+    expect(config.sessionStorage).toBe(storage)
   })
 })
