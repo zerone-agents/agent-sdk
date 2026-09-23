@@ -765,6 +765,7 @@ export class Agent {
       abortSignal: this.abortCtrl.signal,
       hookRegistry: this.hookRegistry,
       sessionId: this.sid,
+      sessionStorage: this.storage,
       contextWindow: opts.contextWindow,
       maxRequestBodyBytes: opts.maxRequestBodyBytes,
       maxSessionQueries: opts.maxSessionQueries,

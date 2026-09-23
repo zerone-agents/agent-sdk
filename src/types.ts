@@ -1003,6 +1003,12 @@ export interface QueryEngineConfig {
   hookRegistry?: import('./hooks.js').HookRegistry
   /** Session ID for hook context */
   sessionId?: string
+  /**
+   * Session-scoped sidecar storage (issue #128): engine todo reads (per-turn
+   * reminder injection, terminal cleanup) go through this backend only —
+   * never hardcoded files. Required.
+   */
+  sessionStorage: import('./session-storage.js').SessionStorage
   /** Context window size in tokens for the model. Overrides auto-detection from model name. */
   contextWindow?: number
   /** Maximum request body size in bytes. Images are stripped from oldest messages when exceeded. */

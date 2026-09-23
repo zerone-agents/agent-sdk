@@ -61,8 +61,11 @@ import { buildSystemPrompt } from './engine/prompt-builder.js'
 import { buildResponseFromChunks } from './engine/stream-parser.js'
 import type { ToolUseBlock } from './engine/tool-executor.js'
 import { executeTools as executeToolsFn } from './engine/tool-executor.js'
-import { getTodos, formatTodosReminder, clearTodos, hasActiveTodos } from './tools/todowrite.js'
+import { formatTodosReminder, hasActiveTodos } from './tools/todowrite.js'
 import { createLogger, type Logger } from './utils/logger.js'
+import { adaptToDiagnosticsSink, type DiagnosticsSink } from './utils/diagnostics.js'
+import type { SessionStorage } from './session-storage.js'
+import type { TodoInfo } from './types.js'
 import { formatDurationMs, formatInputPreview, createTimer } from './utils/helpers.js'
 
 
@@ -154,6 +157,8 @@ export class QueryEngine {
   private snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   private _compactBoundaryId?: string
   private logger: Logger
+  private sessionStorage: SessionStorage
+  private diagSink: DiagnosticsSink
 
   constructor(config: QueryEngineConfig, initialUsage?: { lastInputTokens?: number; lastOutputTokens?: number }) {
     this.config = config
@@ -169,6 +174,21 @@ export class QueryEngine {
     this.hookRegistry = config.hookRegistry
     this.snapshotEngine = config.snapshotEngine
     this.logger = config.logger ?? createLogger('engine', { level: config.logLevel })
+    this.sessionStorage = config.sessionStorage
+    this.diagSink = adaptToDiagnosticsSink(this.logger)
+  }
+
+  /**
+   * Emit a todo load/save diagnostic (issue #128) — never rethrows, including
+   * when the host logger itself throws: a diagnostics failure must never break
+   * the conversation.
+   */
+  private todoErr(err: unknown, action: 'load' | 'save'): void {
+    try {
+      this.diagSink.warn(`[session] todo ${action} failed`, { sessionId: this.config.sessionId }, err)
+    } catch {
+      // host logger threw — swallow
+    }
   }
 
   /**
@@ -296,13 +316,19 @@ export class QueryEngine {
     // a list the model marks completed mid-query survives for in-query visibility
     // and is only cleared when the NEXT query begins. See issue #32.
     if (this.config.sessionId) {
+      let todos: TodoInfo[] | null = null
       try {
-        const todos = await getTodos(this.config.sessionId)
-        if (todos.length > 0 && !hasActiveTodos(todos)) {
-          await clearTodos(this.config.sessionId)
+        todos = await this.sessionStorage.loadTodos(this.config.sessionId)
+      } catch (err) {
+        // Read failure: skip expiry — never clear or overwrite on failure.
+        this.todoErr(err, 'load')
+      }
+      if (todos && todos.length > 0 && !hasActiveTodos(todos)) {
+        try {
+          await this.sessionStorage.saveTodos(this.config.sessionId, [])
+        } catch (err) {
+          this.todoErr(err, 'save')
         }
-      } catch {
-        // todos file unreadable — nothing to expire
       }
     }
 
@@ -378,7 +404,7 @@ export class QueryEngine {
       // produced mid-query — both are useful in-query visibility.
       if (this.config.sessionId) {
         try {
-          const todos = await getTodos(this.config.sessionId)
+          const todos = await this.sessionStorage.loadTodos(this.config.sessionId)
           if (todos.length > 0) {
             const reminder = formatTodosReminder(todos)
             apiMessages = [
@@ -386,8 +412,9 @@ export class QueryEngine {
               { role: 'user', content: reminder } as NormalizedMessageParam,
             ]
           }
-        } catch {
-          // todos file unreadable — skip injection this turn
+        } catch (err) {
+          // load failure: skip injection this turn (never fabricates or clears)
+          this.todoErr(err, 'load')
         }
       }
 
