@@ -76,6 +76,12 @@ function appendContextRefs(context: ContextRef, recordIds: string[]): void {
   }
 }
 
+function mustBranch(state: SessionState, branchId: string): SessionState['branches'][number] {
+  const branch = state.branches.find((b) => b.branchId === branchId)
+  if (!branch) throw new SessionDataInvalidError(state.sessionId, `unknown branch: ${branchId}`)
+  return branch
+}
+
 export function applyChangeSet(sessionId: string, data: StoreData, changeSet: ChangeSet, meta: { committedAt: string }): StoreData {
   switch (changeSet.kind) {
     case 'checkpoint': {
@@ -93,8 +99,32 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
       data.state.updatedAt = meta.committedAt
       return data
     }
+    case 'append': {
+      const ids = appendRecords(data, changeSet.newRecords, meta.committedAt)
+      const branch = mustBranch(data.state, changeSet.branchId)
+      branch.records.push(...ids)
+      branch.effective.push(...ids)
+      if (changeSet.contextAppend) appendContextRefs(branch.context, ids)
+      data.state.metadata.messageCount = branch.effective.length
+      data.state.updatedAt = meta.committedAt
+      return data
+    }
+    case 'revise': {
+      const [newId] = appendRecords(data, [changeSet.newRecord], meta.committedAt)
+      const branch = mustBranch(data.state, changeSet.branchId)
+      branch.records.push(newId)
+      const idx = branch.effective.findIndex((rid) => data.records.get(rid)?.messageId === changeSet.messageId)
+      if (idx === -1) {
+        throw new SessionDataInvalidError(sessionId, `revise target messageId not found in effective: ${changeSet.messageId}`)
+      }
+      branch.effective[idx] = newId
+      branch.context = changeSet.contextUpdate
+      data.state.metadata.messageCount = branch.effective.length
+      data.state.updatedAt = meta.committedAt
+      return data
+    }
     default:
-      // T5–T9 逐 kind 填充；P1 末必须无残留（验收 #3）
+      // T6–T9 逐 kind 填充；P1 末必须无残留（验收 #3）
       throw new Error(`applyChangeSet: kind "${changeSet.kind}" not implemented in P1 slice yet`)
   }
 }

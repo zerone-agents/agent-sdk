@@ -122,8 +122,17 @@ export class InMemorySessionStore implements SessionStore {
   async saveTodos(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
     if (prepared.kind !== 'save-todos') throw new SessionDataInvalidError(sessionId, 'saveTodos expects kind "save-todos"')
-    // T5 实现（todos 落库；revision 不变）
-    throw new Error('saveTodos: not implemented in P1 slice yet')
+    const payload = prepared.payload as {
+      todos: TodoInfo[]
+      ownership?: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string }
+    }
+    // tombstone 拒绝（迟到写入）；首写创建 todo-only session 行（ownership 随 payload）
+    const row = this.ensureRow(sessionId, payload.ownership)
+    row.data.todos = structuredClone(payload.todos)
+    const now = new Date().toISOString()
+    row.data.state.updatedAt = now
+    // spec §3.2/§4.7：todos 不推进 transcript revision——回执不伪造 revision
+    return this.recordReceipt(prepared, { committedAt: now, auth: opts?.auth })
   }
 
   async deleteSession(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
