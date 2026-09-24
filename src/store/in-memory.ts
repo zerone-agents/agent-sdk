@@ -16,7 +16,7 @@ import type {
   PreparedOperation,
   SessionState,
 } from './types.js'
-import { SessionConflictError, SessionDataInvalidError, WriteNotAuthorizedError } from './errors.js'
+import { OwnershipMismatchError, SessionConflictError, SessionDataInvalidError, WriteNotAuthorizedError } from './errors.js'
 import { applyChangeSet, initialStoreData, type StoreData } from './apply.js'
 import { fingerprintOperation } from './fingerprint.js'
 import type { CommitEntryOpts, OwnershipFilter, SessionStore } from './session-store.js'
@@ -103,8 +103,11 @@ export class InMemorySessionStore implements SessionStore {
 
   async commit(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
+    if (prepared.kind === 'register') {
+      return this.commitRegister(sessionId, prepared, opts)
+    }
     if (!TRANSCRIPT_KINDS.has(prepared.kind)) {
-      // save-todos / delete / register 走各自提交入口（saveTodos / deleteSession / commit-register）
+      // save-todos / delete 走各自提交入口（saveTodos / deleteSession）
       throw new SessionDataInvalidError(sessionId, `kind "${prepared.kind}" must go through its dedicated entry`)
     }
     const now = new Date().toISOString()
@@ -191,6 +194,26 @@ export class InMemorySessionStore implements SessionStore {
 
   // ── 内部 ───────────────────────────────────────────────
 
+  /** register 提交（spec §2.3 登记协议）：幂等、无 revision、不产生 transcript。 */
+  private async commitRegister(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
+    const ownership = (prepared.payload as { ownership: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string } }).ownership
+    const existing = this.sessions.get(sessionId)
+    if (existing?.tombstone) {
+      throw new WriteNotAuthorizedError(`session ${sessionId} is deleted (tombstone)`)
+    }
+    const now = new Date().toISOString()
+    if (existing) {
+      // 幂等：同归属 no-op；归属确立后不可变更（不得换 root 绕过级联隔离）
+      if (!sameOwnership(existing.data.state.ownership, ownership)) {
+        throw new OwnershipMismatchError(`session ${sessionId} already registered with a different ownership`)
+      }
+      return this.recordReceipt(prepared, { committedAt: now, auth: opts?.auth })
+    }
+    // 新登记：归属链校验（root/parent 已登记且无 tombstone；自指跳过）在 ensureRow 内
+    this.ensureRow(sessionId, ownership)
+    return this.recordReceipt(prepared, { committedAt: now, auth: opts?.auth })   // 无 revision
+  }
+
   /** 供 register（T9）与内部使用：登记/写入前的事务化校验入口。 */
   ensureRow(sessionId: string, ownership?: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string }): SessionRow {
     // 归属存续校验（spec §6.2）：root/parent 已存在的行必须无 tombstone。
@@ -199,8 +222,8 @@ export class InMemorySessionStore implements SessionStore {
       for (const pid of [ownership.rootSessionId, ownership.parentSessionId]) {
         if (!pid || pid === sessionId) continue
         const p = this.sessions.get(pid)
-        if (p?.tombstone) {
-          throw new WriteNotAuthorizedError(`ownership target ${pid} is deleted (tombstone)`)
+        if (!p || p.tombstone) {
+          throw new WriteNotAuthorizedError(`ownership target ${pid} is not registered or deleted (register protocol, spec §2.3)`)
         }
       }
     }
@@ -290,4 +313,13 @@ interface ChangeSetLike {
   source?: { sessionId: string; branchId: string }
   sourceRevision?: number
   initialRevision?: number
+}
+
+function sameOwnership(
+  a: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string },
+  b: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string },
+): boolean {
+  return a.rootSessionId === b.rootSessionId
+    && (a.parentSessionId ?? null) === (b.parentSessionId ?? null)
+    && (a.parentToolUseId ?? null) === (b.parentToolUseId ?? null)
 }

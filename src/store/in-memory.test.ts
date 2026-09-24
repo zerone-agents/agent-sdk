@@ -124,8 +124,10 @@ describe('append / revise / todos apply paths (issue #131)', () => {
     expect((await store.loadSession('s1'))!.revision).toBe(before)
   })
 
-  it('saveTodos as first write creates a todo-only session (ownership carried)', async () => {
+  it('saveTodos as first write creates a todo-only session (root registered first — scenario-2 protocol)', async () => {
     const store = new InMemorySessionStore()
+    // register 协议（spec §2.3）：父/root 先登记，子代理首写才被接受
+    await store.commit('root-1', prepareOperation('root-1', { kind: 'register', ownership: { rootSessionId: 'root-1' } }))
     const p = prepareOperation('sub-1', {
       kind: 'save-todos', todos: [],
       ownership: { rootSessionId: 'root-1', parentSessionId: 'root-1' },
