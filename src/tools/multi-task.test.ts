@@ -4,8 +4,10 @@ import type {
   SubagentContext,
   AgentDefinition,
   RuntimeEnvironment,
+  QueryEngineConfig,
 } from '../types.js'
 import { createEmptyServices } from './services.js'
+import { InMemorySessionStorage } from '../session-storage-fake.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
 vi.mock('../engine.js', () => ({
@@ -83,6 +85,8 @@ function makeContext(overrides: Partial<SubagentContext> = {}): SubagentContext 
     subAgents: TEST_AGENTS,
     services: createEmptyServices(),
     subprocessEnv: {},
+    // issue #128: MultiTask requires a storage context — default in-memory in tests.
+    sessionStorage: new InMemorySessionStorage(),
     ...overrides,
   }
 }
@@ -813,5 +817,40 @@ describe('MultiTaskTool', () => {
       expect(completedEvents[0].event.status).toBe('failed')
       expect(completedEvents[0].event.error).toMatch(/completed without producing any text/)
     })
+  })
+})
+
+describe('todo storage threading (issue #128)', () => {
+  /** Narrow mock seam over the vi.mock'd QueryEngine (review P2: no `any`). */
+  interface MockEngineInstance {
+    submitMessage(): AsyncGenerator<unknown>
+  }
+  interface EngineMock {
+    mockReset(): void
+    mockImplementation(fn: (this: MockEngineInstance) => void): void
+    mock: { calls: Array<[QueryEngineConfig, ...unknown[]]> }
+  }
+  const engineMock = (): EngineMock => QueryEngine as unknown as EngineMock
+
+  // Self-contained reset: this describe sits OUTSIDE describe('MultiTaskTool')'s
+  // beforeEach scope — a prior suite's mockImplementation (e.g. the silent-
+  // completion test) would otherwise leak in and make the call fail.
+  beforeEach(() => {
+    engineMock().mockReset()
+    engineMock().mockImplementation(function (this: MockEngineInstance) {
+      this.submitMessage = async function* () {
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
+      }
+    })
+  })
+
+  it('call() threads ctx.sessionStorage into the child engine config', async () => {
+    const storage = new InMemorySessionStorage()
+    const result = await MultiTaskTool.call({
+      tasks: [{ description: 'one', prompt: 'test', subagent_name: 'general' }],
+    }, makeContext({ sessionStorage: storage }))
+    expect(result.is_error).toBeFalsy()
+    const [config] = engineMock().mock.calls.at(-1)!
+    expect(config.sessionStorage).toBe(storage)
   })
 })

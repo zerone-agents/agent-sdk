@@ -12,7 +12,7 @@ import { loadSessionFrom, type SessionStorage } from './session-storage.js'
 import { revertSessionWith } from './session-revert.js'
 import { compactSessionStreamWith } from './compact-session.js'
 import type { RevertResult, RevertSessionOptions } from './session-revert.js'
-import type { SDKCompactMessage } from './types.js'
+import type { SDKCompactMessage, TodoInfo } from './types.js'
 import type { CompactSessionOptions, CompactSessionResult } from './compact-session.js'
 
 export interface SessionManager {
@@ -27,6 +27,10 @@ export interface SessionManager {
   append(sessionId: string, message: NormalizedMessageParam): Promise<void>
   rename(sessionId: string, title: string): Promise<void>
   tag(sessionId: string, tag: string | null): Promise<void>
+  /** Session-scoped todos via the bound storage (issue #128). */
+  getTodos(sessionId: string): Promise<TodoInfo[]>
+  /** Clear todos via the bound storage (equivalent to saveTodos(sessionId, [])). */
+  clearTodos(sessionId: string): Promise<void>
 }
 
 export function createSessionManager(init: { storage: SessionStorage }): SessionManager {
@@ -73,6 +77,12 @@ export function createSessionManager(init: { storage: SessionStorage }): Session
     },
     async tag(sessionId, tag) {
       return tagSessionWith(storage, sessionId, tag, 'source-revision')
+    },
+    async getTodos(sessionId) {
+      return storage.loadTodos(sessionId)
+    },
+    async clearTodos(sessionId) {
+      return storage.saveTodos(sessionId, [])
     },
   }
 }

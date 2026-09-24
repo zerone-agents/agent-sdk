@@ -121,6 +121,17 @@ export const MultiTaskTool: ToolDefinition = {
       }
     }
 
+    // issue #128 (review P2): explicit failure, never a silent file fallback.
+    const sessionStorage = context.sessionStorage
+    if (!sessionStorage) {
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUseId,
+        content: 'Error: MultiTask requires a session storage context (missing sessionStorage).',
+        is_error: true,
+      }
+    }
+
     const executions = tasks.map(async (task, index): Promise<SubtaskResult> => {
       const baseResult = { index, description: task.description }
       const run = await runSubagent({
@@ -135,6 +146,7 @@ export const MultiTaskTool: ToolDefinition = {
         taskIndex: index,
         abortSignal: context.abortSignal,
         diagnostics: context.diagnostics, // #78: child inherits diagnostics
+        sessionStorage, // #128 (review P2): narrowed above — no silent fallback
         emitEvent: ctx.emitEvent ? (event) => ctx.emitEvent?.(event) : undefined,
       })
       return {

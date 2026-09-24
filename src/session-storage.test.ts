@@ -136,3 +136,65 @@ describe('revision tri-state CAS (issue #4)', () => {
       .rejects.toThrow(SessionConflictError)
   })
 })
+
+describe('todos contract (issue #128)', () => {
+  const todo = (content: string) => ({ content, status: 'pending' as const, priority: 'high' as const })
+
+  it('loadTodos: missing file → []', async () => {
+    const storage = new FileSessionStorage({ baseDir: freshDir() })
+    expect(await storage.loadTodos('s1')).toEqual([])
+  })
+
+  it('loadTodos: reads legacy format { updatedAt, todos }', async () => {
+    const root = freshDir()
+    mkdirSync(join(root, 's1'), { recursive: true })
+    writeFileSync(join(root, 's1', 'todos.json'), JSON.stringify({ updatedAt: 'x', todos: [todo('a')] }))
+    const storage = new FileSessionStorage({ baseDir: root })
+    expect(await storage.loadTodos('s1')).toEqual([todo('a')])
+  })
+
+  it('loadTodos: corrupt json → SessionDataInvalidError', async () => {
+    const root = freshDir()
+    mkdirSync(join(root, 's1'), { recursive: true })
+    writeFileSync(join(root, 's1', 'todos.json'), '{not json')
+    await expect(new FileSessionStorage({ baseDir: root }).loadTodos('s1')).rejects.toThrow(SessionDataInvalidError)
+  })
+
+  it('loadTodos: non-array todos → SessionDataInvalidError', async () => {
+    const root = freshDir()
+    mkdirSync(join(root, 's1'), { recursive: true })
+    writeFileSync(join(root, 's1', 'todos.json'), JSON.stringify({ updatedAt: 'x', todos: 'nope' }))
+    await expect(new FileSessionStorage({ baseDir: root }).loadTodos('s1')).rejects.toThrow(SessionDataInvalidError)
+  })
+
+  it('loadTodos: invalid todo entry → SessionDataInvalidError', async () => {
+    const root = freshDir()
+    mkdirSync(join(root, 's1'), { recursive: true })
+    writeFileSync(join(root, 's1', 'todos.json'), JSON.stringify({ updatedAt: 'x', todos: [{ content: 'a', status: 'bogus', priority: 'high' }] }))
+    await expect(new FileSessionStorage({ baseDir: root }).loadTodos('s1')).rejects.toThrow(SessionDataInvalidError)
+  })
+
+  it('loadTodos: IO error propagates (baseDir is a file → ENOTDIR), never []', async () => {
+    const root = freshDir()
+    const blocker = join(root, 'blocker.txt')
+    writeFileSync(blocker, 'x')
+    await expect(new FileSessionStorage({ baseDir: blocker }).loadTodos('s1')).rejects.toThrow()
+  })
+
+  it('todos: invalid sessionId → throws with no filesystem side effects', async () => {
+    const root = freshDir()
+    const storage = new FileSessionStorage({ baseDir: root })
+    await expect(storage.loadTodos('../outside')).rejects.toThrow(/sessionId/)
+    await expect(storage.loadTodos('')).rejects.toThrow(/sessionId/)
+    await expect(storage.saveTodos('a/b', [])).rejects.toThrow(/sessionId/)
+    expect(readdirSync(root)).toEqual([])
+  })
+
+  it('saveTodos: round-trip + atomic (only todos.json remains)', async () => {
+    const storage = new FileSessionStorage({ baseDir: freshDir() })
+    const todos = [{ content: 'a', status: 'in_progress' as const, priority: 'medium' as const }]
+    await storage.saveTodos('s1', todos)
+    expect(await storage.loadTodos('s1')).toEqual(todos)
+    expect(readdirSync(join(tmpRoot, 's1'))).toEqual(['todos.json'])
+  })
+})

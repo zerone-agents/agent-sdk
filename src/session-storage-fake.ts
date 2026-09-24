@@ -5,12 +5,16 @@
  */
 import type { NormalizedMessageParam } from './providers/types.js'
 import type { SessionData, SessionMetadata } from './session.js'
+import type { TodoInfo } from './types.js'
 import { SessionConflictError, type SaveOptions, type SessionStorage } from './session-storage.js'
 
 export class InMemorySessionStorage implements SessionStorage {
   readonly store = new Map<string, SessionData>()
   readonly saveCalls: Array<{ sessionId: string; metadata: SessionMetadata; opts?: SaveOptions }> = []
   readonly loadCalls: string[] = []
+  /** Todo sidecar store (issue #128) — kept separate from transcript data. */
+  readonly todosStore = new Map<string, TodoInfo[]>()
+  readonly todoSaveCalls: Array<{ sessionId: string }> = []
   /** When true, every save rejects (error-semantics tests). */
   failSaves = false
 
@@ -43,7 +47,18 @@ export class InMemorySessionStorage implements SessionStorage {
   }
 
   async delete(sessionId: string): Promise<boolean> {
+    this.todosStore.delete(sessionId)
     return this.store.delete(sessionId)
+  }
+
+  async loadTodos(sessionId: string): Promise<TodoInfo[]> {
+    const todos = this.todosStore.get(sessionId)
+    return todos ? structuredClone(todos) : []
+  }
+
+  async saveTodos(sessionId: string, todos: TodoInfo[]): Promise<void> {
+    this.todoSaveCalls.push({ sessionId })
+    this.todosStore.set(sessionId, structuredClone(todos))
   }
 
   async list(): Promise<SessionMetadata[]> {

@@ -11,6 +11,9 @@ import { join } from 'node:path'
 import { createEmptyServices } from './tools/services.js'
 import { getTodos, TodoWriteTool } from './tools/todowrite.js'
 import { PRUNE_THRESHOLD_CHARS } from './utils/compact.js'
+import { FileSessionStorage, type SessionStorage } from './session-storage.js'
+import { InMemorySessionStorage } from './session-storage-fake.js'
+import type { DiagnosticsSink } from './utils/diagnostics.js'
 
 // Mirrors the real @anthropic-ai/sdk APIConnectionError: a plain Error with
 // name='Error', fixed message, and the underlying failure on `cause`.
@@ -21,7 +24,7 @@ class FakeAPIConnectionError extends Error {
   }
 }
 
-function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryEngineConfig {
+function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = [], overrides: Partial<QueryEngineConfig> = {}): QueryEngineConfig {
   const skillRegistry = new SkillRegistry()
   return {
     runtime: {
@@ -45,6 +48,11 @@ function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = []): QueryE
     includePartialMessages: true,
     agentId: 'test',
     maxStreamRetries: 1,
+    // issue #128: engine todo reads go through the injected backend. Default
+    // FileSessionStorage reads the same ~/.agents/sessions dir the legacy
+    // file-based todo tests seed — those stay green without edits.
+    sessionStorage: new FileSessionStorage(),
+    ...overrides,
   }
 }
 
@@ -1671,6 +1679,99 @@ describe('per-turn prune in an active session (#92)', () => {
     expect(results[1]).toBe('[Old tool result content cleared]') // q2
     for (let i = 2; i < 6; i++) {
       expect(results[i]).toBe('X'.repeat(PRUNE_THRESHOLD_CHARS + 1)) // q3..q6 retained
+    }
+  })
+})
+
+describe('engine todo wiring via injected storage (issue #128)', () => {
+  function stubProvider(): LLMProvider {
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+  }
+  function failingTodosStorage(err: Error): SessionStorage {
+    return {
+      load: async () => null,
+      save: async () => {},
+      loadTodos: async () => { throw err },
+      saveTodos: async () => {},
+    }
+  }
+
+  it('expires all-terminal todo list at query start through the injected storage', async () => {
+    const sid = 'expire-s1'
+    const storage = new InMemorySessionStorage()
+    await storage.saveTodos(sid, [{ content: 'x', status: 'completed', priority: 'high' }])
+    await run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: storage, sessionId: sid })))
+    expect(storage.todosStore.get(sid)).toEqual([])          // cleared via storage — not files
+  })
+
+  it('does NOT clear a list with active items', async () => {
+    const sid = 'active-s1'
+    const storage = new InMemorySessionStorage()
+    const keep = [{ content: 'a', status: 'in_progress' as const, priority: 'high' as const }]
+    await storage.saveTodos(sid, keep)
+    await run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: storage, sessionId: sid })))
+    expect(storage.todosStore.get(sid)).toEqual(keep)
+  })
+
+  it('injects active todos as <system-reminder> into the provider request via injected storage', async () => {
+    const sid = 'reminder-s1'
+    const storage = new InMemorySessionStorage()
+    await storage.saveTodos(sid, [{ content: 'First task', status: 'in_progress', priority: 'high' }])
+    const captured: NormalizedMessageParam[] = []
+    await run(new QueryEngine(makeConfig(capturingStreamProvider(captured), [], { sessionStorage: storage, sessionId: sid })))
+    const last = captured[captured.length - 1]
+    expect(String(last.content)).toContain('Current task list:')
+    expect(String(last.content)).toContain('First task')
+  })
+
+  it('load failure: DiagnosticsSink gets warn with fields + cause; run continues', async () => {
+    const sid = 'diag-s1'
+    const err = new Error('boom')
+    const warn = vi.fn()
+    const sink: DiagnosticsSink = {
+      debug() {}, trace() {}, error() {}, child: () => sink,
+      warn,
+    }
+    await run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(err), sessionId: sid, logger: sink })))
+    expect(warn).toHaveBeenCalled()
+    const a = warn.mock.calls[0]
+    expect(String(a[0])).toContain('[session] todo')
+    expect(a[1]).toMatchObject({ sessionId: sid })
+    expect(a[2]).toBe(err)                      // cause carries the raw error (#78)
+  })
+
+  it('load failure: plain Logger degrades warn → error', async () => {
+    const error = vi.fn()
+    const logger: Logger = { debug() {}, trace() {}, error, child: () => logger }
+    await run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(new Error('boom')), sessionId: 'diag-s2', logger })))
+    expect(error).toHaveBeenCalled()
+  })
+
+  it('load failure: host logger throwing does NOT break the run', async () => {
+    const logger: Logger = { debug() {}, trace() {}, error() { throw new Error('host logger blew up') }, child: () => logger }
+    await expect(
+      run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(new Error('boom')), sessionId: 'diag-s3', logger }))),
+    ).resolves.toBeDefined()
+  })
+
+  it('load failure: default logger still emits the warning (console.error) and the run continues', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(
+        run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(new Error('boom')), sessionId: 'diag-s4' }))),
+      ).resolves.toBeDefined()
+      // Review P2: "no logger" must NOT be a silent path — the built-in logger
+      // prints the degraded warn (via console.error) like any other diagnostic.
+      expect(spy.mock.calls.some((c) => String(c[0]).includes('[session] todo'))).toBe(true)
+    } finally {
+      spy.mockRestore()
     }
   })
 })

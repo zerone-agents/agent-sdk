@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Agent } from './agent.js'
 import type { AgentOptions, SDKMessage } from './types.js'
 import { InMemorySessionStorage } from './session-storage-fake.js'
-import { SessionConflictError, SessionNotFoundError, saveSessionTo } from './session-storage.js'
+import { FileSessionStorage, SessionConflictError, SessionNotFoundError, saveSessionTo, type SessionStorage } from './session-storage.js'
 import type { NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 
@@ -192,5 +192,16 @@ describe('tag preservation across checkpoints (issue #4 PR review)', () => {
     internals(agent).history = [histMsg('m1', 'more')]
     await internals(agent).persistCheckpoint()
     expect(fake.store.get('s1')!.metadata.tag).toBe('important')
+  })
+})
+
+describe('Agent todo-storage validation (issue #128)', () => {
+  it('custom storage without loadTodos/saveTodos → TypeError at construction', () => {
+    const storage = { load: async () => null, save: async () => {} } as unknown as SessionStorage
+    expect(() => new Agent(base({ sessionStorage: storage }))).toThrow(TypeError)
+  })
+
+  it('FileSessionStorage passes validation', () => {
+    expect(() => new Agent(base({ sessionStorage: new FileSessionStorage() }))).not.toThrow()
   })
 })

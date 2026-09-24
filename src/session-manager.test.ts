@@ -103,7 +103,7 @@ describe('SessionManager delete/list (issue #4)', () => {
     expect(await mgr.get('src-1')).toBeNull()
     expect(await mgr.getMessages('src-1')).toEqual([])
 
-    const minimal = { load: async () => null, save: async () => {} }
+    const minimal = { load: async () => null, save: async () => {}, loadTodos: async () => [], saveTodos: async () => {} }
     const bare = createSessionManager({ storage: minimal })
     await expect(bare.delete('x')).rejects.toThrow('SessionStorage.delete not implemented by backend')
     await expect(bare.list()).rejects.toThrow('SessionStorage.list not implemented by backend')
@@ -184,5 +184,27 @@ describe('SessionManager revert / compact / append / rename / tag (issue #4)', (
     const mgr = createSessionManager({ storage: fake })
     await mgr.compact({ sessionId: 'src-1', provider: stubProvider })
     expect(fake.store.get('src-1')!.metadata.tag).toBe('important')
+  })
+})
+
+describe('SessionManager todos (issue #128)', () => {
+  it('getTodos/clearTodos route through the bound storage', async () => {
+    const fake = new InMemorySessionStorage()
+    await fake.saveTodos('a', [{ content: 'x', status: 'pending', priority: 'high' }])
+    const mgr = createSessionManager({ storage: fake })
+    expect(await mgr.getTodos('a')).toHaveLength(1)
+    await mgr.clearTodos('a')
+    expect(await mgr.getTodos('a')).toEqual([])
+    expect(fake.todoSaveCalls.map((c) => c.sessionId)).toEqual(['a', 'a'])
+  })
+
+  it('compact does not touch todos (issue #128 review P2)', async () => {
+    const fake = new InMemorySessionStorage()
+    await saveSessionTo(fake, 'ct-1', seedMessages(),
+      { cwd: '/w', model: 'm', createdAt: '2020-01-01T00:00:00.000Z' }, { expectedRevision: null })
+    await fake.saveTodos('ct-1', [{ content: 'keep', status: 'pending', priority: 'high' }])
+    const mgr = createSessionManager({ storage: fake })
+    await mgr.compact({ sessionId: 'ct-1', provider: stubProvider })
+    expect(await fake.loadTodos('ct-1')).toEqual([{ content: 'keep', status: 'pending', priority: 'high' }])
   })
 })

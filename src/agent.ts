@@ -275,6 +275,15 @@ export class Agent {
       }
     }
     this.storage = this.cfg.sessionStorage ?? defaultSessionStorage
+    // issue #128: TodoWrite persists through this storage. TS enforces the todo
+    // primitives on custom implementations; this guards untyped (JS) consumers
+    // too — fail fast at construction, never silently fall back to files.
+    if (typeof this.storage.loadTodos !== 'function' || typeof this.storage.saveTodos !== 'function') {
+      throw new TypeError(
+        'SessionStorage must implement loadTodos and saveTodos (issue #128). ' +
+        'FileSessionStorage does; custom backends must add both methods for TodoWrite support.',
+      )
+    }
     this.strict = this.cfg.sessionErrorMode === 'strict'
       || (this.cfg.sessionErrorMode === undefined && this.cfg.sessionStorage !== undefined)
     this.sessionCreatedAt = new Date().toISOString()
@@ -765,6 +774,7 @@ export class Agent {
       abortSignal: this.abortCtrl.signal,
       hookRegistry: this.hookRegistry,
       sessionId: this.sid,
+      sessionStorage: this.storage,
       contextWindow: opts.contextWindow,
       maxRequestBodyBytes: opts.maxRequestBodyBytes,
       maxSessionQueries: opts.maxSessionQueries,

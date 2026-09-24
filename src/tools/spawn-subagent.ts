@@ -19,6 +19,7 @@ import type {
 import { QueryEngine } from '../engine.js'
 import { resolveAgent } from '../resolve-agent.js'
 import { resolvePrompt } from '../prompts/system-prompts.js'
+import type { SessionStorage } from '../session-storage.js'
 
 import type { DiagnosticsSink } from '../utils/diagnostics.js'
 
@@ -48,6 +49,14 @@ export interface SpawnSubagentOptions {
   emitEvent?: (event: SDKSubagentMessage) => void
   /** #78: diagnostics sink inherited by the child engine as its logger. */
   diagnostics?: DiagnosticsSink
+  /**
+   * issue #128: session storage inherited by the child engine — tools in the
+   * subagent (TodoWrite) persist sidecars through the SAME backend as the
+   * parent, isolated by the child's own sessionId. REQUIRED (review P2): no
+   * silent file-backend fallback — missing wiring must fail loudly. Public API
+   * breaking vs 3.8.0 for direct runSubagent callers.
+   */
+  sessionStorage: SessionStorage
 }
 
 export interface SubagentRun {
@@ -131,6 +140,7 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     canUseTool: async () => ({ behavior: 'allow' }),
     includePartialMessages: true,
     sessionId,
+    sessionStorage: opts.sessionStorage,
     abortSignal: opts.abortSignal,
     logger: opts.diagnostics, // #78: child inherits the diagnostics channel
   })
