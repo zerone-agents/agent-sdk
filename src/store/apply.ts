@@ -137,8 +137,30 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
       data.state.updatedAt = meta.committedAt
       return data
     }
+    case 'rollback': {
+      mustBranch(data.state, changeSet.fromBranchId)   // 源分支必须存在（两序列由 SDK plan 生成，adapter 不推断）
+      const newBranch = {
+        branchId: changeSet.newBranchId,
+        records: [...changeSet.records],
+        effective: [...changeSet.effective],
+        context: changeSet.context,
+        createdAt: meta.committedAt,
+        createdByOpId: undefined,
+      }
+      data.state.branches.push(newBranch)
+      data.state.currentBranchId = changeSet.newBranchId
+      data.state.metadata.messageCount = newBranch.effective.length
+      data.state.updatedAt = meta.committedAt
+      return data
+    }
+    case 'branch-switch': {
+      mustBranch(data.state, changeSet.toBranchId)
+      data.state.currentBranchId = changeSet.toBranchId
+      data.state.updatedAt = meta.committedAt
+      return data
+    }
     default:
-      // T7–T9 逐 kind 填充；P1 末必须无残留（验收 #3）
+      // T8–T9 逐 kind 填充；P1 末必须无残留（验收 #3）
       throw new Error(`applyChangeSet: kind "${changeSet.kind}" not implemented in P1 slice yet`)
   }
 }

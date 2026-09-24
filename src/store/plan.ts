@@ -3,8 +3,11 @@
  * 读存储/组装 ChangeSet 的领域规划全部在 SDK；adapter 不承担。
  * planCompact 为纯组装（时序接入在 P3 的 engine/Agent 编排）。
  */
-import type { ChangeSet, ContextSegment, NewRecord } from './types.js'
-import { buildCovers } from './algorithm.js'
+import { randomUUID } from 'node:crypto'
+import type { ChangeSet, ContextSegment, MessageRecord, NewRecord } from './types.js'
+import { buildCovers, rebuildRollback } from './algorithm.js'
+import { SessionDataInvalidError } from './errors.js'
+import type { SessionStore } from './session-store.js'
 
 export interface PlanCompactInput {
   branchId: string
@@ -32,5 +35,38 @@ export function planCompact(input: PlanCompactInput): ChangeSet {
       ],
     },
     summary: { summaryRecordId: input.summaryRecord.recordId, covers },
+  }
+}
+
+/** 读 store + 五步重建计算 + 构造 rollback intent（SDK 规划层；expectedRevision = 当前快照）。 */
+export async function planRollback(
+  store: Pick<SessionStore, 'loadSession' | 'loadRecords'>,
+  sessionId: string,
+  branchId: string,
+  atMessageId: string,
+): Promise<{ kind: 'rollback'; expectedRevision: number; changeSet: ChangeSet }> {
+  const state = await store.loadSession(sessionId)
+  if (!state) throw new SessionDataInvalidError(sessionId, 'session not found')
+  const branch = state.branches.find((b) => b.branchId === branchId)
+  if (!branch) throw new SessionDataInvalidError(sessionId, `unknown branch: ${branchId}`)
+  const loaded = await store.loadRecords(sessionId, branch.records)
+  const records = new Map<string, MessageRecord>()
+  branch.records.forEach((rid, i) => {
+    const r = loaded[i]
+    if (r) records.set(rid, r)
+  })
+  const plan = rebuildRollback(sessionId, branch, records, atMessageId)
+  return {
+    kind: 'rollback',
+    expectedRevision: state.revision,
+    changeSet: {
+      kind: 'rollback',
+      fromBranchId: branchId,
+      atMessageId,
+      newBranchId: randomUUID(),
+      records: plan.logs,
+      effective: plan.effective,
+      context: plan.context,
+    },
   }
 }
