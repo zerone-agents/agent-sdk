@@ -63,7 +63,16 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$VERSION" == *-* ]]; then
+            # Prerelease (e.g. 3.9.0-rc.1): publish under 'next' so `latest`
+            # keeps pointing at the current stable release.
+            echo "Prerelease detected ($VERSION) → publishing under 'next' dist-tag"
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
