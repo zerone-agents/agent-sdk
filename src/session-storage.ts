@@ -36,7 +36,15 @@ function assertSafeSessionId(sessionId: string): void {
 export interface SessionStorage {
   /** null = session does not exist; throw = storage failure. */
   load(sessionId: string): Promise<SessionData | null>
-  /** throw = write failure. metadata is fully normalized by the SDK. */
+  /**
+   * throw = write failure. metadata is fully normalized by the SDK.
+   *
+   * create-only contract (issue #128 review P2, spec §6.4): `expectedRevision:
+   * null` means "the TRANSCRIPT does not exist" — judged by `load()` returning
+   * null, NOT by session row/dir existence. SQL adapters: check
+   * `transcript_revision IS NULL`; a prior `saveTodos()` creating the session
+   * row must not reject the first transcript checkpoint.
+   */
   save(
     sessionId: string,
     messages: NormalizedMessageParam[],
@@ -54,7 +62,11 @@ export interface SessionStorage {
   loadTodos(sessionId: string): Promise<TodoInfo[]>
   /** Full-list last-write-wins rewrite. Never touches the transcript or its revision. */
   saveTodos(sessionId: string, todos: TodoInfo[]): Promise<void>
-  /** Delete a session. SDK wrappers throw "not implemented" when absent. */
+  /**
+   * Delete a session. SDK wrappers throw "not implemented" when absent.
+   * Dual-purge contract (issue #128 review P2): must remove BOTH the
+   * transcript and its todos sidecar in one operation.
+   */
   delete?(sessionId: string): Promise<boolean>
   /** Enumerate session metadata. SDK wrappers throw "not implemented" when absent. */
   list?(): Promise<SessionMetadata[]>
@@ -64,7 +76,10 @@ export interface SaveOptions {
   /**
    * 三态（spec §5）：
    * - 省略：legacy upsert——无条件覆盖，不启用并发守卫，写入数据不含 revision
-   * - null：create-only——会话必须不存在，否则抛 SessionConflictError
+   * - null：create-only——**transcript 必须不存在**（`load()` 返回 null；与
+   *   session 行/目录是否存在无关），否则抛 SessionConflictError。SQL adapter
+   *   以 `transcript_revision IS NULL` 判定——先前 saveTodos() 建的行不得导致
+   *   首次 checkpoint 假冲突（issue #128 review P2）
    * - 数字：CAS——必须等于存储中的当前 revision，否则抛 SessionConflictError
    */
   expectedRevision?: number | null
