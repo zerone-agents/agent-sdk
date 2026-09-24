@@ -8,6 +8,7 @@
 import type { ChangeSet, ContextRef, MessageRecord, NewRecord, SessionState } from './types.js'
 import type { TodoInfo } from '../types.js'
 import { SessionDataInvalidError } from './errors.js'
+import { foldEffective } from './algorithm.js'
 
 export interface StoreData {
   state: SessionState
@@ -123,8 +124,21 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
       data.state.updatedAt = meta.committedAt
       return data
     }
+    case 'compact': {
+      const ids = appendRecords(data, changeSet.newRecords, meta.committedAt)
+      const branch = findOrInitBranch(data.state, changeSet.branchId, meta.committedAt)
+      branch.records.push(...ids)
+      // effective = 折叠重算（summary 记录被排除；revise 版本语义由 fold 保证）——
+      // 完整历史（UI 视图）与模型上下文分离的核心（spec §2/§4.2）
+      branch.effective = foldEffective(branch.records, (rid) => data.records.get(rid))
+      // 模型上下文整体替换为 [summary 段(covers), kept 段]
+      branch.context = changeSet.context
+      data.state.metadata.messageCount = branch.effective.length
+      data.state.updatedAt = meta.committedAt
+      return data
+    }
     default:
-      // T6–T9 逐 kind 填充；P1 末必须无残留（验收 #3）
+      // T7–T9 逐 kind 填充；P1 末必须无残留（验收 #3）
       throw new Error(`applyChangeSet: kind "${changeSet.kind}" not implemented in P1 slice yet`)
   }
 }

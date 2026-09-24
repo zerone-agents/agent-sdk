@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { foldEffective } from './algorithm.js'
+import { buildCovers, foldEffective } from './algorithm.js'
 import { SessionDataInvalidError } from './errors.js'
 
 const mk = (id: string, mid: string, kind: 'message' | 'summary' = 'message') =>
@@ -27,5 +27,23 @@ describe('foldEffective (issue #131, spec §2.2)', () => {
 
   it('empty logs fold to empty effective', () => {
     expect(foldEffective([], () => undefined)).toEqual([])
+  })
+})
+
+describe('buildCovers (issue #131, spec §2.2-#4 / §4.2)', () => {
+  it('expands old summary segments to their covers (single layer, no nesting)', () => {
+    const segments = [
+      { kind: 'summary' as const, summaryRecordId: 'S1', covers: { branchId: 'b1', recordIds: ['r1', 'r2'] } },
+      { kind: 'records' as const, recordIds: ['r3'] },
+    ]
+    expect(buildCovers('b1', segments)).toEqual({ branchId: 'b1', recordIds: ['r1', 'r2', 'r3'] })
+  })
+
+  it('pure concatenation of records segments preserves conversation order', () => {
+    const segments = [
+      { kind: 'records' as const, recordIds: ['r1', 'r2'] },
+      { kind: 'records' as const, recordIds: ['r3', 'r4'] },
+    ]
+    expect(buildCovers('b1', segments)).toEqual({ branchId: 'b1', recordIds: ['r1', 'r2', 'r3', 'r4'] })
   })
 })

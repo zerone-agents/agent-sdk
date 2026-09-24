@@ -137,3 +137,53 @@ describe('append / revise / todos apply paths (issue #131)', () => {
     expect(state!.revision).toBe(0)
   })
 })
+
+describe('compact apply path (issue #131, spec §4.2 atomic form)', () => {
+  const pending = [rec('r1', 'm1', 'first'), rec('r2', 'm2', 'second')]
+  const summary = (): NewRecord => ({
+    recordId: 'S1',
+    message: { id: 'sum-1', role: 'assistant', content: 'summary text' },
+    actor: { kind: 'sdk' },
+    kind: 'summary',
+  })
+  const compactIntent = (expectedRevision: number | null) => ({
+    kind: 'compact' as const,
+    expectedRevision,
+    changeSet: {
+      kind: 'compact' as const,
+      branchId: 'b1',
+      newRecords: [...pending, summary()],
+      context: { segments: [
+        { kind: 'summary' as const, summaryRecordId: 'S1', covers: { branchId: 'b1', recordIds: ['r1', 'r2'] } },
+        { kind: 'records' as const, recordIds: [] },
+      ] },
+      summary: { summaryRecordId: 'S1', covers: { branchId: 'b1', recordIds: ['r1', 'r2'] } },
+    },
+  })
+
+  it('first compact on a NEW session persists originals + summary in ONE create-only commit', async () => {
+    const store = new InMemorySessionStore()
+    const r = await store.commit('s1', prepareOperation('s1', compactIntent(null)))
+    expect(r.revision).toBe(1)
+    // originals AND summary land in the same transaction (audit view)
+    const audit = await store.loadHistory('s1', 'b1', { includeSuperseded: true })
+    expect(audit.records.map((x) => x.recordId)).toEqual(['r1', 'r2', 'S1'])
+    // effective = fold (summary excluded) — UI keeps full history
+    expect((await store.loadHistory('s1', 'b1')).records.map((x) => x.recordId)).toEqual(['r1', 'r2'])
+    // model context is compacted: [summary, kept(empty)]
+    const ctx = await store.loadContext('s1', 'b1')
+    expect(ctx.map((m) => m.id)).toEqual(['sum-1'])
+  })
+
+  it('compact on an existing session replaces context and keeps effective (history/context split)', async () => {
+    const store = new InMemorySessionStore()
+    await store.commit('s1', prepareOperation('s1', ckpt(null, [rec('r0', 'm0', 'kept tail')])))
+    const r = await store.commit('s1', prepareOperation('s1', compactIntent(1)))
+    expect(r.revision).toBe(2)
+    // context = [summary, ...existing records segment(r0)]? — apply replaces context wholesale with changeSet.context
+    const ctx = await store.loadContext('s1', 'b1')
+    expect(ctx.map((m) => m.id)).toEqual(['sum-1'])
+    // effective still contains everything (UI unchanged)
+    expect((await store.loadHistory('s1', 'b1')).records.map((x) => x.recordId)).toEqual(['r0', 'r1', 'r2'])
+  })
+})
