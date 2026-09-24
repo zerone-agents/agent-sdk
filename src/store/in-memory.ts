@@ -7,6 +7,7 @@ import type { NormalizedMessageParam } from '../providers/types.js'
 import type { TodoInfo } from '../types.js'
 import type {
   AuthorizationContext,
+  CommitValue,
   HistoryPage,
   HistoryQuery,
   MessageRecord,
@@ -29,6 +30,8 @@ interface SessionRow {
 
 export class InMemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, SessionRow>()
+  /** 同库共享记录表（recordId 全局唯一；fork「引用」语义的基础——spec §4.4）。 */
+  private readonly records = new Map<string, MessageRecord>()
   private readonly receipts = new Map<string, OperationReceipt>()
 
   // ── 读取 ───────────────────────────────────────────────
@@ -115,8 +118,31 @@ export class InMemorySessionStore implements SessionStore {
       row.data.state.updatedAt = now
       return this.recordReceipt(prepared, { revision: row.data.state.revision, committedAt: now, auth: opts?.auth })
     }
-    // fork / import：T8 实现（跨 session / initialRevision）
-    throw new Error(`commit: kind "${prepared.kind}" not implemented in P1 slice yet`)
+    if (prepared.kind === 'fork' || prepared.kind === 'import') {
+      const changeSet = prepared.payload as ChangeSetLike
+      if (prepared.kind === 'fork') {
+        // 源快照冻结校验（spec §4.4）：源必须存在且 revision == 冻结值——不是审计
+        const srcState = await this.loadSession(changeSet.source!.sessionId)
+        if (!srcState || srcState.revision !== changeSet.sourceRevision) {
+          throw new SessionConflictError(sessionId, null, srcState?.revision)
+        }
+      }
+      applyChangeSet(sessionId, row.data, changeSet as never, { committedAt: now })
+      // import 的 initialRevision 例外（spec §8.3）：起点 = 导入值；否则正常递增
+      if (prepared.kind === 'import' && changeSet.initialRevision !== undefined) {
+        row.data.state.revision = changeSet.initialRevision
+      } else {
+        row.data.state.revision += 1
+      }
+      row.data.state.updatedAt = now
+      return this.recordReceipt(prepared, {
+        revision: row.data.state.revision,
+        committedAt: now,
+        auth: opts?.auth,
+        ...(prepared.kind === 'fork' ? { sourceRevision: changeSet.sourceRevision } : {}),
+      })
+    }
+    throw new SessionDataInvalidError(sessionId, `unsupported transcript kind: ${prepared.kind}`)
   }
 
   async saveTodos(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
@@ -138,8 +164,24 @@ export class InMemorySessionStore implements SessionStore {
   async deleteSession(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
     if (prepared.kind !== 'delete') throw new SessionDataInvalidError(sessionId, 'deleteSession expects kind "delete"')
-    // T8 实现（tombstone + cascadeOwned）
-    throw new Error('deleteSession: not implemented in P1 slice yet')
+    const now = new Date().toISOString()
+    const row = this.sessions.get(sessionId)
+    // 幂等：不存在 / 已删除 → deleted:false（同 ID 凭据去重为 P2）
+    if (!row || row.tombstone) {
+      return this.recordReceipt(prepared, { committedAt: now, auth: opts?.auth, value: { deleted: false } })
+    }
+    const cascade = (prepared.payload as { cascadeOwned?: boolean }).cascadeOwned === true
+    row.tombstone = { deletedAt: now }
+    if (cascade) {
+      // 级联清理全部 owned session（含 todo-only；按 ownership.rootSessionId 匹配——spec §2.3）
+      for (const [sid, r] of this.sessions) {
+        if (sid === sessionId || r.tombstone) continue
+        if (r.data.state.ownership.rootSessionId === sessionId) {
+          r.tombstone = { deletedAt: now }
+        }
+      }
+    }
+    return this.recordReceipt(prepared, { committedAt: now, auth: opts?.auth, value: { deleted: true } })
   }
 
   async queryOperation(sessionId: string, operationId: string): Promise<OperationLookup> {
@@ -151,6 +193,17 @@ export class InMemorySessionStore implements SessionStore {
 
   /** 供 register（T9）与内部使用：登记/写入前的事务化校验入口。 */
   ensureRow(sessionId: string, ownership?: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string }): SessionRow {
+    // 归属存续校验（spec §6.2）：root/parent 已存在的行必须无 tombstone。
+    // （P1 T8：不存在者先放行——T9 register 协议收紧为「必须已登记」。）
+    if (ownership) {
+      for (const pid of [ownership.rootSessionId, ownership.parentSessionId]) {
+        if (!pid || pid === sessionId) continue
+        const p = this.sessions.get(pid)
+        if (p?.tombstone) {
+          throw new WriteNotAuthorizedError(`ownership target ${pid} is deleted (tombstone)`)
+        }
+      }
+    }
     let row = this.sessions.get(sessionId)
     if (row?.tombstone) {
       throw new WriteNotAuthorizedError(`session ${sessionId} is deleted (tombstone)`)
@@ -158,6 +211,7 @@ export class InMemorySessionStore implements SessionStore {
     if (!row) {
       const now = new Date().toISOString()
       row = { data: initialStoreData(sessionId, ownership ?? { rootSessionId: sessionId }, now) }
+      row.data.records = this.records   // 共享全局记录表（同库引用语义）
       this.sessions.set(sessionId, row)
     }
     return row
@@ -213,7 +267,7 @@ export class InMemorySessionStore implements SessionStore {
 
   private recordReceipt(
     prepared: PreparedOperation,
-    out: { revision?: number; committedAt: string; auth?: AuthorizationContext },
+    out: { revision?: number; committedAt: string; auth?: AuthorizationContext; value?: CommitValue; sourceRevision?: number },
   ): OperationReceipt {
     const receipt: OperationReceipt = {
       operationId: prepared.operationId,
@@ -223,8 +277,17 @@ export class InMemorySessionStore implements SessionStore {
       actor: structuredClone(prepared.actor),
       committedAt: out.committedAt,
       ...(out.revision !== undefined ? { revision: out.revision } : {}),
+      ...(out.value !== undefined ? { value: out.value } : {}),
+      ...(out.sourceRevision !== undefined ? { sourceRevision: out.sourceRevision } : {}),
     }
     this.receipts.set(`${prepared.sessionId}:${prepared.operationId}`, receipt)
     return structuredClone(receipt)
   }
+}
+
+/** fork/import payload 的宽松内部视图（运行时字段按 kind 存在）。 */
+interface ChangeSetLike {
+  source?: { sessionId: string; branchId: string }
+  sourceRevision?: number
+  initialRevision?: number
 }

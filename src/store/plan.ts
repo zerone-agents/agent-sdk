@@ -4,7 +4,7 @@
  * planCompact 为纯组装（时序接入在 P3 的 engine/Agent 编排）。
  */
 import { randomUUID } from 'node:crypto'
-import type { ChangeSet, ContextSegment, MessageRecord, NewRecord } from './types.js'
+import type { ChangeSet, ContextSegment, MessageRecord, NewRecord, SessionOwnership } from './types.js'
 import { buildCovers, rebuildRollback } from './algorithm.js'
 import { SessionDataInvalidError } from './errors.js'
 import type { SessionStore } from './session-store.js'
@@ -67,6 +67,37 @@ export async function planRollback(
       records: plan.logs,
       effective: plan.effective,
       context: plan.context,
+    },
+  }
+}
+
+/**
+ * fork 规划（spec §4.4）：读取源快照并**冻结 sourceRevision**（连同 records/effective/context）
+ * ——提交事务内校验源未变；不复制 todos；目标 create-only。
+ */
+export async function planFork(
+  store: Pick<SessionStore, 'loadSession'>,
+  source: { sessionId: string; branchId: string },
+  newSessionId: string,
+  ownership: SessionOwnership,
+): Promise<{ kind: 'fork'; expectedRevision: null; changeSet: ChangeSet }> {
+  const state = await store.loadSession(source.sessionId)
+  if (!state) throw new SessionDataInvalidError(source.sessionId, 'source session not found')
+  const branch = state.branches.find((b) => b.branchId === source.branchId)
+  if (!branch) throw new SessionDataInvalidError(source.sessionId, `unknown branch: ${source.branchId}`)
+  return {
+    kind: 'fork',
+    expectedRevision: null,
+    changeSet: {
+      kind: 'fork',
+      newSessionId,
+      source,
+      sourceRevision: state.revision,
+      records: [...branch.records],
+      effective: [...branch.effective],
+      context: structuredClone(branch.context),
+      metadata: { ...state.metadata, id: newSessionId },
+      ownership,
     },
   }
 }

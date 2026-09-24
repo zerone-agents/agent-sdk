@@ -159,8 +159,48 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
       data.state.updatedAt = meta.committedAt
       return data
     }
-    default:
-      // T8–T9 逐 kind 填充；P1 末必须无残留（验收 #3）
-      throw new Error(`applyChangeSet: kind "${changeSet.kind}" not implemented in P1 slice yet`)
+    case 'fork': {
+      // 目标首建（create-only 由 CAS 保证）。同库引用实现：记录已全局存在
+      // （records 不可变 → 演进天然独立）；跨库物化由 adapter 自行映射（语义等价，spec §4.4）。
+      const branch = {
+        branchId: changeSet.source.branchId,
+        records: [...changeSet.records],
+        effective: [...changeSet.effective],
+        context: structuredClone(changeSet.context),
+        createdAt: meta.committedAt,
+        createdByOpId: undefined,
+      }
+      data.state.branches = [branch]
+      data.state.currentBranchId = branch.branchId
+      data.state.ownership = changeSet.ownership
+      Object.assign(data.state.metadata, changeSet.metadata)
+      data.state.metadata.messageCount = branch.effective.length
+      data.state.updatedAt = meta.committedAt
+      return data
+    }
+    case 'import': {
+      // 导入记录物化首次入库；revision 例外（initialRevision）由 commit 壳执行（spec §8.3）
+      const ids = appendRecords(data, changeSet.newRecords, meta.committedAt)
+      const branch = {
+        branchId: changeSet.branchId,
+        records: ids,
+        effective: [...changeSet.effective],
+        context: structuredClone(changeSet.context),
+        createdAt: meta.committedAt,
+        createdByOpId: undefined,
+      }
+      data.state.branches = [branch]
+      data.state.currentBranchId = branch.branchId
+      data.state.ownership = changeSet.ownership
+      Object.assign(data.state.metadata, changeSet.metadata)
+      data.state.metadata.messageCount = branch.effective.length
+      data.state.updatedAt = meta.committedAt
+      return data
+    }
+    default: {
+      // P1 验收 #3：全部 ChangeSet kind 已实现——default 不可达（exhaustive check）
+      const exhaustive: never = changeSet
+      throw new Error(`applyChangeSet: unreachable kind: ${String((exhaustive as { kind?: string }).kind)}`)
+    }
   }
 }
