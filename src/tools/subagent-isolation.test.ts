@@ -23,6 +23,7 @@ import type {
   ToolDefinition,
 } from '../types.js'
 import { createEmptyServices } from './services.js'
+import { InMemorySessionStorage } from '../session-storage-fake.js'
 
 vi.mock('../engine.js', () => ({ QueryEngine: vi.fn() }))
 
@@ -140,6 +141,8 @@ function spawnOpts(agentName: string, mode: 'General' | 'Explore' = 'General') {
     description: 'matrix',
     toolUseId: 'tu_1',
     taskIndex: 0,
+    // issue #128: required opts — in-memory keeps this matrix side-effect free.
+    sessionStorage: new InMemorySessionStorage(),
   }
 }
 

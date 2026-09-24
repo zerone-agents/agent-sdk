@@ -1761,9 +1761,17 @@ describe('engine todo wiring via injected storage (issue #128)', () => {
     ).resolves.toBeDefined()
   })
 
-  it('load failure: no logger → still runs', async () => {
-    await expect(
-      run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(new Error('boom')), sessionId: 'diag-s4' }))),
-    ).resolves.toBeDefined()
+  it('load failure: default logger still emits the warning (console.error) and the run continues', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(
+        run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(new Error('boom')), sessionId: 'diag-s4' }))),
+      ).resolves.toBeDefined()
+      // Review P2: "no logger" must NOT be a silent path — the built-in logger
+      // prints the degraded warn (via console.error) like any other diagnostic.
+      expect(spy.mock.calls.some((c) => String(c[0]).includes('[session] todo'))).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

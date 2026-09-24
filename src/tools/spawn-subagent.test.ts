@@ -76,6 +76,8 @@ function baseOpts(overrides: Partial<Parameters<typeof runSubagent>[0]> = {}) {
     description: 'task desc',
     toolUseId: 'toolu_1',
     taskIndex: 0,
+    // issue #128: required opts — default to an in-memory backend for tests.
+    sessionStorage: new InMemorySessionStorage(),
     ...overrides,
   }
 }
@@ -334,38 +336,42 @@ describe('runSubagent resolution diagnostics (R2)', () => {
 })
 
 describe('subagent todo storage wiring (issue #128)', () => {
-  beforeEach(() => {
-    capturedConfig = undefined
-    ;(QueryEngine as any).mockReset()
-  })
+  /** Narrow mock seam over the vi.mock'd QueryEngine (review P2: no `any`). */
+  interface MockEngineInstance {
+    submitMessage(): AsyncGenerator<unknown>
+  }
+  interface EngineMock {
+    mockReset(): void
+    mockImplementation(fn: (this: MockEngineInstance) => void): void
+    mock: { calls: Array<[QueryEngineConfig, ...unknown[]]> }
+  }
+  const engineMock = (): EngineMock => QueryEngine as unknown as EngineMock
 
-  function mockEngineRecording(configs: QueryEngineConfig[]): void {
-    ;(QueryEngine as any).mockImplementation(function (this: any, config: any) {
-      configs.push(config)
+  beforeEach(() => {
+    engineMock().mockReset()
+    engineMock().mockImplementation(function (this: MockEngineInstance) {
       this.submitMessage = async function* () {
         yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
         yield { type: 'result', subtype: 'success' }
       }
     })
-  }
+  })
 
   it('spawn passes the same storage instance to the child engine', async () => {
     const storage = new InMemorySessionStorage()
-    const configs: QueryEngineConfig[] = []
-    mockEngineRecording(configs)
     await runSubagent(baseOpts({ sessionStorage: storage }))
-    expect(configs.at(-1)!.sessionStorage).toBe(storage)
+    const [config] = engineMock().mock.calls.at(-1)!
+    expect(config.sessionStorage).toBe(storage)
   })
 
   it('sibling spawns: distinct sessionIds on the same storage instance', async () => {
     const storage = new InMemorySessionStorage()
-    const configs: QueryEngineConfig[] = []
-    mockEngineRecording(configs)
     await runSubagent(baseOpts({ sessionStorage: storage }))
     await runSubagent(baseOpts({ sessionStorage: storage }))
-    expect(configs).toHaveLength(2)
-    expect(configs[0].sessionStorage).toBe(storage)
-    expect(configs[1].sessionStorage).toBe(storage)
-    expect(configs[0].sessionId).not.toBe(configs[1].sessionId)   // sibling isolation by sessionId
+    const calls = engineMock().mock.calls
+    expect(calls).toHaveLength(2)
+    expect(calls[0][0].sessionStorage).toBe(storage)
+    expect(calls[1][0].sessionStorage).toBe(storage)
+    expect(calls[0][0].sessionId).not.toBe(calls[1][0].sessionId)   // sibling isolation by sessionId
   })
 })

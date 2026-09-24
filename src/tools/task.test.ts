@@ -7,6 +7,7 @@ import type {
   SubagentContext,
   AgentDefinition,
   RuntimeEnvironment,
+  QueryEngineConfig,
 } from '../types.js'
 import { createEmptyServices } from './services.js'
 import { InMemorySessionStorage } from '../session-storage-fake.js'
@@ -90,6 +91,8 @@ function makeContext(overrides: Partial<SubagentContext> = {}): SubagentContext 
     subAgents: TEST_AGENTS,
     services: createEmptyServices(),
     subprocessEnv: {},
+    // issue #128: Task requires a storage context — default in-memory in tests.
+    sessionStorage: new InMemorySessionStorage(),
     ...overrides,
   }
 }
@@ -482,12 +485,22 @@ describe('TaskTool', () => {
 })
 
 describe('todo storage threading (issue #128)', () => {
+  /** Narrow mock seam over the vi.mock'd QueryEngine (review P2: no `any`). */
+  interface MockEngineInstance {
+    submitMessage(): AsyncGenerator<unknown>
+  }
+  interface EngineMock {
+    mockReset(): void
+    mockImplementation(fn: (this: MockEngineInstance) => void): void
+    mock: { calls: Array<[QueryEngineConfig, ...unknown[]]> }
+  }
+  const engineMock = (): EngineMock => QueryEngine as unknown as EngineMock
+
   // Self-contained reset: this describe sits OUTSIDE describe('TaskTool')'s
   // beforeEach scope — never rely on (or let leaked) prior suites' mockImpls.
   beforeEach(() => {
-    vi.mocked(QueryEngine).mockReset()
-    vi.mocked(QueryEngine).mockImplementation(function (this: any, config: any) {
-      this.config = config
+    engineMock().mockReset()
+    engineMock().mockImplementation(function (this: MockEngineInstance) {
       this.submitMessage = async function* () {
         yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
       }
@@ -503,7 +516,7 @@ describe('todo storage threading (issue #128)', () => {
       subagent_name: 'general',
     }, makeContext({ sessionStorage: storage }))
     expect(result.is_error).toBeFalsy()
-    const config = vi.mocked(QueryEngine).mock.calls.at(-1)![0] as { sessionStorage?: unknown }
+    const [config] = engineMock().mock.calls.at(-1)!
     expect(config.sessionStorage).toBe(storage)
   })
 })

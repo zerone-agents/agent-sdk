@@ -197,4 +197,14 @@ describe('SessionManager todos (issue #128)', () => {
     expect(await mgr.getTodos('a')).toEqual([])
     expect(fake.todoSaveCalls.map((c) => c.sessionId)).toEqual(['a', 'a'])
   })
+
+  it('compact does not touch todos (issue #128 review P2)', async () => {
+    const fake = new InMemorySessionStorage()
+    await saveSessionTo(fake, 'ct-1', seedMessages(),
+      { cwd: '/w', model: 'm', createdAt: '2020-01-01T00:00:00.000Z' }, { expectedRevision: null })
+    await fake.saveTodos('ct-1', [{ content: 'keep', status: 'pending', priority: 'high' }])
+    const mgr = createSessionManager({ storage: fake })
+    await mgr.compact({ sessionId: 'ct-1', provider: stubProvider })
+    expect(await fake.loadTodos('ct-1')).toEqual([{ content: 'keep', status: 'pending', priority: 'high' }])
+  })
 })
