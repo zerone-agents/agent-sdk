@@ -60,7 +60,24 @@ export class InMemorySessionStore implements SessionStore {
   private records = new Map<string, MessageRecord>()
   private readonly receipts = new Map<string, OperationReceipt>()
 
-  constructor(readonly opts: InMemorySessionStoreOptions = {}) {}
+  // 三态 fencing 状态（spec §6）：enabled × currentAuth（null = 过期无人接管）
+  private readonly fencingEnabled: boolean
+  private currentAuth: AuthorizationContext | null
+
+  constructor(readonly opts: InMemorySessionStoreOptions = {}) {
+    this.fencingEnabled = opts.fencing !== undefined
+    this.currentAuth = opts.fencing ? structuredClone(opts.fencing.initialAuth) : null
+  }
+
+  /** 模拟租约过期——此后全部写入拒绝直到 refreshAuthorization。 */
+  expireAuthorization(): void {
+    this.currentAuth = null
+  }
+
+  /** 新执行者接管（clone 保存——外部修改传入对象不影响 store 内部状态）。 */
+  refreshAuthorization(auth: AuthorizationContext): void {
+    this.currentAuth = structuredClone(auth)
+  }
 
   // ── 读取（返回值一律隔离——修改读取结果不能改写存储，评审 #4） ──
 
@@ -136,6 +153,7 @@ export class InMemorySessionStore implements SessionStore {
     this.verifyFingerprint(sessionId, prepared)
     const deduped = this.checkDedup(sessionId, prepared)
     if (deduped) return deduped   // idempotent retry (spec §5.2)
+    this.checkFencing(opts?.auth ?? prepared.auth)   // spec §6.2: 三态授权校验
     if (prepared.kind === 'register') {
       return this.commitRegister(sessionId, prepared, opts)
     }
@@ -209,6 +227,7 @@ export class InMemorySessionStore implements SessionStore {
     this.verifyFingerprint(sessionId, prepared)
     const deduped = this.checkDedup(sessionId, prepared)
     if (deduped) return deduped
+    this.checkFencing(opts?.auth ?? prepared.auth)
     this.assertPreparedShape(sessionId, prepared)
     if (prepared.kind !== 'save-todos') throw new SessionDataInvalidError(sessionId, 'saveTodos expects kind "save-todos"')
     const payload = prepared.payload as { todos: TodoInfo[]; ownership?: SessionOwnership }
@@ -225,6 +244,7 @@ export class InMemorySessionStore implements SessionStore {
     this.verifyFingerprint(sessionId, prepared)
     const deduped = this.checkDedup(sessionId, prepared)
     if (deduped) return deduped
+    this.checkFencing(opts?.auth ?? prepared.auth)
     this.assertPreparedShape(sessionId, prepared)
     if (prepared.kind !== 'delete') throw new SessionDataInvalidError(sessionId, 'deleteSession expects kind "delete"')
     const now = new Date().toISOString()
@@ -264,6 +284,25 @@ export class InMemorySessionStore implements SessionStore {
       )
     }
     return structuredClone(existing)
+  }
+
+  /** fencing 校验（spec §6.2）：与 revision CAS 独立。比较的是当前有效授权状态（可变）。 */
+  private checkFencing(auth?: AuthorizationContext): void {
+    if (!this.fencingEnabled) return   // fencing not configured
+    if (this.currentAuth === null) {
+      throw new WriteNotAuthorizedError(
+        'fencing: lease expired, no valid authorization (no executor has taken over)',
+      )
+    }
+    if (!auth) {
+      throw new WriteNotAuthorizedError('fencing configured but no authorization provided')
+    }
+    if (auth.ownerId !== this.currentAuth.ownerId || auth.epoch !== this.currentAuth.epoch) {
+      throw new WriteNotAuthorizedError(
+        `fencing mismatch: ownerId=${auth.ownerId} epoch=${auth.epoch}, ` +
+        `current ownerId=${this.currentAuth.ownerId} epoch=${this.currentAuth.epoch}`,
+      )
+    }
   }
 
   /**
