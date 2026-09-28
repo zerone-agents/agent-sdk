@@ -23,7 +23,7 @@ import type {
   SessionOwnership,
   SessionState,
 } from './types.js'
-import { OwnershipMismatchError, SessionConflictError, SessionDataInvalidError, WriteNotAuthorizedError } from './errors.js'
+import { OperationConflictError, OwnershipMismatchError, SessionConflictError, SessionDataInvalidError, WriteNotAuthorizedError } from './errors.js'
 import { applyChangeSet, initialStoreData, type StoreData } from './apply.js'
 import { fingerprintOperation } from './fingerprint.js'
 import { assertIntentShape } from './types.js'
@@ -45,12 +45,22 @@ interface ChangeSetLike {
   ownership?: SessionOwnership
 }
 
+/** InMemorySessionStore 统一构造选项（P2 issue #131）。 */
+export interface InMemorySessionStoreOptions {
+  /** fencing 初始授权（store 维护可变 currentAuth；refreshAuthorization 更新）。 */
+  fencing?: { initialAuth: AuthorizationContext }
+  /** 凭据保留窗口 ms（recycled 需同时满足超龄 + 水位推进）。 */
+  receiptRetentionMs?: number
+}
+
 export class InMemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, SessionRow>()
   /** 同库共享记录表（recordId 全局唯一；fork「引用」语义的基础——spec §4.4）。
    * 非 readonly：原子提交按「发布」整体替换（失败不污染）。 */
   private records = new Map<string, MessageRecord>()
   private readonly receipts = new Map<string, OperationReceipt>()
+
+  constructor(readonly opts: InMemorySessionStoreOptions = {}) {}
 
   // ── 读取（返回值一律隔离——修改读取结果不能改写存储，评审 #4） ──
 
@@ -124,6 +134,8 @@ export class InMemorySessionStore implements SessionStore {
 
   async commit(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
+    const deduped = this.checkDedup(sessionId, prepared)
+    if (deduped) return deduped   // idempotent retry (spec §5.2)
     if (prepared.kind === 'register') {
       return this.commitRegister(sessionId, prepared, opts)
     }
@@ -195,6 +207,8 @@ export class InMemorySessionStore implements SessionStore {
 
   async saveTodos(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
+    const deduped = this.checkDedup(sessionId, prepared)
+    if (deduped) return deduped
     this.assertPreparedShape(sessionId, prepared)
     if (prepared.kind !== 'save-todos') throw new SessionDataInvalidError(sessionId, 'saveTodos expects kind "save-todos"')
     const payload = prepared.payload as { todos: TodoInfo[]; ownership?: SessionOwnership }
@@ -209,6 +223,8 @@ export class InMemorySessionStore implements SessionStore {
 
   async deleteSession(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
+    const deduped = this.checkDedup(sessionId, prepared)
+    if (deduped) return deduped
     this.assertPreparedShape(sessionId, prepared)
     if (prepared.kind !== 'delete') throw new SessionDataInvalidError(sessionId, 'deleteSession expects kind "delete"')
     const now = new Date().toISOString()
@@ -237,6 +253,18 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   // ── 内部 ───────────────────────────────────────────────
+
+  /** 同 ID 去重（spec §5.2）：同指纹返回原回执（幂等重试）；异指纹拒绝。 */
+  private checkDedup(sessionId: string, prepared: PreparedOperation): OperationReceipt | null {
+    const existing = this.receipts.get(`${sessionId}:${prepared.operationId}`)
+    if (!existing) return null
+    if (existing.fingerprint !== prepared.fingerprint) {
+      throw new OperationConflictError(
+        `operation ${prepared.operationId} already committed with different fingerprint (spec §5.2)`,
+      )
+    }
+    return structuredClone(existing)
+  }
 
   /**
    * commit 边界结构校验（评审 S3）：指纹一致 ≠ 结构合法——journal 反序列化后的
