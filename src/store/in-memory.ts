@@ -1,6 +1,12 @@
 /**
  * InMemorySessionStore —— v4 参考实现（issue #131）。
  * 真 CAS / tombstone / 回执语义；conformance 套件的依据实现（App 对照实现 SQLite adapter）。
+ *
+ * 提交模型（评审修复后）：**同步提交单元** —— 校验（指纹/CAS/归属/源快照）→ 构造
+ * working 副本上 apply → 原子发布；任何失败零残留（不遗留记录、行或凭据）。
+ * 校验与发布之间**无 await 让出点**（并发 create-only/fork 不可交错——真实 adapter 由
+ * 事务提供同等保证）。
+ *
  * P1 边界：queryOperation 返回基础回执（同 ID 去重/重试状态机/fencing 校验/保留窗口为 P2）。
  */
 import type { NormalizedMessageParam } from '../providers/types.js'
@@ -14,6 +20,7 @@ import type {
   OperationLookup,
   OperationReceipt,
   PreparedOperation,
+  SessionOwnership,
   SessionState,
 } from './types.js'
 import { OwnershipMismatchError, SessionConflictError, SessionDataInvalidError, WriteNotAuthorizedError } from './errors.js'
@@ -28,13 +35,22 @@ interface SessionRow {
   tombstone?: { deletedAt: string }
 }
 
+/** fork/import payload 的宽松内部视图（运行时字段按 kind 存在）。 */
+interface ChangeSetLike {
+  source?: { sessionId: string; branchId: string }
+  sourceRevision?: number
+  initialRevision?: number
+  ownership?: SessionOwnership
+}
+
 export class InMemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, SessionRow>()
-  /** 同库共享记录表（recordId 全局唯一；fork「引用」语义的基础——spec §4.4）。 */
-  private readonly records = new Map<string, MessageRecord>()
+  /** 同库共享记录表（recordId 全局唯一；fork「引用」语义的基础——spec §4.4）。
+   * 非 readonly：原子提交按「发布」整体替换（失败不污染）。 */
+  private records = new Map<string, MessageRecord>()
   private readonly receipts = new Map<string, OperationReceipt>()
 
-  // ── 读取 ───────────────────────────────────────────────
+  // ── 读取（返回值一律隔离——修改读取结果不能改写存储，评审 #4） ──
 
   async loadSession(sessionId: string): Promise<SessionState | null> {
     const row = this.sessions.get(sessionId)
@@ -45,7 +61,10 @@ export class InMemorySessionStore implements SessionStore {
   async loadRecords(sessionId: string, recordIds: string[]): Promise<(MessageRecord | null)[]> {
     const row = this.sessions.get(sessionId)
     if (!row || row.tombstone) return recordIds.map(() => null)
-    return recordIds.map((id) => row.data.records.get(id) ?? null)
+    return recordIds.map((id) => {
+      const r = this.records.get(id)
+      return r ? structuredClone(r) : null
+    })
   }
 
   async loadHistory(sessionId: string, branchId: string, opts?: HistoryQuery): Promise<HistoryPage> {
@@ -57,9 +76,9 @@ export class InMemorySessionStore implements SessionStore {
     const limit = opts?.limit ?? ordered.length
     const slice = ordered.slice(offset, offset + limit)
     const records = slice.map((id) => {
-      const r = row.data.records.get(id)
+      const r = this.records.get(id)
       if (!r) throw new SessionDataInvalidError(sessionId, `unknown record id in branch: ${id}`)
-      return r
+      return structuredClone(r)
     })
     const nextCursor = offset + limit < ordered.length ? String(offset + limit) : undefined
     return { records, nextCursor }
@@ -73,9 +92,9 @@ export class InMemorySessionStore implements SessionStore {
     for (const seg of branch.context.segments) {
       const ids = seg.kind === 'records' ? seg.recordIds : [seg.summaryRecordId]
       for (const id of ids) {
-        const r = row.data.records.get(id)
+        const r = this.records.get(id)
         if (!r) throw new SessionDataInvalidError(sessionId, `unknown record id in context: ${id}`)
-        out.push(r.message)
+        out.push(structuredClone(r.message))
       }
     }
     return out
@@ -99,7 +118,7 @@ export class InMemorySessionStore implements SessionStore {
     return structuredClone(row.data.todos)
   }
 
-  // ── 提交 ───────────────────────────────────────────────
+  // ── 提交（同步提交单元：校验 → working apply → 原子发布） ──
 
   async commit(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
@@ -110,52 +129,64 @@ export class InMemorySessionStore implements SessionStore {
       // save-todos / delete 走各自提交入口（saveTodos / deleteSession）
       throw new SessionDataInvalidError(sessionId, `kind "${prepared.kind}" must go through its dedicated entry`)
     }
-    const now = new Date().toISOString()
-    const row = this.requireWritable(sessionId)
-    this.checkCas(sessionId, row, prepared)
 
-    if (prepared.kind === 'checkpoint' || prepared.kind === 'compact' || prepared.kind === 'rollback'
-      || prepared.kind === 'branch-switch' || prepared.kind === 'append' || prepared.kind === 'revise') {
-      applyChangeSet(sessionId, row.data, prepared.payload as never, { committedAt: now })
-      row.data.state.revision += 1
-      row.data.state.updatedAt = now
-      return this.recordReceipt(prepared, { revision: row.data.state.revision, committedAt: now, auth: opts?.auth })
+    const now = new Date().toISOString()
+    const existing = this.sessions.get(sessionId)
+    if (existing?.tombstone) {
+      throw new WriteNotAuthorizedError(`session ${sessionId} is deleted (tombstone)`)
     }
-    if (prepared.kind === 'fork' || prepared.kind === 'import') {
-      const changeSet = prepared.payload as ChangeSetLike
-      if (prepared.kind === 'fork') {
-        // 源快照冻结校验（spec §4.4）：源必须存在且 revision == 冻结值——不是审计
-        const srcState = await this.loadSession(changeSet.source!.sessionId)
-        if (!srcState || srcState.revision !== changeSet.sourceRevision) {
-          throw new SessionConflictError(sessionId, null, srcState?.revision)
-        }
+
+    // ── 校验段（全部同步；与发布之间无 await——评审 #2：create-only 不可交错） ──
+    const changeSet = prepared.payload as ChangeSetLike
+    const effectiveOwnership: SessionOwnership = existing?.data.state.ownership
+      ?? changeSet.ownership
+      ?? { rootSessionId: sessionId }
+    this.assertAncestorsRegistered(sessionId, effectiveOwnership)          // 评审 #5：全写入口祖先校验
+    this.checkCas(sessionId, existing, prepared)                           // 评审 #6：branches 区分 transcript
+    if (prepared.kind === 'fork') {
+      // 源快照冻结校验（spec §4.4）：同步读内存快照——不是审计值
+      const srcRow = this.sessions.get(changeSet.source!.sessionId)
+      if (!srcRow || srcRow.tombstone || srcRow.data.state.revision !== changeSet.sourceRevision) {
+        throw new SessionConflictError(sessionId, null, srcRow && !srcRow.tombstone ? srcRow.data.state.revision : undefined)
       }
-      applyChangeSet(sessionId, row.data, changeSet as never, { committedAt: now })
-      // import 的 initialRevision 例外（spec §8.3）：起点 = 导入值；否则正常递增
-      if (prepared.kind === 'import' && changeSet.initialRevision !== undefined) {
-        row.data.state.revision = changeSet.initialRevision
-      } else {
-        row.data.state.revision += 1
-      }
-      row.data.state.updatedAt = now
-      return this.recordReceipt(prepared, {
-        revision: row.data.state.revision,
-        committedAt: now,
-        auth: opts?.auth,
-        ...(prepared.kind === 'fork' ? { sourceRevision: changeSet.sourceRevision } : {}),
-      })
     }
-    throw new SessionDataInvalidError(sessionId, `unsupported transcript kind: ${prepared.kind}`)
+
+    // ── working 副本 apply（评审 #1：失败零残留） ──
+    const working: StoreData = {
+      state: existing ? structuredClone(existing.data.state) : initialStoreData(sessionId, effectiveOwnership, now).state,
+      records: new Map(this.records),
+      todos: existing ? structuredClone(existing.data.todos) : [],
+    }
+    applyChangeSet(sessionId, working, changeSet as never, { committedAt: now })
+
+    // revision（import 的 initialRevision 例外——spec §8.3）
+    if (prepared.kind === 'import' && changeSet.initialRevision !== undefined) {
+      working.state.revision = changeSet.initialRevision
+    } else {
+      working.state.revision += 1
+    }
+    working.state.updatedAt = now
+
+    // ── 原子发布 ──
+    this.records = working.records
+    if (existing) {
+      existing.data = working
+    } else {
+      this.sessions.set(sessionId, { data: working })
+    }
+    return this.recordReceipt(prepared, {
+      revision: working.state.revision,
+      committedAt: now,
+      auth: opts?.auth,
+      ...(prepared.kind === 'fork' ? { sourceRevision: changeSet.sourceRevision } : {}),
+    })
   }
 
   async saveTodos(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
     if (prepared.kind !== 'save-todos') throw new SessionDataInvalidError(sessionId, 'saveTodos expects kind "save-todos"')
-    const payload = prepared.payload as {
-      todos: TodoInfo[]
-      ownership?: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string }
-    }
-    // tombstone 拒绝（迟到写入）；首写创建 todo-only session 行（ownership 随 payload）
+    const payload = prepared.payload as { todos: TodoInfo[]; ownership?: SessionOwnership }
+    // tombstone 拒绝（迟到写入）；祖先校验基于「已存 ownership ?? 传入 ownership」（评审 #5）；首写创建 todo-only 行
     const row = this.ensureRow(sessionId, payload.ownership)
     row.data.todos = structuredClone(payload.todos)
     const now = new Date().toISOString()
@@ -196,7 +227,7 @@ export class InMemorySessionStore implements SessionStore {
 
   /** register 提交（spec §2.3 登记协议）：幂等、无 revision、不产生 transcript。 */
   private async commitRegister(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
-    const ownership = (prepared.payload as { ownership: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string } }).ownership
+    const ownership = (prepared.payload as { ownership: SessionOwnership }).ownership
     const existing = this.sessions.get(sessionId)
     if (existing?.tombstone) {
       throw new WriteNotAuthorizedError(`session ${sessionId} is deleted (tombstone)`)
@@ -214,30 +245,31 @@ export class InMemorySessionStore implements SessionStore {
     return this.recordReceipt(prepared, { committedAt: now, auth: opts?.auth })   // 无 revision
   }
 
-  /** 供 register（T9）与内部使用：登记/写入前的事务化校验入口。 */
-  ensureRow(sessionId: string, ownership?: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string }): SessionRow {
-    // 归属存续校验（spec §6.2）：root/parent 已存在的行必须无 tombstone。
-    // （P1 T8：不存在者先放行——T9 register 协议收紧为「必须已登记」。）
-    if (ownership) {
-      for (const pid of [ownership.rootSessionId, ownership.parentSessionId]) {
-        if (!pid || pid === sessionId) continue
-        const p = this.sessions.get(pid)
-        if (!p || p.tombstone) {
-          throw new WriteNotAuthorizedError(`ownership target ${pid} is not registered or deleted (register protocol, spec §2.3)`)
-        }
-      }
-    }
-    let row = this.sessions.get(sessionId)
+  /** 登记/写入前的事务化校验入口。**已存在行也按已存 ownership 校验祖先**（评审 #5：
+  root 删除后，已登记子 session 的后续写入同样拒绝）。 */
+  ensureRow(sessionId: string, ownership?: SessionOwnership): SessionRow {
+    const row = this.sessions.get(sessionId)
     if (row?.tombstone) {
       throw new WriteNotAuthorizedError(`session ${sessionId} is deleted (tombstone)`)
     }
-    if (!row) {
-      const now = new Date().toISOString()
-      row = { data: initialStoreData(sessionId, ownership ?? { rootSessionId: sessionId }, now) }
-      row.data.records = this.records   // 共享全局记录表（同库引用语义）
-      this.sessions.set(sessionId, row)
+    const effectiveOwnership: SessionOwnership = row?.data.state.ownership ?? ownership ?? { rootSessionId: sessionId }
+    this.assertAncestorsRegistered(sessionId, effectiveOwnership)
+    if (row) return row
+    const now = new Date().toISOString()
+    const created: SessionRow = { data: initialStoreData(sessionId, effectiveOwnership, now) }
+    created.data.records = this.records   // 共享全局记录表（同库引用语义）
+    this.sessions.set(sessionId, created)
+    return created
+  }
+
+  private assertAncestorsRegistered(sessionId: string, ownership: SessionOwnership): void {
+    for (const pid of [ownership.rootSessionId, ownership.parentSessionId]) {
+      if (!pid || pid === sessionId) continue
+      const p = this.sessions.get(pid)
+      if (!p || p.tombstone) {
+        throw new WriteNotAuthorizedError(`ownership target ${pid} is not registered or deleted (register protocol, spec §2.3)`)
+      }
     }
-    return row
   }
 
   private requireRow(sessionId: string): SessionRow {
@@ -246,24 +278,18 @@ export class InMemorySessionStore implements SessionStore {
     return row
   }
 
-  private requireWritable(sessionId: string): SessionRow {
-    const row = this.sessions.get(sessionId)
-    if (row?.tombstone) {
-      throw new WriteNotAuthorizedError(`session ${sessionId} is deleted (tombstone)`)
-    }
-    if (!row) {
-      // create-only 首写：由 CAS 分支保证 expectedRevision === null 才允许到达这里
-      return this.ensureRow(sessionId)
-    }
-    return row
-  }
-
+  /**
+   * CAS 校验（评审 #6）：create-only 以「**transcript 是否存在**」（branches 非空）判定——
+   * register/todo-only 行（revision=0 且无 transcript）不阻挡首次 checkpoint；
+   * 合法导入 initialRevision=0 的行已有 transcript，不得被 create-only 覆盖。
+   */
   private checkCas(sessionId: string, row: SessionRow | undefined, prepared: PreparedOperation): void {
     const premise = (prepared as { expectedRevision?: number | null }).expectedRevision
     if (premise === undefined) return // premise-free kinds（不经 commit 的 transcript 路径）
+    const hasTranscript = !!row && !row.tombstone && row.data.state.branches.length > 0
     if (premise === null) {
-      if (row && !row.tombstone && row.data.state.revision > 0) {
-        throw new SessionConflictError(sessionId, null, row.data.state.revision)
+      if (hasTranscript) {
+        throw new SessionConflictError(sessionId, null, row!.data.state.revision)
       }
       return
     }
@@ -308,17 +334,7 @@ export class InMemorySessionStore implements SessionStore {
   }
 }
 
-/** fork/import payload 的宽松内部视图（运行时字段按 kind 存在）。 */
-interface ChangeSetLike {
-  source?: { sessionId: string; branchId: string }
-  sourceRevision?: number
-  initialRevision?: number
-}
-
-function sameOwnership(
-  a: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string },
-  b: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string },
-): boolean {
+function sameOwnership(a: SessionOwnership, b: SessionOwnership): boolean {
   return a.rootSessionId === b.rootSessionId
     && (a.parentSessionId ?? null) === (b.parentSessionId ?? null)
     && (a.parentToolUseId ?? null) === (b.parentToolUseId ?? null)
