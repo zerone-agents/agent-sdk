@@ -267,9 +267,41 @@ export class InMemorySessionStore implements SessionStore {
     return this.recordReceipt(prepared, { committedAt: now, auth: opts?.auth, value: { deleted: true } })
   }
 
+  // 回收序列号水位（spec §5.4 清理协调协议）
+  private commitSeqCounter = 0
+  private readonly receiptSeqs = new Map<string, number>()
+  private recyclingWatermarkSeq = 0
+
+  /** 当前提交上界（宿主确认连续前缀用）。 */
+  getCommitUpperBound(): number {
+    return this.commitSeqCounter
+  }
+
+  /**
+   * 推进回收水位（spec §5.4 清理协调协议）。
+   * 安全约束：toSeq 不得超过当前提交上界——防止未来水位误伤后续 pending。
+   */
+  advanceRecyclingWatermark(toSeq: number): void {
+    if (toSeq > this.commitSeqCounter) {
+      throw new Error(
+        `cannot advance recycling watermark to ${toSeq}: exceeds current commit upper bound ${this.commitSeqCounter}`,
+      )
+    }
+    this.recyclingWatermarkSeq = Math.max(this.recyclingWatermarkSeq, toSeq)
+  }
+
   async queryOperation(sessionId: string, operationId: string): Promise<OperationLookup> {
-    const receipt = this.receipts.get(`${sessionId}:${operationId}`)
-    return receipt ? { status: 'committed', receipt } : { status: 'not-committed' }
+    const key = `${sessionId}:${operationId}`
+    const receipt = this.receipts.get(key)
+    if (!receipt) return { status: 'not-committed' }
+    if (this.opts.receiptRetentionMs !== undefined) {
+      const age = Date.now() - new Date(receipt.committedAt).getTime()
+      const seq = this.receiptSeqs.get(key) ?? Infinity   // no seq → never recycled
+      if (age > this.opts.receiptRetentionMs && seq <= this.recyclingWatermarkSeq) {
+        return { status: 'recycled' }
+      }
+    }
+    return { status: 'committed', receipt: structuredClone(receipt) }
   }
 
   // ── 内部 ───────────────────────────────────────────────
@@ -452,6 +484,8 @@ export class InMemorySessionStore implements SessionStore {
       ...(out.sourceRevision !== undefined ? { sourceRevision: out.sourceRevision } : {}),
     }
     this.receipts.set(`${prepared.sessionId}:${prepared.operationId}`, receipt)
+    this.commitSeqCounter++
+    this.receiptSeqs.set(`${prepared.sessionId}:${prepared.operationId}`, this.commitSeqCounter)
     return structuredClone(receipt)
   }
 }
