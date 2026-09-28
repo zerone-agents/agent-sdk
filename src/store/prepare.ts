@@ -46,10 +46,11 @@ export function prepareOperation(
 
   switch (intent.kind) {
     case 'save-todos': {
-      const payload = {
+      // 冻结隔离（评审 S2）：全 kind 业务 payload 统一快照——改原 todos/ownership 不影响 prepared
+      const payload = structuredClone({
         todos: intent.todos,
         ...(intent.ownership !== undefined ? { ownership: intent.ownership } : {}),
-      }
+      })
       return {
         ...base,
         kind: 'save-todos' as const,
@@ -58,7 +59,7 @@ export function prepareOperation(
       } as PreparedOperation
     }
     case 'delete': {
-      const payload = intent.cascadeOwned === undefined ? {} : { cascadeOwned: intent.cascadeOwned }
+      const payload = structuredClone(intent.cascadeOwned === undefined ? {} : { cascadeOwned: intent.cascadeOwned })
       return {
         ...base,
         kind: 'delete' as const,
@@ -67,7 +68,7 @@ export function prepareOperation(
       } as PreparedOperation
     }
     case 'register': {
-      const payload = { ownership: intent.ownership }
+      const payload = structuredClone({ ownership: intent.ownership })
       return {
         ...base,
         kind: 'register' as const,

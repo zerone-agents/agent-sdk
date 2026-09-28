@@ -95,7 +95,7 @@ function rebuildContextAfterRollback(
   records: ReadonlyMap<string, MessageRecord>,
 ): ContextRef {
   // **原有模型上下文边界**（评审 #3）：允许集合 = 源 context 引用的全部消息——
-  // 重建绝不把从未进入模型上下文的消息（如 contextAppend:false 的 UI-only 正文）送进来。
+  // 重建绝不把从未进入模型上下文的消息（contextAppend:false 的 UI-only 正文）送进来。
   const allowed = new Set<string>()
   for (const seg of source.segments) {
     const ids = seg.kind === 'records' ? seg.recordIds : seg.covers.recordIds
@@ -104,19 +104,39 @@ function rebuildContextAfterRollback(
       if (r) allowed.add(r.messageId)
     }
   }
-  const summarySeg = source.segments.find((s): s is Extract<ContextSegment, { kind: 'summary' }> => s.kind === 'summary')
-  if (summarySeg && canReuseSummary(summarySeg, newLogs, newEffective, records)) {
-    // 复用：[summary 段, 允许集合中其余消息（不在 covers 内），按新有效版本、按序]
-    const covered = new Set(summarySeg.covers.recordIds.map((rid) => records.get(rid)?.messageId))
-    const rest = [...newEffective.entries()]
-      .filter(([mid]) => allowed.has(mid) && !covered.has(mid))
-      .map(([, rid]) => rid)
-    return { segments: rest.length > 0 ? [summarySeg, { kind: 'records', recordIds: rest }] : [summarySeg] }
+  // **逐段重建**（评审 S4）：按原 segments 顺序复用/筛选/展开——不重排。
+  // 可复用摘要原位保留；失效摘要原位展开为 records（covers ∩ 新有效版本）；
+  // 摘要与原文互斥由跨段 emitted 去重天然保证。
+  const segments: ContextSegment[] = []
+  const emitted = new Set<string>()
+  const pushRecords = (recordIds: readonly string[]): void => {
+    const kept: string[] = []
+    for (const rid of recordIds) {
+      const r = records.get(rid)
+      if (!r) continue
+      const mid = r.messageId
+      if (!allowed.has(mid) || emitted.has(mid)) continue
+      const current = newEffective.get(mid)
+      if (current === undefined) continue   // 不在新有效历史（未来消息）——筛除
+      kept.push(current)
+      emitted.add(mid)
+    }
+    if (kept.length > 0) segments.push({ kind: 'records', recordIds: kept })
   }
-  // 失效（covers 越界/版本不一致）或无摘要：summary 段整体移除（仅定位作用），
-  // 允许集合内的消息按新有效版本重建为 records 段——无未来内容、无失效摘要、不扩大边界。
-  const kept = [...newEffective.entries()].filter(([mid]) => allowed.has(mid)).map(([, rid]) => rid)
-  return { segments: [{ kind: 'records', recordIds: kept }] }
+  for (const seg of source.segments) {
+    if (seg.kind === 'records') {
+      pushRecords(seg.recordIds)
+    } else if (canReuseSummary(seg, newLogs, newEffective, records)) {
+      for (const rid of seg.covers.recordIds) {
+        const r = records.get(rid)
+        if (r) emitted.add(r.messageId)   // 摘要覆盖的消息标记已输出（互斥）
+      }
+      segments.push(seg)   // 原位保留
+    } else {
+      pushRecords(seg.covers.recordIds)   // 失效：原位展开（仅定位待重建区域）
+    }
+  }
+  return { segments }
 }
 
 function canReuseSummary(

@@ -17,6 +17,7 @@
 import assert from 'node:assert/strict'
 import { prepareOperation } from './prepare.js'
 import { planRollback } from './plan.js'
+import { fingerprintOperation } from './fingerprint.js'
 import type { SessionStore } from './session-store.js'
 import type { NewRecord, OperationIntent } from './types.js'
 
@@ -403,6 +404,100 @@ async function p1Suite(store: SessionStore): Promise<void> {
       changeSet: { kind: 'append', branchId: 'b1', newRecords: [rec('m4')], contextAppend: true },
     }))
     assert.equal(r.revision, 1)
+  })
+
+  // ── 第二轮评审反例组（PR #132 复审 bf2c410） ──
+
+  await step('fork/import cannot rewrite established ownership (immutability, spec §2.3)', async () => {
+    const root = sid()
+    const target = `conf-${counter}-t`
+    await store.commit(root, prepareOperation(root, { kind: 'register', ownership: { rootSessionId: root } }))
+    const one = rec('m1')
+    await checkpoint(store, root, null, [one])                       // root gains a transcript for forking
+    await store.saveTodos(target, prepareOperation(target, {        // target REGISTERED under root (todo-only)
+      kind: 'save-todos', todos: [], ownership: { rootSessionId: root, parentSessionId: root },
+    }))
+    // fork into the registered target with a DIFFERENT ownership (root: itself) → rejected
+    await assert.rejects(() => store.commit(target, prepareOperation(target, {
+      kind: 'fork', expectedRevision: null,
+      changeSet: {
+        kind: 'fork', newSessionId: target, source: { sessionId: root, branchId: 'b1' }, sourceRevision: 1,
+        records: [one.recordId], effective: [one.recordId],
+        context: { segments: [{ kind: 'records', recordIds: [one.recordId] }] },
+        metadata: {}, ownership: { rootSessionId: target },          // detach attempt
+      },
+    })), /ownership/i)
+    // import likewise: cannot attach an unregistered root
+    await assert.rejects(() => store.commit(target, prepareOperation(target, {
+      kind: 'import', expectedRevision: null,
+      changeSet: {
+        kind: 'import', branchId: 'b1', newRecords: [rec('m2')], effective: [],
+        context: { segments: [] }, metadata: {},
+        ownership: { rootSessionId: 'unregistered-root' },
+      },
+    })), /ownership/i)
+    // stored ownership unchanged
+    assert.deepEqual((await store.loadSession(target))!.ownership, { rootSessionId: root, parentSessionId: root })
+  })
+
+  await step('prepare isolates ALL payload kinds (mutating original todos/ownership is safe)', async () => {
+    const s = sid()
+    const todos = [{ content: 'original', status: 'pending' as const, priority: 'high' as const }]
+    const p = prepareOperation(s, { kind: 'save-todos', todos })
+    todos[0].content = 'hacked'                                      // mutate the ORIGINAL array after prepare
+    await store.saveTodos(s, p)                                      // frozen content still commits
+    assert.equal((await store.loadTodos(s))[0].content, 'original')
+    // register ownership likewise
+    const rootX = `conf-${counter}-rx`
+    await store.commit(rootX, prepareOperation(rootX, { kind: 'register', ownership: { rootSessionId: rootX } }))
+    const s2 = `conf-${counter}-reg`
+    const ownership = { rootSessionId: rootX, parentSessionId: rootX }
+    const p2 = prepareOperation(s2, { kind: 'register', ownership })
+    ownership.parentSessionId = 'hacked'
+    await store.commit(s2, p2)
+    assert.deepEqual((await store.loadSession(s2))!.ownership, { rootSessionId: rootX, parentSessionId: rootX })
+  })
+
+  await step('commit boundary rejects deserialized transcript prepared WITHOUT a revision premise', async () => {
+    const s = sid()
+    await checkpoint(store, s, null, [rec('m1')])                    // rev 1
+    const p = prepareOperation(s, {
+      kind: 'append', expectedRevision: 1,
+      changeSet: { kind: 'append', branchId: 'b1', newRecords: [rec('m2')], contextAppend: true },
+    })
+    // simulate journal deserialization: strip the premise, recompute a CORRECT fingerprint
+    // (fingerprint consistency ≠ structural legality — review S3)
+    const stripped = { ...p, expectedRevision: undefined } as typeof p & { expectedRevision?: number }
+    stripped.fingerprint = fingerprintOperation(s, stripped.kind, stripped.payload, undefined)
+    await assert.rejects(() => store.commit(s, stripped as never), /expectedRevision/)
+    assert.equal((await store.loadSession(s))!.revision, 1)          // no write happened
+  })
+
+  await step('rollback preserves original context SEGMENT order (per-segment rebuild)', async () => {
+    const s = sid()
+    // layout: logs [A, B, S, C]; effective [A,B,C]; context [records A, summary S(covers B), records C]
+    const A = rec('mA', 'A')
+    const B = rec('mB', 'B')
+    const S = sum()
+    const C = rec('mC', 'C')
+    await store.commit(s, prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: {
+        kind: 'checkpoint', branchId: 'b1', newRecords: [A, B, S, C],
+        context: { segments: [
+          { kind: 'records', recordIds: [A.recordId] },
+          { kind: 'summary', summaryRecordId: S.recordId, covers: { branchId: 'b1', recordIds: [B.recordId] } },
+          { kind: 'records', recordIds: [C.recordId] },
+        ] },
+        metadataPatch: {},
+      },
+    }))
+    const intent = await planRollback(store, s, 'b1', 'mC')
+    await store.commit(s, prepareOperation(s, intent as never))
+    const state = await store.loadSession(s)
+    const ctx = await store.loadContext(s, state!.currentBranchId)
+    // ORIGINAL segment order preserved: [A, S(summary in place), C] — not [S, A, C]
+    assert.deepEqual(ctx.map((m) => m.id), ['mA', S.message.id, 'mC'])
   })
 }
 

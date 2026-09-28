@@ -26,6 +26,8 @@ import type {
 import { OwnershipMismatchError, SessionConflictError, SessionDataInvalidError, WriteNotAuthorizedError } from './errors.js'
 import { applyChangeSet, initialStoreData, type StoreData } from './apply.js'
 import { fingerprintOperation } from './fingerprint.js'
+import { assertIntentShape } from './types.js'
+import type { OperationIntent } from './types.js'
 import type { CommitEntryOpts, OwnershipFilter, SessionStore } from './session-store.js'
 
 const TRANSCRIPT_KINDS: ReadonlySet<string> = new Set(['checkpoint', 'compact', 'rollback', 'branch-switch', 'append', 'revise', 'fork', 'import'])
@@ -137,7 +139,16 @@ export class InMemorySessionStore implements SessionStore {
     }
 
     // ── 校验段（全部同步；与发布之间无 await——评审 #2：create-only 不可交错） ──
+    this.assertPreparedShape(sessionId, prepared)                          // 评审：指纹一致 ≠ 结构合法
     const changeSet = prepared.payload as ChangeSetLike
+    // 归属不可变（评审 S1：fork/import 不得改写已登记 ownership——spec §2.3，
+    // 防止 target 脱离 root、级联删除失联）
+    if (existing && changeSet.ownership !== undefined
+      && !sameOwnership(existing.data.state.ownership, changeSet.ownership)) {
+      throw new OwnershipMismatchError(
+        `session ${sessionId} ownership is already established; fork/import must not rewrite it (spec §2.3)`,
+      )
+    }
     const effectiveOwnership: SessionOwnership = existing?.data.state.ownership
       ?? changeSet.ownership
       ?? { rootSessionId: sessionId }
@@ -184,6 +195,7 @@ export class InMemorySessionStore implements SessionStore {
 
   async saveTodos(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
+    this.assertPreparedShape(sessionId, prepared)
     if (prepared.kind !== 'save-todos') throw new SessionDataInvalidError(sessionId, 'saveTodos expects kind "save-todos"')
     const payload = prepared.payload as { todos: TodoInfo[]; ownership?: SessionOwnership }
     // tombstone 拒绝（迟到写入）；祖先校验基于「已存 ownership ?? 传入 ownership」（评审 #5）；首写创建 todo-only 行
@@ -197,6 +209,7 @@ export class InMemorySessionStore implements SessionStore {
 
   async deleteSession(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
+    this.assertPreparedShape(sessionId, prepared)
     if (prepared.kind !== 'delete') throw new SessionDataInvalidError(sessionId, 'deleteSession expects kind "delete"')
     const now = new Date().toISOString()
     const row = this.sessions.get(sessionId)
@@ -225,8 +238,41 @@ export class InMemorySessionStore implements SessionStore {
 
   // ── 内部 ───────────────────────────────────────────────
 
+  /**
+   * commit 边界结构校验（评审 S3）：指纹一致 ≠ 结构合法——journal 反序列化后的
+   * prepared 必须重新过形状校验（transcript 类必需前提、fork/import 的 create-only
+   * 字面量、外层 kind / payload kind 一致性、例外 kind 禁带前提）。
+   */
+  private assertPreparedShape(sessionId: string, prepared: PreparedOperation): void {
+    const p = prepared as { payload: Record<string, unknown>; expectedRevision?: number | null }
+    let intentLike: OperationIntent
+    switch (prepared.kind) {
+      case 'save-todos':
+        intentLike = {
+          kind: 'save-todos',
+          todos: p.payload.todos as TodoInfo[],
+          ...(p.payload.ownership !== undefined ? { ownership: p.payload.ownership as SessionOwnership } : {}),
+        }
+        break
+      case 'delete':
+        intentLike = { kind: 'delete', ...(p.payload.cascadeOwned !== undefined ? { cascadeOwned: p.payload.cascadeOwned as boolean } : {}) }
+        break
+      case 'register':
+        intentLike = { kind: 'register', ownership: p.payload.ownership as SessionOwnership }
+        break
+      default:
+        intentLike = {
+          kind: prepared.kind,
+          changeSet: p.payload as never,
+          expectedRevision: p.expectedRevision,
+        } as OperationIntent
+    }
+    assertIntentShape(sessionId, intentLike)
+  }
+
   /** register 提交（spec §2.3 登记协议）：幂等、无 revision、不产生 transcript。 */
   private async commitRegister(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
+    this.assertPreparedShape(sessionId, prepared)
     const ownership = (prepared.payload as { ownership: SessionOwnership }).ownership
     const existing = this.sessions.get(sessionId)
     if (existing?.tombstone) {

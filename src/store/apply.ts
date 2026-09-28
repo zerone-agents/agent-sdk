@@ -173,7 +173,7 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
       }
       data.state.branches = [branch]
       data.state.currentBranchId = branch.branchId
-      data.state.ownership = changeSet.ownership
+      data.state.ownership = structuredClone(changeSet.ownership)
       Object.assign(data.state.metadata, changeSet.metadata)
       data.state.metadata.messageCount = branch.effective.length
       data.state.updatedAt = meta.committedAt
@@ -192,7 +192,7 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
       }
       data.state.branches = [branch]
       data.state.currentBranchId = branch.branchId
-      data.state.ownership = changeSet.ownership
+      data.state.ownership = structuredClone(changeSet.ownership)
       Object.assign(data.state.metadata, changeSet.metadata)
       data.state.metadata.messageCount = branch.effective.length
       data.state.updatedAt = meta.committedAt
