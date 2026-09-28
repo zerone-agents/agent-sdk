@@ -19,15 +19,41 @@ import { prepareOperation } from './prepare.js'
 import { planRollback } from './plan.js'
 import { fingerprintOperation } from './fingerprint.js'
 import type { SessionStore } from './session-store.js'
-import type { NewRecord, OperationIntent, PreparedOperation } from './types.js'
+import type { AuthorizationContext, NewRecord, OperationIntent, PreparedOperation } from './types.js'
+import { InMemorySessionStore } from './in-memory.js'
+
+/** P2 conformance 需要的测试能力——请求 phases:['p2'] 时必须提供（不可跳过）。 */
+export interface P2TestContext {
+  store: SessionStore
+  /** 当前有效授权 */
+  auth: AuthorizationContext
+  /** 模拟租约过期（无人接管）——此后全部写入被拒直到 rotateAuth */
+  expireAuth(): void
+  /** 新执行者接管——此后旧 auth 必须被拒绝 */
+  rotateAuth(newAuth: AuthorizationContext): void
+  /** 推进回收水位到当前上界 */
+  advanceWatermark(): void
+  /** 等待保留窗口超龄 */
+  elapseRetention(): Promise<void>
+  /** 当前提交上界 */
+  getCommitUpperBound(): number
+}
 
 export interface ConformanceOptions {
-  phases?: Array<'p1'>
+  phases?: Array<'p1' | 'p2'>
+  /** phases 含 'p2' 时必需——缺失则抛错（不可静默跳过核心检查） */
+  p2Context?: P2TestContext
 }
 
 export async function runSessionStoreConformance(store: SessionStore, opts: ConformanceOptions = {}): Promise<void> {
   const phases = new Set(opts.phases ?? ['p1'])
   if (phases.has('p1')) await p1Suite(store)
+  if (phases.has('p2')) {
+    if (!opts.p2Context) {
+      throw new Error('P2 conformance requires p2Context (fencing/retention capabilities) — cannot skip core checks')
+    }
+    await p2Suite(opts.p2Context)
+  }
 }
 
 async function step(name: string, fn: () => Promise<void>): Promise<void> {
@@ -551,4 +577,165 @@ async function checkpointReturning(
   }
   const r = await store.commit(sessionId, prepareOperation(sessionId, intent))
   return { revision: r.revision, operationId: r.operationId }
+}
+
+// ============================================================================
+// P2 组（恢复协议：去重 / fencing / 保留窗口——spec §5/§6）
+// ============================================================================
+
+async function p2Step(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn()
+  } catch (err) {
+    throw new Error(`[conformance p2] ${name}: ${(err as Error).message}`)
+  }
+}
+
+let p2Counter = 0
+
+async function p2Suite(ctx: P2TestContext): Promise<void> {
+  const sid = () => `conf-p2-${++p2Counter}`
+  const store = ctx.store
+  /** 每个场景前重置 fencing 到初始授权（防状态污染）。 */
+  const reset = () => ctx.rotateAuth(ctx.auth)
+  /** 在 fenced store 上做提交的便捷方法（统一传 auth）。 */
+  const commit = async (s: string, intent: OperationIntent) =>
+    store.commit(s, prepareOperation(s, intent, { auth: ctx.auth }), { auth: ctx.auth })
+
+  await p2Step('dedup: same-prepared retry returns original receipt, no re-apply', async () => {
+    reset()
+    const s = sid()
+    const p = prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    }, { auth: ctx.auth })
+    const r1 = await store.commit(s, p, { auth: ctx.auth })
+    const r2 = await store.commit(s, p, { auth: ctx.auth })
+    assert.equal(r2.committedAt, r1.committedAt)
+    assert.equal((await store.loadSession(s))!.revision, 1)
+  })
+
+  await p2Step('dedup: tampered fingerprint → OperationConflictError', async () => {
+    reset()
+    const s = sid()
+    const p1 = prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    }, { auth: ctx.auth })
+    await store.commit(s, p1, { auth: ctx.auth })
+    const p2 = { ...p1, payload: { ...(p1.payload as object), metadataPatch: { model: 'evil' } } } as typeof p1 & { expectedRevision?: number | null }
+    p2.fingerprint = fingerprintOperation(s, p2.kind, p2.payload, p2.expectedRevision)
+    await assert.rejects(() => store.commit(s, p2 as never, { auth: ctx.auth }), /conflict/i)
+  })
+
+  await p2Step('fencing: expired + nobody took over → all writes rejected', async () => {
+    reset()
+    const s = sid()
+    await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    ctx.expireAuth()
+    await assert.rejects(() => commit(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    }), /fencing/i)
+  })
+
+  await p2Step('fencing §6.2: A→expire→B takeover→A rejected, B works', async () => {
+    reset()
+    const s = sid()
+    await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    ctx.expireAuth()
+    const authB = { ownerId: 'executor-B', epoch: 2 }
+    ctx.rotateAuth(authB)
+    await assert.rejects(() => store.commit(s, prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    }, { auth: ctx.auth }), { auth: ctx.auth }), /fencing/i)
+    const r = await store.commit(s, prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m3')], metadataPatch: {} },
+    }, { auth: authB }), { auth: authB })
+    assert.equal(r.revision, 2)
+  })
+
+  await p2Step('fencing independent from CAS: wrong auth + correct CAS → WriteNotAuthorizedError', async () => {
+    reset()
+    const s = sid()
+    await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    await assert.rejects(() => store.commit(s, prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    }, { auth: { ownerId: 'wrong', epoch: 99 } }), { auth: { ownerId: 'wrong', epoch: 99 } }), /fencing/i)
+  })
+
+  await p2Step('retention: past window + watermark NOT advanced → committed (pending unresolved)', async () => {
+    reset()
+    const s = sid()
+    const r = await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    await ctx.elapseRetention()
+    const q = await store.queryOperation(s, r.operationId)
+    assert.equal(q.status, 'committed')
+  })
+
+  await p2Step('retention: past window + watermark advanced → recycled', async () => {
+    reset()
+    const s = sid()
+    const r = await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    await ctx.elapseRetention()
+    ctx.advanceWatermark()
+    const q = await store.queryOperation(s, r.operationId)
+    assert.equal(q.status, 'recycled')
+  })
+
+  await p2Step('retention watermark safety: advance, new commit, past window → still committed', async () => {
+    reset()
+    const s = sid()
+    const r1 = await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    ctx.advanceWatermark()
+    const r2 = await commit(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    })
+    await ctx.elapseRetention()
+    assert.equal((await store.queryOperation(s, r1.operationId)).status, 'recycled')
+    assert.equal((await store.queryOperation(s, r2.operationId)).status, 'committed')
+  })
+}
+
+/** InMemory 默认 P2 工厂（App 的 SQLite adapter 需提供等价实现）。 */
+export function createInMemoryP2Context(retentionMs?: number): P2TestContext {
+  const initialAuth = { ownerId: 'conformance-executor', epoch: 1 }
+  const store = new InMemorySessionStore({
+    fencing: { initialAuth },
+    ...(retentionMs !== undefined ? { receiptRetentionMs: retentionMs } : {}),
+  })
+  return {
+    store,
+    auth: initialAuth,
+    expireAuth: () => store.expireAuthorization(),
+    rotateAuth: (newAuth) => store.refreshAuthorization(newAuth),
+    advanceWatermark: () => store.advanceRecyclingWatermark(store.getCommitUpperBound()),
+    elapseRetention: async () => {
+      if (retentionMs === undefined) throw new Error('retentionMs not configured')
+      await new Promise((resolve) => setTimeout(resolve, retentionMs + 30))
+    },
+    getCommitUpperBound: () => store.getCommitUpperBound(),
+  }
 }
