@@ -245,6 +245,10 @@ export class InMemorySessionStore implements SessionStore {
    */
   private assertPreparedShape(sessionId: string, prepared: PreparedOperation): void {
     const p = prepared as { payload: Record<string, unknown>; expectedRevision?: number | null }
+    // 评审 P2：完整透传收到的 expectedRevision——例外 kind（save-todos/delete/register）
+    // 的禁带检查必须看到调用方实际提供的前提，而不是在组装 intentLike 时丢弃。
+    const premise = p.expectedRevision
+    const carry = premise !== undefined ? ({ expectedRevision: premise } as object) : {}
     let intentLike: OperationIntent
     switch (prepared.kind) {
       case 'save-todos':
@@ -252,19 +256,24 @@ export class InMemorySessionStore implements SessionStore {
           kind: 'save-todos',
           todos: p.payload.todos as TodoInfo[],
           ...(p.payload.ownership !== undefined ? { ownership: p.payload.ownership as SessionOwnership } : {}),
-        }
+          ...carry,
+        } as unknown as OperationIntent
         break
       case 'delete':
-        intentLike = { kind: 'delete', ...(p.payload.cascadeOwned !== undefined ? { cascadeOwned: p.payload.cascadeOwned as boolean } : {}) }
+        intentLike = {
+          kind: 'delete',
+          ...(p.payload.cascadeOwned !== undefined ? { cascadeOwned: p.payload.cascadeOwned as boolean } : {}),
+          ...carry,
+        } as unknown as OperationIntent
         break
       case 'register':
-        intentLike = { kind: 'register', ownership: p.payload.ownership as SessionOwnership }
+        intentLike = { kind: 'register', ownership: p.payload.ownership as SessionOwnership, ...carry } as unknown as OperationIntent
         break
       default:
         intentLike = {
           kind: prepared.kind,
           changeSet: p.payload as never,
-          expectedRevision: p.expectedRevision,
+          expectedRevision: premise,
         } as OperationIntent
     }
     assertIntentShape(sessionId, intentLike)

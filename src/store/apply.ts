@@ -38,7 +38,9 @@ export function initialStoreData(sessionId: string, ownership: SessionOwnership,
       revision: 0,
       createdAt,
       updatedAt: createdAt,
-      ownership,
+      // 评审 P1：首建发布边界复制——prepared.payload.ownership 与存储之间不得共享引用
+      // （提交后修改 prepared 对象不能改变归属、绕过级联清理）
+      ownership: structuredClone(ownership),
     },
     records: new Map(),
     todos: [],

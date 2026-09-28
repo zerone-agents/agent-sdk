@@ -19,7 +19,7 @@ import { prepareOperation } from './prepare.js'
 import { planRollback } from './plan.js'
 import { fingerprintOperation } from './fingerprint.js'
 import type { SessionStore } from './session-store.js'
-import type { NewRecord, OperationIntent } from './types.js'
+import type { NewRecord, OperationIntent, PreparedOperation } from './types.js'
 
 export interface ConformanceOptions {
   phases?: Array<'p1'>
@@ -498,6 +498,47 @@ async function p1Suite(store: SessionStore): Promise<void> {
     const ctx = await store.loadContext(s, state!.currentBranchId)
     // ORIGINAL segment order preserved: [A, S(summary in place), C] — not [S, A, C]
     assert.deepEqual(ctx.map((m) => m.id), ['mA', S.message.id, 'mC'])
+  })
+
+  // ── 第三轮评审反例组（PR #132 复审 4e5ea71） ──
+
+  await step('first-write ownership is cloned: mutating prepared.payload.ownership cannot detach cascade', async () => {
+    const root = sid()
+    await store.commit(root, prepareOperation(root, { kind: 'register', ownership: { rootSessionId: root } }))
+    // (a) register-first child
+    const child = `conf-${counter}-c`
+    const p1 = prepareOperation(child, { kind: 'register', ownership: { rootSessionId: root, parentSessionId: root } })
+    await store.commit(child, p1)
+    ;(p1.payload as { ownership: { rootSessionId: string } }).ownership.rootSessionId = child   // reference attack
+    assert.deepEqual((await store.loadSession(child))!.ownership, { rootSessionId: root, parentSessionId: root })
+    // (b) saveTodos-first child (todo-only first write)
+    const child2 = `conf-${counter}-c2`
+    const p2 = prepareOperation(child2, { kind: 'save-todos', todos: [], ownership: { rootSessionId: root, parentSessionId: root } })
+    await store.saveTodos(child2, p2)
+    ;(p2.payload as { ownership?: { rootSessionId: string } }).ownership!.rootSessionId = child2
+    assert.deepEqual((await store.loadSession(child2))!.ownership, { rootSessionId: root, parentSessionId: root })
+    // cascade still reaches BOTH children (ownership was never actually detached)
+    await store.deleteSession(root, prepareOperation(root, { kind: 'delete', cascadeOwned: true }))
+    assert.equal(await store.loadSession(child), null)
+    assert.equal(await store.loadSession(child2), null)
+  })
+
+  await step('premise-free kinds REJECT a deserialized expectedRevision (all three, fingerprint correctly recomputed)', async () => {
+    const s = sid()
+    await store.commit(s, prepareOperation(s, { kind: 'register', ownership: { rootSessionId: s } }))
+    const cases: Array<{ make: () => PreparedOperation; submit: (p: PreparedOperation) => Promise<unknown> }> = [
+      { make: () => prepareOperation(s, { kind: 'save-todos', todos: [] }), submit: (p) => store.saveTodos(s, p) },
+      { make: () => prepareOperation(s, { kind: 'delete' }), submit: (p) => store.deleteSession(s, p) },
+      { make: () => prepareOperation(s, { kind: 'register', ownership: { rootSessionId: s } }), submit: (p) => store.commit(s, p) },
+    ]
+    for (const c of cases) {
+      const p = c.make()
+      const forged = { ...p, expectedRevision: 12 } as typeof p & { expectedRevision?: number }
+      forged.fingerprint = fingerprintOperation(s, forged.kind, forged.payload, 12)   // fingerprint IS correct
+      await assert.rejects(() => c.submit(forged as never), /revision/)
+    }
+    // the forged delete did NOT delete anything
+    assert.notEqual(await store.loadSession(s), null)
   })
 }
 
