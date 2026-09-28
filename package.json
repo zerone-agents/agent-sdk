@@ -32,6 +32,11 @@
       "types": "./dist/memory/node/index.d.ts",
       "import": "./dist/memory/node/index.js",
       "default": "./dist/memory/node/index.js"
+    },
+    "./store": {
+      "types": "./dist/store/index.d.ts",
+      "import": "./dist/store/index.js",
+      "default": "./dist/store/index.js"
     }
   },
   "files": [
