@@ -94,16 +94,29 @@ function rebuildContextAfterRollback(
   newEffective: Map<string, string>,
   records: ReadonlyMap<string, MessageRecord>,
 ): ContextRef {
+  // **原有模型上下文边界**（评审 #3）：允许集合 = 源 context 引用的全部消息——
+  // 重建绝不把从未进入模型上下文的消息（如 contextAppend:false 的 UI-only 正文）送进来。
+  const allowed = new Set<string>()
+  for (const seg of source.segments) {
+    const ids = seg.kind === 'records' ? seg.recordIds : seg.covers.recordIds
+    for (const rid of ids) {
+      const r = records.get(rid)
+      if (r) allowed.add(r.messageId)
+    }
+  }
   const summarySeg = source.segments.find((s): s is Extract<ContextSegment, { kind: 'summary' }> => s.kind === 'summary')
   if (summarySeg && canReuseSummary(summarySeg, newLogs, newEffective, records)) {
-    // 复用：[summary 段, 其余（新 effective 中不在 covers 内的消息，按序）]——互斥不重复
+    // 复用：[summary 段, 允许集合中其余消息（不在 covers 内），按新有效版本、按序]
     const covered = new Set(summarySeg.covers.recordIds.map((rid) => records.get(rid)?.messageId))
-    const rest = [...newEffective.entries()].filter(([mid]) => !covered.has(mid)).map(([, rid]) => rid)
+    const rest = [...newEffective.entries()]
+      .filter(([mid]) => allowed.has(mid) && !covered.has(mid))
+      .map(([, rid]) => rid)
     return { segments: rest.length > 0 ? [summarySeg, { kind: 'records', recordIds: rest }] : [summarySeg] }
   }
   // 失效（covers 越界/版本不一致）或无摘要：summary 段整体移除（仅定位作用），
-  // 新 effective 全量作为 records 段——模型请求无未来内容、无失效摘要（spec §4.3 不变量）
-  return { segments: [{ kind: 'records', recordIds: [...newEffective.values()] }] }
+  // 允许集合内的消息按新有效版本重建为 records 段——无未来内容、无失效摘要、不扩大边界。
+  const kept = [...newEffective.entries()].filter(([mid]) => allowed.has(mid)).map(([, rid]) => rid)
+  return { segments: [{ kind: 'records', recordIds: kept }] }
 }
 
 function canReuseSummary(

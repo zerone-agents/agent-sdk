@@ -5,7 +5,7 @@
  * 应用语义以本函数为准（不同 adapter 不得实现出不同语义——App 冻结评审 #2）。
  * P1 分任务填充：T4 checkpoint 骨架 → T5–T9 逐 kind 替换（P1 末无 slice 残留）。
  */
-import type { ChangeSet, ContextRef, MessageRecord, NewRecord, SessionState } from './types.js'
+import type { ChangeSet, ContextRef, MessageRecord, NewRecord, SessionOwnership, SessionState } from './types.js'
 import type { TodoInfo } from '../types.js'
 import { SessionDataInvalidError } from './errors.js'
 import { foldEffective } from './algorithm.js'
@@ -16,18 +16,19 @@ export interface StoreData {
   todos: TodoInfo[]
 }
 
-export function newRecordToMessageRecord(nr: NewRecord, createdAt: string): MessageRecord {
+/** 应用记录的物化（评审 #4：isolate 输入——调用者修改原 intent 不能原地修改已提交记录）。 */
+function newRecordToMessageRecord(nr: NewRecord, createdAt: string): MessageRecord {
   return {
     recordId: nr.recordId,
     messageId: (nr.message as { id?: string }).id ?? '',
-    message: nr.message,
-    actor: nr.actor,
+    message: structuredClone(nr.message),
+    actor: structuredClone(nr.actor),
     createdAt,
     kind: nr.kind ?? 'message',
   }
 }
 
-export function initialStoreData(sessionId: string, ownership: { rootSessionId: string; parentSessionId?: string; parentToolUseId?: string }, createdAt: string): StoreData {
+export function initialStoreData(sessionId: string, ownership: SessionOwnership, createdAt: string): StoreData {
   return {
     state: {
       sessionId,
@@ -91,7 +92,7 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
       branch.records.push(...ids)
       branch.effective.push(...ids)
       if (changeSet.context) {
-        branch.context = changeSet.context
+        branch.context = structuredClone(changeSet.context)
       } else {
         appendContextRefs(branch.context, ids)
       }
@@ -119,7 +120,7 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
         throw new SessionDataInvalidError(sessionId, `revise target messageId not found in effective: ${changeSet.messageId}`)
       }
       branch.effective[idx] = newId
-      branch.context = changeSet.contextUpdate
+      branch.context = structuredClone(changeSet.contextUpdate)
       data.state.metadata.messageCount = branch.effective.length
       data.state.updatedAt = meta.committedAt
       return data
@@ -132,7 +133,7 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
       // 完整历史（UI 视图）与模型上下文分离的核心（spec §2/§4.2）
       branch.effective = foldEffective(branch.records, (rid) => data.records.get(rid))
       // 模型上下文整体替换为 [summary 段(covers), kept 段]
-      branch.context = changeSet.context
+      branch.context = structuredClone(changeSet.context)
       data.state.metadata.messageCount = branch.effective.length
       data.state.updatedAt = meta.committedAt
       return data
@@ -143,7 +144,7 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
         branchId: changeSet.newBranchId,
         records: [...changeSet.records],
         effective: [...changeSet.effective],
-        context: changeSet.context,
+        context: structuredClone(changeSet.context),
         createdAt: meta.committedAt,
         createdByOpId: undefined,
       }

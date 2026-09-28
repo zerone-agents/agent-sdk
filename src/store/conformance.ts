@@ -16,6 +16,7 @@
  */
 import assert from 'node:assert/strict'
 import { prepareOperation } from './prepare.js'
+import { planRollback } from './plan.js'
 import type { SessionStore } from './session-store.js'
 import type { NewRecord, OperationIntent } from './types.js'
 
@@ -273,6 +274,135 @@ async function p1Suite(store: SessionStore): Promise<void> {
     assert.equal(q.status, 'committed')
     if (q.status === 'committed') assert.equal(q.receipt.revision, 1)
     assert.equal((await store.queryOperation(s, 'nope')).status, 'not-committed')
+  })
+
+  // ── 评审反例组（PR #132 复审；跨 adapter 契约——修复后钉死） ──
+
+  await step('failed commit: zero residue (no partial records, no revision, record reusable)', async () => {
+    const s = sid()
+    const r1 = rec('m1', 'v1')
+    await checkpoint(store, s, null, [r1])
+    const dup = { ...rec('m1-bis', 'v1-bis'), recordId: r1.recordId }   // duplicate recordId mid-batch
+    const r2 = rec('m2', 'v2')
+    await assert.rejects(() => store.commit(s, prepareOperation(s, {
+      kind: 'append', expectedRevision: 1,
+      changeSet: { kind: 'append', branchId: 'b1', newRecords: [r2, dup], contextAppend: true },
+    })), /duplicate/i)
+    assert.equal((await store.loadSession(s))!.revision, 1)             // unchanged
+    assert.deepEqual(await store.loadRecords(s, [r2.recordId]), [null]) // no residue
+    // same recordId remains usable for a later valid commit
+    await store.commit(s, prepareOperation(s, {
+      kind: 'append', expectedRevision: 1,
+      changeSet: { kind: 'append', branchId: 'b1', newRecords: [r2], contextAppend: true },
+    }))
+    assert.equal((await store.loadSession(s))!.revision, 2)
+  })
+
+  await step('concurrent create-only forks on one target: exactly one succeeds', async () => {
+    const src = sid()
+    const one = rec('m1')
+    await checkpoint(store, src, null, [one])
+    const dst = `conf-${counter}-race`
+    const mkIntent = (): OperationIntent => ({
+      kind: 'fork', expectedRevision: null,
+      changeSet: {
+        kind: 'fork', newSessionId: dst, source: { sessionId: src, branchId: 'b1' }, sourceRevision: 1,
+        records: [one.recordId], effective: [one.recordId],
+        context: { segments: [{ kind: 'records', recordIds: [one.recordId] }] },
+        metadata: {}, ownership: { rootSessionId: dst },
+      },
+    })
+    const results = await Promise.allSettled([
+      store.commit(dst, prepareOperation(dst, mkIntent())),
+      store.commit(dst, prepareOperation(dst, mkIntent())),
+    ])
+    assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1, 'exactly one winner')
+  })
+
+  await step('rollback never widens the original model-context boundary (UI-only body stays out)', async () => {
+    const s = sid()
+    const A = rec('mA', 'A')
+    await checkpoint(store, s, null, [A])                                  // context [A]
+    const B = rec('mB', 'B')
+    await store.commit(s, prepareOperation(s, {
+      kind: 'append', expectedRevision: 1,
+      changeSet: { kind: 'append', branchId: 'b1', newRecords: [B], contextAppend: false },   // UI-only
+    }))
+    const C = rec('mC', 'C')
+    await store.commit(s, prepareOperation(s, {
+      kind: 'append', expectedRevision: 2,
+      changeSet: { kind: 'append', branchId: 'b1', newRecords: [C], contextAppend: true },    // context [A, C]
+    }))
+    const intent = await planRollback(store, s, 'b1', 'mC')                // 走 SDK 五步重建
+    await store.commit(s, prepareOperation(s, intent as never))
+    const state = await store.loadSession(s)
+    const ctx = await store.loadContext(s, state!.currentBranchId)
+    assert.deepEqual(ctx.map((m) => m.id), ['mA', 'mC'])                   // B not re-injected
+  })
+
+  await step('read/write isolation: mutating intents after commit or read results never rewrites storage', async () => {
+    const s = sid()
+    const r1 = rec('m1', 'original')
+    const intent: OperationIntent = {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [r1], metadataPatch: {} },
+    }
+    await store.commit(s, prepareOperation(s, intent))
+    ;(r1.message as { content: unknown }).content = 'hacked-intent'        // mutate the original intent
+    const page = await store.loadHistory(s, 'b1')
+    ;(page.records[0].message as { content: unknown }).content = 'hacked-read'   // mutate a read result
+    assert.deepEqual((await store.loadContext(s, 'b1')).map((m) => m.content), ['original'])
+    assert.deepEqual((await store.loadHistory(s, 'b1')).records.map((r) => r.message.content), ['original'])
+  })
+
+  await step('root deleted (non-cascade): registered child follow-up writes are rejected', async () => {
+    const root = sid()
+    const child = `conf-${counter}-child`
+    await store.commit(root, prepareOperation(root, { kind: 'register', ownership: { rootSessionId: root } }))
+    await store.saveTodos(child, prepareOperation(child, {
+      kind: 'save-todos', todos: [], ownership: { rootSessionId: root, parentSessionId: root },
+    }))
+    await store.deleteSession(root, prepareOperation(root, { kind: 'delete' }))   // NON-cascade
+    // follow-up todo write without explicit ownership must still validate stored ancestors
+    await assert.rejects(() => store.saveTodos(child, prepareOperation(child, {
+      kind: 'save-todos', todos: [{ content: 'late', status: 'pending', priority: 'high' }],
+    })), /not authorized|registered/i)
+    // follow-up transcript write likewise
+    await assert.rejects(() => store.commit(child, prepareOperation(child, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })), /not authorized|registered/i)
+  })
+
+  await step('zero-revision import is a real transcript: create-only NOT re-admitted', async () => {
+    const s = sid()
+    const legacy = rec('m1', 'legacy')
+    await store.commit(s, prepareOperation(s, {
+      kind: 'import', expectedRevision: null,
+      changeSet: {
+        kind: 'import', branchId: 'b1', newRecords: [legacy], effective: [legacy.recordId],
+        context: { segments: [{ kind: 'records', recordIds: [legacy.recordId] }] },
+        metadata: {}, ownership: { rootSessionId: s }, initialRevision: 0,
+      },
+    }))
+    // transcript exists (branches non-empty) although revision === 0
+    await assert.rejects(() => store.commit(s, prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    })), /conflict/i)
+    await assert.rejects(() => store.commit(s, prepareOperation(s, {
+      kind: 'import', expectedRevision: null,
+      changeSet: {
+        kind: 'import', branchId: 'b1', newRecords: [rec('m3')], effective: [],
+        context: { segments: [] }, metadata: {}, ownership: { rootSessionId: s },
+      },
+    })), /conflict/i)
+    // revision 0 remains a valid CAS premise for follow-up commits
+    const r = await store.commit(s, prepareOperation(s, {
+      kind: 'append', expectedRevision: 0,
+      changeSet: { kind: 'append', branchId: 'b1', newRecords: [rec('m4')], contextAppend: true },
+    }))
+    assert.equal(r.revision, 1)
   })
 }
 

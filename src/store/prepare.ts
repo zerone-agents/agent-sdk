@@ -32,7 +32,8 @@ export function prepareOperation(
 
   if ('changeSet' in intent) {
     const kind = intent.kind as PreparedOperation['kind']
-    const payload = intent.changeSet
+    // 冻结隔离（评审 #4）：prepared 与调用方 intent 完全解耦——改原 intent 不影响 prepared/指纹
+    const payload = structuredClone(intent.changeSet)
     const expectedRevision = intent.expectedRevision
     return {
       ...base,
