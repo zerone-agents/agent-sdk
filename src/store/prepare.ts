@@ -23,11 +23,12 @@ export function prepareOperation(
   opts?: PrepareOptions,
 ): PreparedOperation {
   assertIntentShape(sessionId, intent)
-  const base = {
+    const base = {
     operationId: randomUUID(),
     sessionId,
     actor: opts?.actor ?? { kind: 'sdk' as const },
-    ...(opts?.auth !== undefined ? { auth: opts.auth } : {}),
+    // 评审 P1：auth 也须隔离——外部修改原对象不得让旧 prepared 自动获得新授权（spec §6.1 静态绑定）
+    ...(opts?.auth !== undefined ? { auth: structuredClone(opts.auth) } : {}),
   }
 
   if ('changeSet' in intent) {

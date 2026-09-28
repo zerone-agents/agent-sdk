@@ -58,6 +58,7 @@ export type { PlanCompactInput } from './plan.js'
 export type { CommitEntryOpts, OwnershipFilter, SessionStore } from './session-store.js'
 
 export { InMemorySessionStore } from './in-memory.js'
+export type { InMemorySessionStoreOptions } from './in-memory.js'
 
-export { runSessionStoreConformance } from './conformance.js'
-export type { ConformanceOptions } from './conformance.js'
+export { runSessionStoreConformance, createInMemoryP2Context } from './conformance.js'
+export type { ConformanceOptions, P2TestContext } from './conformance.js'

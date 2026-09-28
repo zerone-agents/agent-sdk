@@ -1,8 +1,15 @@
 /**
  * runSessionStoreConformance —— SessionStore v4 契约一致性套件（issue #131）。
  *
- * **App 复用入口**：对任意 SessionStore 实现（如 SQLite adapter）运行 P1 行为组，
+ * **App 复用入口**：对任意 SessionStore 实现（如 SQLite adapter）运行行为组，
  * 验证与 SDK 契约（SPEC v1.4）一致。不依赖 vitest（node:assert）。
+ *
+ * **重要：phases 分別测试**——`phases: ['p1']` 只运行 P1 组，`phases: ['p2']` 只运行
+ * P2 组，二者**不等于「完整 P1+P2 合规」**。App 需分别完成两阶段测试：
+ *   1. P1：对无 fencing 的实例运行 `phases: ['p1']`（基础操作合规）
+ *   2. P2：对有 fencing + retention 的实例运行 `phases: ['p2']` + `p2Context`
+ * P1 不携带 auth；在有 fencing 的实例上直接运行 P1 会因缺少授权而失败——
+ * 这是设计行为（P1 验证无 fencing 的基础合规）。
  *
  * §10 验收覆盖分界（诚实标注，不虚报）：
  * - p1（本套件）：#1 读取契约 / #2 compact 原文原子 / #3 rollback·fork·revise（含
@@ -19,15 +26,48 @@ import { prepareOperation } from './prepare.js'
 import { planRollback } from './plan.js'
 import { fingerprintOperation } from './fingerprint.js'
 import type { SessionStore } from './session-store.js'
-import type { NewRecord, OperationIntent, PreparedOperation } from './types.js'
+import type { AuthorizationContext, NewRecord, OperationIntent, PreparedOperation } from './types.js'
+import { InMemorySessionStore } from './in-memory.js'
+
+/** P2 conformance 需要的测试能力——请求 phases:['p2'] 时必须提供（不可跳过）。 */
+export interface P2TestContext {
+  store: SessionStore
+  /** 当前有效授权 */
+  auth: AuthorizationContext
+  /** 模拟租约过期（无人接管）——此后全部写入被拒直到 rotateAuth */
+  expireAuth(): void
+  /** 新执行者接管——此后旧 auth 必须被拒绝 */
+  rotateAuth(newAuth: AuthorizationContext): void
+  /** 推进回收水位到当前上界 */
+  advanceWatermark(): void
+  /** 等待保留窗口超龄 */
+  elapseRetention(): Promise<void>
+  /** 当前提交上界 */
+  getCommitUpperBound(): number
+}
 
 export interface ConformanceOptions {
-  phases?: Array<'p1'>
+  phases?: Array<'p1' | 'p2'>
+  /** phases 含 'p2' 时必需——缺失则抛错（不可静默跳过核心检查） */
+  p2Context?: P2TestContext
 }
 
 export async function runSessionStoreConformance(store: SessionStore, opts: ConformanceOptions = {}): Promise<void> {
   const phases = new Set(opts.phases ?? ['p1'])
   if (phases.has('p1')) await p1Suite(store)
+  if (phases.has('p2')) {
+    if (!opts.p2Context) {
+      throw new Error('P2 conformance requires p2Context (fencing/retention capabilities) — cannot skip core checks')
+    }
+    // 评审 P1：ctx.store 必须与被测 store 是同一实例——防止「传入 A、测了 B」的假通过
+    if (opts.p2Context.store !== store) {
+      throw new Error(
+        'P2 conformance: p2Context.store must be the SAME instance as the store parameter — ' +
+        'cannot claim compliance for a different implementation',
+      )
+    }
+    await p2Suite(opts.p2Context)
+  }
 }
 
 async function step(name: string, fn: () => Promise<void>): Promise<void> {
@@ -551,4 +591,292 @@ async function checkpointReturning(
   }
   const r = await store.commit(sessionId, prepareOperation(sessionId, intent))
   return { revision: r.revision, operationId: r.operationId }
+}
+
+// ============================================================================
+// P2 组（恢复协议：去重 / fencing / 保留窗口——spec §5/§6）
+// ============================================================================
+
+async function p2Step(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn()
+  } catch (err) {
+    throw new Error(`[conformance p2] ${name}: ${(err as Error).message}`)
+  }
+}
+
+let p2Counter = 0
+
+async function p2Suite(ctx: P2TestContext): Promise<void> {
+  const sid = () => `conf-p2-${++p2Counter}`
+  const store = ctx.store
+  /** 每个场景前重置 fencing 到初始授权（防状态污染）。 */
+  const reset = () => ctx.rotateAuth(ctx.auth)
+  /** 在 fenced store 上做提交的便捷方法（统一传 auth）。 */
+  const commit = async (s: string, intent: OperationIntent) =>
+    store.commit(s, prepareOperation(s, intent, { auth: ctx.auth }), { auth: ctx.auth })
+
+  await p2Step('dedup: same-prepared retry returns original receipt, no re-apply', async () => {
+    reset()
+    const s = sid()
+    const p = prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    }, { auth: ctx.auth })
+    const r1 = await store.commit(s, p, { auth: ctx.auth })
+    const r2 = await store.commit(s, p, { auth: ctx.auth })
+    assert.equal(r2.committedAt, r1.committedAt)
+    assert.equal((await store.loadSession(s))!.revision, 1)
+  })
+
+  await p2Step('dedup: tampered fingerprint → OperationConflictError', async () => {
+    reset()
+    const s = sid()
+    const p1 = prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    }, { auth: ctx.auth })
+    await store.commit(s, p1, { auth: ctx.auth })
+    const p2 = { ...p1, payload: { ...(p1.payload as object), metadataPatch: { model: 'evil' } } } as typeof p1 & { expectedRevision?: number | null }
+    p2.fingerprint = fingerprintOperation(s, p2.kind, p2.payload, p2.expectedRevision)
+    await assert.rejects(() => store.commit(s, p2 as never, { auth: ctx.auth }), /conflict/i)
+  })
+
+  await p2Step('fencing: expired + nobody took over → all writes rejected', async () => {
+    reset()
+    const s = sid()
+    await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    ctx.expireAuth()
+    await assert.rejects(() => commit(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    }), /fencing/i)
+  })
+
+  await p2Step('fencing §6.2: A→expire→B takeover→A rejected, B works', async () => {
+    reset()
+    const s = sid()
+    await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    ctx.expireAuth()
+    const authB = { ownerId: 'executor-B', epoch: 2 }
+    ctx.rotateAuth(authB)
+    await assert.rejects(() => store.commit(s, prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    }, { auth: ctx.auth }), { auth: ctx.auth }), /fencing/i)
+    const r = await store.commit(s, prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m3')], metadataPatch: {} },
+    }, { auth: authB }), { auth: authB })
+    assert.equal(r.revision, 2)
+  })
+
+  await p2Step('fencing independent from CAS: wrong auth + correct CAS → WriteNotAuthorizedError', async () => {
+    reset()
+    const s = sid()
+    await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    await assert.rejects(() => store.commit(s, prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    }, { auth: { ownerId: 'wrong', epoch: 99 } }), { auth: { ownerId: 'wrong', epoch: 99 } }), /fencing/i)
+  })
+
+  await p2Step('retention: past window + watermark NOT advanced → committed (pending unresolved)', async () => {
+    reset()
+    const s = sid()
+    const r = await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    await ctx.elapseRetention()
+    const q = await store.queryOperation(s, r.operationId)
+    assert.equal(q.status, 'committed')
+  })
+
+  await p2Step('retention: past window + watermark advanced → recycled', async () => {
+    reset()
+    const s = sid()
+    const r = await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    await ctx.elapseRetention()
+    ctx.advanceWatermark()
+    const q = await store.queryOperation(s, r.operationId)
+    assert.equal(q.status, 'recycled')
+  })
+
+  await p2Step('retention watermark safety: advance, new commit, past window → still committed', async () => {
+    reset()
+    const s = sid()
+    const r1 = await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    ctx.advanceWatermark()
+    const r2 = await commit(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    })
+    await ctx.elapseRetention()
+    assert.equal((await store.queryOperation(s, r1.operationId)).status, 'recycled')
+    assert.equal((await store.queryOperation(s, r2.operationId)).status, 'committed')
+  })
+
+  // ── 全写入口覆盖（评审 R2：不只 checkpoint，todo/delete/register 也要验证） ──
+
+  await p2Step('fencing expired: saveTodos and deleteSession also rejected', async () => {
+    reset()
+    const root = sid()
+    const child = `${root}-sub`
+    // Register root and child under root
+    await store.commit(root, prepareOperation(root, { kind: 'register', ownership: { rootSessionId: root } }, { auth: ctx.auth }), { auth: ctx.auth })
+    await store.saveTodos(child, prepareOperation(child, {
+      kind: 'save-todos', todos: [], ownership: { rootSessionId: root, parentSessionId: root },
+    }, { auth: ctx.auth }), { auth: ctx.auth })
+    // Expire — nobody takes over
+    ctx.expireAuth()
+    // saveTodos with old auth → rejected
+    await assert.rejects(() => store.saveTodos(child, prepareOperation(child, {
+      kind: 'save-todos', todos: [{ content: 'late', status: 'pending', priority: 'high' }],
+    }, { auth: ctx.auth }), { auth: ctx.auth }), /fencing/i)
+    // deleteSession with old auth → rejected
+    await assert.rejects(() => store.deleteSession(root, prepareOperation(root, {
+      kind: 'delete',
+    }, { auth: ctx.auth }), { auth: ctx.auth }), /fencing/i)
+  })
+
+  await p2Step('fencing expired: commit with NO auth also rejected', async () => {
+    reset()
+    const s = sid()
+    await commit(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    })
+    ctx.expireAuth()
+    await assert.rejects(() => store.commit(s, prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: 1,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m2')], metadataPatch: {} },
+    })), /fencing/i)   // no auth at all — still rejected
+  })
+
+  await p2Step('fencing takeover: saveTodos with old auth rejected; new auth works', async () => {
+    reset()
+    const root = sid()
+    const child = `${root}-sub`
+    await store.commit(root, prepareOperation(root, { kind: 'register', ownership: { rootSessionId: root } }, { auth: ctx.auth }), { auth: ctx.auth })
+    const authB = { ownerId: 'executor-B', epoch: 2 }
+    ctx.expireAuth()
+    ctx.rotateAuth(authB)
+    // A's saveTodos rejected
+    await assert.rejects(() => store.saveTodos(child, prepareOperation(child, {
+      kind: 'save-todos', todos: [], ownership: { rootSessionId: root, parentSessionId: root },
+    }, { auth: ctx.auth }), { auth: ctx.auth }), /fencing/i)
+    // B's saveTodos works
+    await store.saveTodos(child, prepareOperation(child, {
+      kind: 'save-todos', todos: [], ownership: { rootSessionId: root, parentSessionId: root },
+    }, { auth: authB }), { auth: authB })
+  })
+
+  await p2Step('dedup: saveTodos same-prepared retry returns original receipt', async () => {
+    reset()
+    const root = sid()
+    const child = `${root}-sub`
+    await store.commit(root, prepareOperation(root, { kind: 'register', ownership: { rootSessionId: root } }, { auth: ctx.auth }), { auth: ctx.auth })
+    const tp = prepareOperation(child, {
+      kind: 'save-todos', todos: [], ownership: { rootSessionId: root, parentSessionId: root },
+    }, { auth: ctx.auth })
+    const r1 = await store.saveTodos(child, tp, { auth: ctx.auth })
+    const r2 = await store.saveTodos(child, tp, { auth: ctx.auth })   // retry same prepared
+    assert.equal(r2.committedAt, r1.committedAt)
+    assert.equal(r2.operationId, r1.operationId)
+  })
+
+  await p2Step('dedup: deleteSession same-prepared retry returns original receipt', async () => {
+    reset()
+    const s = sid()
+    await store.commit(s, prepareOperation(s, { kind: 'register', ownership: { rootSessionId: s } }, { auth: ctx.auth }), { auth: ctx.auth })
+    const dp = prepareOperation(s, { kind: 'delete' }, { auth: ctx.auth })
+    const r1 = await store.deleteSession(s, dp, { auth: ctx.auth })
+    assert.equal((r1.value as { deleted: boolean }).deleted, true)
+    const r2 = await store.deleteSession(s, dp, { auth: ctx.auth })   // retry same prepared
+    assert.equal(r2.committedAt, r1.committedAt)
+    assert.equal(r2.operationId, r1.operationId)
+  })
+
+  await p2Step('dedup: register same-prepared retry returns original receipt', async () => {
+    reset()
+    const s = sid()
+    const rp = prepareOperation(s, { kind: 'register', ownership: { rootSessionId: s } }, { auth: ctx.auth })
+    const r1 = await store.commit(s, rp, { auth: ctx.auth })
+    const r2 = await store.commit(s, rp, { auth: ctx.auth })
+    assert.equal(r2.committedAt, r1.committedAt)
+  })
+
+  await p2Step('recycled receipt + same prepared retry → original receipt (cross-adapter dedup)', async () => {
+    reset()
+    const s = sid()
+    const p = prepareOperation(s, {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('m1')], metadataPatch: {} },
+    }, { auth: ctx.auth })
+    const r1 = await store.commit(s, p, { auth: ctx.auth })
+    await ctx.elapseRetention()
+    ctx.advanceWatermark()
+    // Receipt is recycled...
+    assert.equal((await store.queryOperation(s, r1.operationId)).status, 'recycled')
+    // ...but dedup still returns the ORIGINAL receipt (operation was committed — not retryable)
+    const r2 = await store.commit(s, p, { auth: ctx.auth })
+    assert.equal(r2.committedAt, r1.committedAt)
+    assert.equal(r2.revision, r1.revision)
+  })
+
+  await p2Step('valid auth: saveTodos and deleteSession actually work (positive path)', async () => {
+    reset()
+    const root = sid()
+    const child = `${root}-sub`
+    await store.commit(root, prepareOperation(root, { kind: 'register', ownership: { rootSessionId: root } }, { auth: ctx.auth }), { auth: ctx.auth })
+    // saveTodos works with valid auth
+    await store.saveTodos(child, prepareOperation(child, {
+      kind: 'save-todos', todos: [{ content: 'ok', status: 'pending', priority: 'high' }],
+      ownership: { rootSessionId: root, parentSessionId: root },
+    }, { auth: ctx.auth }), { auth: ctx.auth })
+    assert.equal((await store.loadTodos(child)).length, 1)
+    // deleteSession works with valid auth
+    const dr = await store.deleteSession(child, prepareOperation(child, {
+      kind: 'delete',
+    }, { auth: ctx.auth }), { auth: ctx.auth })
+    assert.equal((dr.value as { deleted: boolean }).deleted, true)
+    assert.equal(await store.loadSession(child), null)
+  })
+}
+
+/** InMemory 默认 P2 工厂（App 的 SQLite adapter 需提供等价实现）。 */
+export function createInMemoryP2Context(retentionMs?: number): P2TestContext {
+  const initialAuth = { ownerId: 'conformance-executor', epoch: 1 }
+  const store = new InMemorySessionStore({
+    fencing: { initialAuth },
+    ...(retentionMs !== undefined ? { receiptRetentionMs: retentionMs } : {}),
+  })
+  return {
+    store,
+    auth: initialAuth,
+    expireAuth: () => store.expireAuthorization(),
+    rotateAuth: (newAuth) => store.refreshAuthorization(newAuth),
+    advanceWatermark: () => store.advanceRecyclingWatermark(store.getCommitUpperBound()),
+    elapseRetention: async () => {
+      if (retentionMs === undefined) throw new Error('retentionMs not configured')
+      await new Promise((resolve) => setTimeout(resolve, retentionMs + 30))
+    },
+    getCommitUpperBound: () => store.getCommitUpperBound(),
+  }
 }

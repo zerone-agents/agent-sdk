@@ -23,7 +23,7 @@ import type {
   SessionOwnership,
   SessionState,
 } from './types.js'
-import { OwnershipMismatchError, SessionConflictError, SessionDataInvalidError, WriteNotAuthorizedError } from './errors.js'
+import { OperationConflictError, OwnershipMismatchError, SessionConflictError, SessionDataInvalidError, WriteNotAuthorizedError } from './errors.js'
 import { applyChangeSet, initialStoreData, type StoreData } from './apply.js'
 import { fingerprintOperation } from './fingerprint.js'
 import { assertIntentShape } from './types.js'
@@ -45,12 +45,39 @@ interface ChangeSetLike {
   ownership?: SessionOwnership
 }
 
+/** InMemorySessionStore 统一构造选项（P2 issue #131）。 */
+export interface InMemorySessionStoreOptions {
+  /** fencing 初始授权（store 维护可变 currentAuth；refreshAuthorization 更新）。 */
+  fencing?: { initialAuth: AuthorizationContext }
+  /** 凭据保留窗口 ms（recycled 需同时满足超龄 + 水位推进）。 */
+  receiptRetentionMs?: number
+}
+
 export class InMemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, SessionRow>()
   /** 同库共享记录表（recordId 全局唯一；fork「引用」语义的基础——spec §4.4）。
    * 非 readonly：原子提交按「发布」整体替换（失败不污染）。 */
   private records = new Map<string, MessageRecord>()
   private readonly receipts = new Map<string, OperationReceipt>()
+
+  // 三态 fencing 状态（spec §6）：enabled × currentAuth（null = 过期无人接管）
+  private readonly fencingEnabled: boolean
+  private currentAuth: AuthorizationContext | null
+
+  constructor(readonly opts: InMemorySessionStoreOptions = {}) {
+    this.fencingEnabled = opts.fencing !== undefined
+    this.currentAuth = opts.fencing ? structuredClone(opts.fencing.initialAuth) : null
+  }
+
+  /** 模拟租约过期——此后全部写入拒绝直到 refreshAuthorization。 */
+  expireAuthorization(): void {
+    this.currentAuth = null
+  }
+
+  /** 新执行者接管（clone 保存——外部修改传入对象不影响 store 内部状态）。 */
+  refreshAuthorization(auth: AuthorizationContext): void {
+    this.currentAuth = structuredClone(auth)
+  }
 
   // ── 读取（返回值一律隔离——修改读取结果不能改写存储，评审 #4） ──
 
@@ -124,6 +151,9 @@ export class InMemorySessionStore implements SessionStore {
 
   async commit(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
+    const deduped = this.checkDedup(sessionId, prepared)
+    if (deduped) return deduped   // idempotent retry (spec §5.2)
+    this.checkFencing(opts?.auth ?? prepared.auth)   // spec §6.2: 三态授权校验
     if (prepared.kind === 'register') {
       return this.commitRegister(sessionId, prepared, opts)
     }
@@ -195,6 +225,9 @@ export class InMemorySessionStore implements SessionStore {
 
   async saveTodos(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
+    const deduped = this.checkDedup(sessionId, prepared)
+    if (deduped) return deduped
+    this.checkFencing(opts?.auth ?? prepared.auth)
     this.assertPreparedShape(sessionId, prepared)
     if (prepared.kind !== 'save-todos') throw new SessionDataInvalidError(sessionId, 'saveTodos expects kind "save-todos"')
     const payload = prepared.payload as { todos: TodoInfo[]; ownership?: SessionOwnership }
@@ -209,6 +242,9 @@ export class InMemorySessionStore implements SessionStore {
 
   async deleteSession(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<OperationReceipt> {
     this.verifyFingerprint(sessionId, prepared)
+    const deduped = this.checkDedup(sessionId, prepared)
+    if (deduped) return deduped
+    this.checkFencing(opts?.auth ?? prepared.auth)
     this.assertPreparedShape(sessionId, prepared)
     if (prepared.kind !== 'delete') throw new SessionDataInvalidError(sessionId, 'deleteSession expects kind "delete"')
     const now = new Date().toISOString()
@@ -231,12 +267,75 @@ export class InMemorySessionStore implements SessionStore {
     return this.recordReceipt(prepared, { committedAt: now, auth: opts?.auth, value: { deleted: true } })
   }
 
+  // 回收序列号水位（spec §5.4 清理协调协议）
+  private commitSeqCounter = 0
+  private readonly receiptSeqs = new Map<string, number>()
+  private recyclingWatermarkSeq = 0
+
+  /** 当前提交上界（宿主确认连续前缀用）。 */
+  getCommitUpperBound(): number {
+    return this.commitSeqCounter
+  }
+
+  /**
+   * 推进回收水位（spec §5.4 清理协调协议）。
+   * 安全约束：toSeq 不得超过当前提交上界——防止未来水位误伤后续 pending。
+   */
+  advanceRecyclingWatermark(toSeq: number): void {
+    if (toSeq > this.commitSeqCounter) {
+      throw new Error(
+        `cannot advance recycling watermark to ${toSeq}: exceeds current commit upper bound ${this.commitSeqCounter}`,
+      )
+    }
+    this.recyclingWatermarkSeq = Math.max(this.recyclingWatermarkSeq, toSeq)
+  }
+
   async queryOperation(sessionId: string, operationId: string): Promise<OperationLookup> {
-    const receipt = this.receipts.get(`${sessionId}:${operationId}`)
-    return receipt ? { status: 'committed', receipt } : { status: 'not-committed' }
+    const key = `${sessionId}:${operationId}`
+    const receipt = this.receipts.get(key)
+    if (!receipt) return { status: 'not-committed' }
+    if (this.opts.receiptRetentionMs !== undefined) {
+      const age = Date.now() - new Date(receipt.committedAt).getTime()
+      const seq = this.receiptSeqs.get(key) ?? Infinity   // no seq → never recycled
+      if (age > this.opts.receiptRetentionMs && seq <= this.recyclingWatermarkSeq) {
+        return { status: 'recycled' }
+      }
+    }
+    return { status: 'committed', receipt: structuredClone(receipt) }
   }
 
   // ── 内部 ───────────────────────────────────────────────
+
+  /** 同 ID 去重（spec §5.2）：同指纹返回原回执（幂等重试）；异指纹拒绝。 */
+  private checkDedup(sessionId: string, prepared: PreparedOperation): OperationReceipt | null {
+    const existing = this.receipts.get(`${sessionId}:${prepared.operationId}`)
+    if (!existing) return null
+    if (existing.fingerprint !== prepared.fingerprint) {
+      throw new OperationConflictError(
+        `operation ${prepared.operationId} already committed with different fingerprint (spec §5.2)`,
+      )
+    }
+    return structuredClone(existing)
+  }
+
+  /** fencing 校验（spec §6.2）：与 revision CAS 独立。比较的是当前有效授权状态（可变）。 */
+  private checkFencing(auth?: AuthorizationContext): void {
+    if (!this.fencingEnabled) return   // fencing not configured
+    if (this.currentAuth === null) {
+      throw new WriteNotAuthorizedError(
+        'fencing: lease expired, no valid authorization (no executor has taken over)',
+      )
+    }
+    if (!auth) {
+      throw new WriteNotAuthorizedError('fencing configured but no authorization provided')
+    }
+    if (auth.ownerId !== this.currentAuth.ownerId || auth.epoch !== this.currentAuth.epoch) {
+      throw new WriteNotAuthorizedError(
+        `fencing mismatch: ownerId=${auth.ownerId} epoch=${auth.epoch}, ` +
+        `current ownerId=${this.currentAuth.ownerId} epoch=${this.currentAuth.epoch}`,
+      )
+    }
+  }
 
   /**
    * commit 边界结构校验（评审 S3）：指纹一致 ≠ 结构合法——journal 反序列化后的
@@ -385,6 +484,8 @@ export class InMemorySessionStore implements SessionStore {
       ...(out.sourceRevision !== undefined ? { sourceRevision: out.sourceRevision } : {}),
     }
     this.receipts.set(`${prepared.sessionId}:${prepared.operationId}`, receipt)
+    this.commitSeqCounter++
+    this.receiptSeqs.set(`${prepared.sessionId}:${prepared.operationId}`, this.commitSeqCounter)
     return structuredClone(receipt)
   }
 }
