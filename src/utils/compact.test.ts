@@ -4,6 +4,7 @@ import {
   compactConversationStream,
   compactConversationWithProtectedTail,
   createAutoCompactState,
+  microCompactMessages,
   PRUNE_PROTECTED_QUERIES,
   pruneMessages,
   PRUNE_THRESHOLD_CHARS,
@@ -39,6 +40,25 @@ async function drain(gen: ReturnType<typeof compactConversationWithProtectedTail
     const next = await gen.next()
     if (next.done) return next.value
   }
+}
+
+/**
+ * ES2024 String.prototype.isWellFormed equivalent — true when every surrogate
+ * code unit belongs to a valid high+low pair. (Repo target is ES2022, so the
+ * builtin is not typed.)
+ */
+function isWellFormed(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const n = i + 1 < s.length ? s.charCodeAt(i + 1) : 0
+      if (n < 0xdc00 || n > 0xdfff) return false
+      i++
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return false
+    }
+  }
+  return true
 }
 
 describe('compactConversationWithProtectedTail protectedQueries', () => {
@@ -189,6 +209,86 @@ describe('buildCompactionPrompt content rules', () => {
     await drain(compactConversationWithProtectedTail(provider, 'm', toolConversation(), createAutoCompactState(), 0))
     expect(getPrompt()).toContain('[Tool: Read')
     expect(getPrompt()).toContain('/a/b.ts')
+  })
+})
+
+describe('surrogate-safe truncation (issue #133)', () => {
+  // U+1F1EA occupies two UTF-16 code units. Pre-fix slice() boundaries could
+  // land BETWEEN them, emitting an unpaired surrogate into the provider-bound
+  // compaction prompt (providers then reject with UTF-8 errors / HTTP 500).
+  const EMOJI = '\u{1F1EA}'
+
+  function captureProvider(): { provider: LLMProvider; getPrompt: () => string } {
+    let prompt = ''
+    return {
+      getPrompt: () => prompt,
+      provider: {
+        apiType: 'anthropic-messages',
+        async createMessage(params: any): Promise<CreateMessageResponse> {
+          prompt = params.messages[0].content
+          return {
+            content: [{ type: 'text', text: 'S' }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          } as CreateMessageResponse
+        },
+      },
+    }
+  }
+
+  async function promptFor(content: string): Promise<string> {
+    const { provider, getPrompt } = captureProvider()
+    await drain(compactConversationWithProtectedTail(
+      provider, 'm',
+      [userMsg(content), assistantMsg('ok'), userMsg('hi')],
+      createAutoCompactState(), 0,
+    ))
+    return getPrompt()
+  }
+
+  it('tail boundary never starts mid-pair (issue repro)', async () => {
+    // 5,501 code units: a naive tail slice(-2500) starts exactly at the LOW
+    // surrogate of the emoji, producing an isolated U+DDEA.
+    const prompt = await promptFor('a'.repeat(3000) + EMOJI + 'b'.repeat(2499))
+    expect(prompt).toContain('...(truncated)...')
+    expect(isWellFormed(prompt)).toBe(true)
+  })
+
+  it('head boundary never ends mid-pair', async () => {
+    // 5,001 code units: a naive head slice(0, 2500) ends exactly at the HIGH
+    // surrogate of the emoji.
+    const prompt = await promptFor('a'.repeat(2499) + EMOJI + 'b'.repeat(2500))
+    expect(prompt).toContain('...(truncated)...')
+    expect(isWellFormed(prompt)).toBe(true)
+  })
+
+  it('microCompactMessages keeps tool_result head/tail cuts pair-safe', () => {
+    // max=20 → each side keeps 10 code units.
+    const headSplit = 'a'.repeat(9) + EMOJI + 'b'.repeat(20) // head cut lands on HIGH surrogate
+    const tailSplit = 'a'.repeat(15) + EMOJI + 'b'.repeat(9) // tail cut lands on LOW surrogate
+    for (const content of [headSplit, tailSplit]) {
+      const [msg] = microCompactMessages([{
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu1', content }],
+      }], 20)
+      const out = msg.content[0].content as string
+      expect(out).toContain('...(truncated)...')
+      expect(isWellFormed(out)).toBe(true)
+    }
+  })
+
+  it('sanitized compaction error never ends on a split surrogate', async () => {
+    const failing: LLMProvider = {
+      apiType: 'anthropic-messages',
+      // 499 + 2 + 5 = 506 code units: the naive slice(0, 500) ends exactly at
+      // the HIGH surrogate of the emoji.
+      async createMessage(): Promise<never> { throw new Error('E'.repeat(499) + EMOJI + ' boom') },
+    }
+    const result = await compactConversation(
+      failing, 'm', [userMsg('a'), assistantMsg('b')], createAutoCompactState(),
+    )
+    expect(result.error).toBeDefined()
+    expect(result.error!.length).toBeLessThanOrEqual(500)
+    expect(isWellFormed(result.error!)).toBe(true)
   })
 })
 
