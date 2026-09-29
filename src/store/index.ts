@@ -1,10 +1,12 @@
 /**
- * SessionStore v4 — P1 集成导出（issue #131）。
+ * SessionStore v4 — 集成导出（issue #131；P1 契约 + P2 fencing + P3 编排接入）。
  *
- * App 集成测试入口：`@zerone-agent/agent-sdk/store`
- * 这是 P1 范围的最小导出面（非最终 v4 公开 API——P3 统一定）。
- *
- * P1 边界：queryOperation 基础回执；同 ID 去重/重试状态机/fencing 校验/保留窗口 = P2。
+ * App 集成入口：`@zerone-agent/agent-sdk/store`
+ * - conformance：`runSessionStoreConformance(store, { phases: ['p1'] })`（无 fencing）；
+ *   `phases: ['p2']` 需 p2Context（fencing 实例）
+ * - 编排：`WriteCoordinator`（execute/query/retry 统一写入入口）
+ * - 治理：`createSessionManagerV2`（revise/rollback/fork/delete/todos）
+ * - 文件持久化：`FileSessionStore`
  */
 export type {
   ActorRef,
@@ -62,3 +64,20 @@ export type { InMemorySessionStoreOptions } from './in-memory.js'
 
 export { runSessionStoreConformance, createInMemoryP2Context } from './conformance.js'
 export type { ConformanceOptions, P2TestContext } from './conformance.js'
+
+// ── P3：编排接入（issue #131）──
+
+export { WriteCoordinator, CoordinatorUnknownError } from './coordinator.js'
+export type { WriteCoordinatorOptions } from './coordinator.js'
+
+export { NoopJournal } from './journal.js'
+export type { OperationJournal } from './journal.js'
+
+export { CommittedMessageIndex } from './index-map.js'
+
+export { createSessionManagerV2 } from './session-manager.js'
+export type { SessionManagerV2, SessionManagerV2Init } from './session-manager.js'
+
+export { FileSessionStore } from './file-store.js'
+export type { FileSessionStoreOptions } from './file-store.js'
+export type { StoreSnapshot } from './in-memory.js'
