@@ -379,6 +379,10 @@ export interface ToolContext {
    *  level — non-engine callers may omit it and get an explicit is_error
    *  result (never a silent file fallback). */
   sessionStorage?: import('./session-storage.js').SessionStorage
+  /** v4 SessionStore (issue #131 P3) — replaces sessionStorage when provided */
+  store?: import('./store/session-store.js').SessionStore
+  /** v4 WriteCoordinator (issue #131 P3) — required for v4 write paths */
+  coordinator?: import('./store/coordinator.js').WriteCoordinator
 }
 
 /** Context available to the Skill tool: resolved skill set + registry. */

@@ -139,12 +139,18 @@ export const TodoWriteTool: ToolDefinition = {
       return { type: 'tool_result', tool_use_id: '', content: `Invalid sessionId: ${sessionId}. Must match /^[a-zA-Z0-9_-]+$/`, is_error: true }
     }
 
-    const storage = context.sessionStorage
-    if (!storage) {
-      return { type: 'tool_result', tool_use_id: '', content: 'TodoWrite requires a session storage context (missing sessionStorage).', is_error: true }
+    // ── v4 path (issue #131 P3): WriteCoordinator is the preferred entry ──
+    const coordinator = context.coordinator
+    if (coordinator) {
+      await coordinator.execute(sessionId, { kind: 'save-todos', todos })
+    } else {
+      // ── v3 fallback (existing path — removed in T8) ──
+      const storage = context.sessionStorage
+      if (!storage) {
+        return { type: 'tool_result', tool_use_id: '', content: 'TodoWrite requires a coordinator or sessionStorage context (issue #131).', is_error: true }
+      }
+      await storage.saveTodos(sessionId, todos)
     }
-
-    await storage.saveTodos(sessionId, todos)
 
     const formatted = formatTodos(todos)
     const warning = validationError ? `\n\nNote: ${validationError}` : ''
