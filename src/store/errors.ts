@@ -1,8 +1,37 @@
 /** v4 SessionStore 契约错误（issue #131 SPEC §3.2）。
- * SessionConflictError / SessionDataInvalidError 复用 v3（P3 退场时统一搬迁）。 */
-import { SessionDataInvalidError } from '../session-storage.js'
+ * SessionConflictError / SessionDataInvalidError 自 v3 搬迁至此（P3 退场统一收口）。 */
 
-export { SessionConflictError, SessionDataInvalidError } from '../session-storage.js'
+/** 乐观并发冲突（revision CAS / create-only）。 */
+export class SessionConflictError extends Error {
+  constructor(
+    public readonly sessionId: string,
+    public readonly expectedRevision: number | null,
+    public readonly actualRevision?: number,
+  ) {
+    super(
+      `Session conflict on ${sessionId}: expected ${
+        expectedRevision === null ? 'no existing session (create-only)' : `revision ${expectedRevision}`
+      }${actualRevision === undefined ? '' : `, found revision ${actualRevision}`}`,
+    )
+    this.name = 'SessionConflictError'
+  }
+}
+
+/** 会话数据形状非法（运行时校验）。 */
+export class SessionDataInvalidError extends Error {
+  constructor(public readonly sessionId: string, reason: string) {
+    super(`Invalid session data for ${sessionId}: ${reason}`)
+    this.name = 'SessionDataInvalidError'
+  }
+}
+
+/** resume/import 目标会话不存在。 */
+export class SessionNotFoundError extends Error {
+  constructor(public readonly sessionId: string) {
+    super(`Session not found: ${sessionId}`)
+    this.name = 'SessionNotFoundError'
+  }
+}
 
 /** fencing 校验失败（与 revision CAS 独立约束；P2 启用校验，P1 透传不校验）。 */
 export class WriteNotAuthorizedError extends Error {

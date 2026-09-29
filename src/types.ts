@@ -374,12 +374,7 @@ export interface ToolContext {
   /** Diagnostics sink surfaced to tools (#78) — subagent launchers forward
    *  it so child engines inherit the parent's diagnostics channel. */
   diagnostics?: import('./utils/diagnostics.js').DiagnosticsSink
-  /** Session-scoped storage for sidecars (issue #128): TodoWrite persists
-   *  through this backend instead of hardcoded files. Optional at the type
-   *  level — non-engine callers may omit it and get an explicit is_error
-   *  result (never a silent file fallback). */
-  sessionStorage?: import('./session-storage.js').SessionStorage
-  /** v4 SessionStore (issue #131 P3) — replaces sessionStorage when provided */
+  /** v4 SessionStore (issue #131 P3) — TodoWrite persists through the coordinator. */
   store?: import('./store/session-store.js').SessionStore
   /** v4 WriteCoordinator (issue #131 P3) — required for v4 write paths */
   coordinator?: import('./store/coordinator.js').WriteCoordinator
@@ -817,22 +812,13 @@ export interface AgentOptions {
   enableFileRevert?: boolean
   /** Timeout for snapshot git operations in milliseconds. Defaults to 5000. */
   snapshotTimeoutMs?: number
-  /** Custom session storage backend (issue #4). Defaults to the JSON-file backend. */
-  sessionStorage?: import('./session-storage.js').SessionStorage
-  /**
-   * Session persistence error mode (issue #4).
-   * - 'best-effort': save failures are logged and swallowed (pre-existing behavior)
-   * - 'strict': save failures / conflicts / missing resume sessions fail explicitly
-   * Defaults to 'strict' when `sessionStorage` is provided, else 'best-effort'.
-   */
-  sessionErrorMode?: 'best-effort' | 'strict'
   /**
    * Bounded wait for the close() checkpoint, in milliseconds (issue #4).
    * Default 5000. 0 = skip the close checkpoint entirely (no save issued).
    * NaN / Infinity / negative values throw TypeError at construction.
    */
   sessionCloseTimeoutMs?: number
-  /** v4 SessionStore (issue #131 P3) — replaces sessionStorage when provided */
+  /** v4 SessionStore (issue #131 P3) — persistence backend; without it the agent does not persist */
   store?: import('./store/session-store.js').SessionStore
   /** v4 WriteCoordinator (issue #131 P3) — defaults to one wrapping `store` */
   coordinator?: import('./store/coordinator.js').WriteCoordinator
@@ -1014,11 +1000,13 @@ export interface QueryEngineConfig {
   /** Session ID for hook context */
   sessionId?: string
   /**
-   * Session-scoped sidecar storage (issue #128): engine todo reads (per-turn
-   * reminder injection, terminal cleanup) go through this backend only —
-   * never hardcoded files. Required.
+   * v4 SessionStore (issue #131 P3): engine todo reads (per-turn reminder
+   * injection, terminal cleanup) go through this backend only — never
+   * hardcoded files. Optional — without it the engine skips todo features.
    */
-  sessionStorage: import('./session-storage.js').SessionStorage
+  store?: import('./store/session-store.js').SessionStore
+  /** v4 WriteCoordinator (issue #131 P3) — engine todo writes (terminal cleanup). */
+  coordinator?: import('./store/coordinator.js').WriteCoordinator
   /** Context window size in tokens for the model. Overrides auto-detection from model name. */
   contextWindow?: number
   /** Maximum request body size in bytes. Images are stripped from oldest messages when exceeded. */

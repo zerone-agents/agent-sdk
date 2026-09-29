@@ -60,14 +60,14 @@ export const TaskTool: ToolDefinition = {
       }
     }
 
-    // issue #128 (review P2): subagent sidecars (todos) must land in the
-    // session's storage — explicit failure, never a silent file fallback.
-    const sessionStorage = context.sessionStorage
-    if (!sessionStorage) {
+    // issue #131 P3: subagent sidecars (todos) persist through the v4 store —
+    // explicit failure, never a silent fallback.
+    const { store, coordinator } = context
+    if (!store || !coordinator) {
       return {
         type: 'tool_result',
         tool_use_id: toolUseId,
-        content: 'Error: Task requires a session storage context (missing sessionStorage).',
+        content: 'Error: Task requires store + coordinator context (issue #131).',
         is_error: true,
       }
     }
@@ -84,7 +84,8 @@ export const TaskTool: ToolDefinition = {
       taskIndex: 0,
       abortSignal: context.abortSignal,
       diagnostics: context.diagnostics, // #78: child inherits diagnostics
-      sessionStorage, // #128 (review P2): narrowed above — no silent fallback
+      store, // issue #131 P3: narrowed above — no silent fallback
+      coordinator,
       emitEvent: ctx.emitEvent
         ? (event) => ctx.emitEvent?.(event)
         : undefined,

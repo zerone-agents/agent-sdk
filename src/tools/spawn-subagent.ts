@@ -19,7 +19,8 @@ import type {
 import { QueryEngine } from '../engine.js'
 import { resolveAgent } from '../resolve-agent.js'
 import { resolvePrompt } from '../prompts/system-prompts.js'
-import type { SessionStorage } from '../session-storage.js'
+import type { SessionStore } from '../store/session-store.js'
+import type { WriteCoordinator } from '../store/coordinator.js'
 
 import type { DiagnosticsSink } from '../utils/diagnostics.js'
 
@@ -50,13 +51,14 @@ export interface SpawnSubagentOptions {
   /** #78: diagnostics sink inherited by the child engine as its logger. */
   diagnostics?: DiagnosticsSink
   /**
-   * issue #128: session storage inherited by the child engine — tools in the
-   * subagent (TodoWrite) persist sidecars through the SAME backend as the
-   * parent, isolated by the child's own sessionId. REQUIRED (review P2): no
-   * silent file-backend fallback — missing wiring must fail loudly. Public API
-   * breaking vs 3.8.0 for direct runSubagent callers.
+   * issue #131 P3: v4 SessionStore inherited by the child agent — the subagent
+   * (TodoWrite/checkpoints) persists through the SAME backend as the parent,
+   * isolated by the child's own sessionId. REQUIRED: no silent fallback —
+   * missing wiring must fail loudly.
    */
-  sessionStorage: SessionStorage
+  store: SessionStore
+  /** Optional shared coordinator (defaults to one wrapping `store` in the child). */
+  coordinator?: WriteCoordinator
 }
 
 export interface SubagentRun {
@@ -140,7 +142,8 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     canUseTool: async () => ({ behavior: 'allow' }),
     includePartialMessages: true,
     sessionId,
-    sessionStorage: opts.sessionStorage,
+    store: opts.store,
+    ...(opts.coordinator !== undefined ? { coordinator: opts.coordinator } : {}),
     abortSignal: opts.abortSignal,
     logger: opts.diagnostics, // #78: child inherits the diagnostics channel
   })

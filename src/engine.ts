@@ -64,7 +64,8 @@ import { executeTools as executeToolsFn } from './engine/tool-executor.js'
 import { formatTodosReminder, hasActiveTodos } from './tools/todowrite.js'
 import { createLogger, type Logger } from './utils/logger.js'
 import { adaptToDiagnosticsSink, type DiagnosticsSink } from './utils/diagnostics.js'
-import type { SessionStorage } from './session-storage.js'
+import type { SessionStore } from './store/session-store.js'
+import type { WriteCoordinator } from './store/coordinator.js'
 import type { TodoInfo } from './types.js'
 import { formatDurationMs, formatInputPreview, createTimer } from './utils/helpers.js'
 
@@ -157,7 +158,8 @@ export class QueryEngine {
   private snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   private _compactBoundaryId?: string
   private logger: Logger
-  private sessionStorage: SessionStorage
+  private store: SessionStore | null
+  private coordinator: WriteCoordinator | null
   private diagSink: DiagnosticsSink
 
   constructor(config: QueryEngineConfig, initialUsage?: { lastInputTokens?: number; lastOutputTokens?: number }) {
@@ -174,7 +176,8 @@ export class QueryEngine {
     this.hookRegistry = config.hookRegistry
     this.snapshotEngine = config.snapshotEngine
     this.logger = config.logger ?? createLogger('engine', { level: config.logLevel })
-    this.sessionStorage = config.sessionStorage
+    this.store = config.store ?? null
+    this.coordinator = config.coordinator ?? null
     this.diagSink = adaptToDiagnosticsSink(this.logger)
   }
 
@@ -315,17 +318,17 @@ export class QueryEngine {
     // once at the start of each new user query, NOT inside the per-turn loop, so
     // a list the model marks completed mid-query survives for in-query visibility
     // and is only cleared when the NEXT query begins. See issue #32.
-    if (this.config.sessionId) {
+    if (this.store && this.config.sessionId) {
       let todos: TodoInfo[] | null = null
       try {
-        todos = await this.sessionStorage.loadTodos(this.config.sessionId)
+        todos = await this.store.loadTodos(this.config.sessionId)
       } catch (err) {
         // Read failure: skip expiry — never clear or overwrite on failure.
         this.todoErr(err, 'load')
       }
-      if (todos && todos.length > 0 && !hasActiveTodos(todos)) {
+      if (todos && todos.length > 0 && !hasActiveTodos(todos) && this.coordinator) {
         try {
-          await this.sessionStorage.saveTodos(this.config.sessionId, [])
+          await this.coordinator.execute(this.config.sessionId, { kind: 'save-todos', todos: [] })
         } catch (err) {
           this.todoErr(err, 'save')
         }
@@ -402,9 +405,9 @@ export class QueryEngine {
       // start of this query (see the cleanup block before the agentic loop), so
       // any non-empty list here is either active work or a list the model itself
       // produced mid-query — both are useful in-query visibility.
-      if (this.config.sessionId) {
+      if (this.store && this.config.sessionId) {
         try {
-          const todos = await this.sessionStorage.loadTodos(this.config.sessionId)
+          const todos = await this.store.loadTodos(this.config.sessionId)
           if (todos.length > 0) {
             const reminder = formatTodosReminder(todos)
             apiMessages = [

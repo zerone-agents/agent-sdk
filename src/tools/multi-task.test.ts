@@ -7,7 +7,8 @@ import type {
   QueryEngineConfig,
 } from '../types.js'
 import { createEmptyServices } from './services.js'
-import { InMemorySessionStorage } from '../session-storage-fake.js'
+import { InMemorySessionStore } from '../store/in-memory.js'
+import { WriteCoordinator } from '../store/coordinator.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
 vi.mock('../engine.js', () => ({
@@ -78,6 +79,8 @@ function makeRuntime(): RuntimeEnvironment {
 }
 
 function makeContext(overrides: Partial<SubagentContext> = {}): SubagentContext {
+  const store = overrides.store ?? new InMemorySessionStore()
+  const coordinator = overrides.coordinator ?? new WriteCoordinator({ store })
   return {
     cwd: '/tmp',
     agentId: 'general',
@@ -85,8 +88,9 @@ function makeContext(overrides: Partial<SubagentContext> = {}): SubagentContext 
     subAgents: TEST_AGENTS,
     services: createEmptyServices(),
     subprocessEnv: {},
-    // issue #128: MultiTask requires a storage context — default in-memory in tests.
-    sessionStorage: new InMemorySessionStorage(),
+    // issue #131 P3: MultiTask requires store + coordinator — derived consistently.
+    store,
+    coordinator,
     ...overrides,
   }
 }
@@ -844,13 +848,13 @@ describe('todo storage threading (issue #128)', () => {
     })
   })
 
-  it('call() threads ctx.sessionStorage into the child engine config', async () => {
-    const storage = new InMemorySessionStorage()
+  it('call() threads ctx.store into the child engine config', async () => {
+    const store = new InMemorySessionStore()
     const result = await MultiTaskTool.call({
       tasks: [{ description: 'one', prompt: 'test', subagent_name: 'general' }],
-    }, makeContext({ sessionStorage: storage }))
+    }, makeContext({ store }))
     expect(result.is_error).toBeFalsy()
     const [config] = engineMock().mock.calls.at(-1)!
-    expect(config.sessionStorage).toBe(storage)
+    expect(config.store).toBe(store)
   })
 })

@@ -10,7 +10,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import type { AgentDefinition, RuntimeEnvironment } from '../types.js'
 import type { LLMProvider, StreamChunk } from '../providers/types.js'
-import { InMemorySessionStorage } from '../session-storage-fake.js'
+import { InMemorySessionStore } from '../store/in-memory.js'
+import { WriteCoordinator } from '../store/coordinator.js'
 import { createEmptyServices } from './services.js'
 import { runSubagent } from './spawn-subagent.js'
 
@@ -65,8 +66,9 @@ describe('subagent todo storage behavior (issue #128 review P2)', () => {
     const prevHome = process.env.HOME
     process.env.HOME = home
     try {
-      const storage = new InMemorySessionStorage()
-      await storage.saveTodos('parent-session', [{ content: 'parent task', status: 'pending', priority: 'high' }])
+      const store = new InMemorySessionStore()
+      const coordinator = new WriteCoordinator({ store })
+      await coordinator.execute('parent-session', { kind: 'save-todos', todos: [{ content: 'parent task', status: 'pending', priority: 'high' }] })
 
       const run = await runSubagent({
         runtime: makeRuntime(todoProvider()),
@@ -78,17 +80,18 @@ describe('subagent todo storage behavior (issue #128 review P2)', () => {
         description: 'integration',
         toolUseId: 'tu_outer',
         taskIndex: 0,
-        sessionStorage: storage,
+        store,
+        coordinator,
       })
 
       expect(run.status).toBe('completed')
       expect(run.sessionId).not.toBe('')
-      // Behavior: the child's TodoWrite call persisted through the shared storage.
-      expect(storage.todosStore.get(run.sessionId)).toEqual([
+      // Behavior: the child's TodoWrite call persisted through the shared store.
+      expect(await store.loadTodos(run.sessionId)).toEqual([
         { content: 'child task', status: 'pending', priority: 'high' },
       ])
       // Isolation: the parent session's todos are untouched.
-      expect(await storage.loadTodos('parent-session')).toEqual([
+      expect(await store.loadTodos('parent-session')).toEqual([
         { content: 'parent task', status: 'pending', priority: 'high' },
       ])
       // No file backend involvement (restricted HOME stays clean).

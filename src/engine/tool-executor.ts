@@ -73,7 +73,7 @@ export interface ToolPermissionResult {
 export interface ToolExecutionContext {
   config: Pick<
     QueryEngineConfig,
-    'runtime' | 'resolved' | 'subAgents' | 'canUseTool' | 'abortSignal' | 'agentId' | 'sessionStorage'
+    'runtime' | 'resolved' | 'subAgents' | 'canUseTool' | 'abortSignal' | 'agentId' | 'store' | 'coordinator'
   >
   messages: NormalizedMessageParam[]
   sessionId: string
@@ -308,8 +308,9 @@ export async function runToolsBackground(
     abortSignal: ctx.config.abortSignal,
     agentId: ctx.config.agentId,
     sessionId: ctx.sessionId,
-    // issue #128: tools (TodoWrite) persist sidecars through the same backend.
-    sessionStorage: ctx.config.sessionStorage,
+    // issue #131 P3: tools (TodoWrite) persist through the v4 coordinator.
+    store: ctx.config.store,
+    coordinator: ctx.config.coordinator,
     toolUseId: block.id,
     // Per-agent tool services (use provided or create empty)
     services: ctx.config.resolved.services,

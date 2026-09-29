@@ -9,10 +9,10 @@ import { vi } from 'vitest'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createEmptyServices } from './tools/services.js'
-import { getTodos, TodoWriteTool } from './tools/todowrite.js'
+import { TodoWriteTool } from './tools/todowrite.js'
 import { PRUNE_THRESHOLD_CHARS } from './utils/compact.js'
-import { FileSessionStorage, type SessionStorage } from './session-storage.js'
-import { InMemorySessionStorage } from './session-storage-fake.js'
+import { InMemorySessionStore } from './store/in-memory.js'
+import { WriteCoordinator } from './store/coordinator.js'
 import type { DiagnosticsSink } from './utils/diagnostics.js'
 
 // Mirrors the real @anthropic-ai/sdk APIConnectionError: a plain Error with
@@ -48,10 +48,9 @@ function makeConfig(provider: LLMProvider, tools: ToolDefinition[] = [], overrid
     includePartialMessages: true,
     agentId: 'test',
     maxStreamRetries: 1,
-    // issue #128: engine todo reads go through the injected backend. Default
-    // FileSessionStorage reads the same ~/.agents/sessions dir the legacy
-    // file-based todo tests seed — those stay green without edits.
-    sessionStorage: new FileSessionStorage(),
+    // issue #131 P3: engine todo reads go through the v4 store. Default fresh
+    // in-memory store = "no todos" for tests that don't seed one.
+    store: new InMemorySessionStore(),
     ...overrides,
   }
 }
@@ -889,22 +888,21 @@ describe('QueryEngine logging (issue #28)', () => {
 })
 
 describe('QueryEngine per-turn todos reminder injection', () => {
-  // Helper: seed todos.json for a given sessionId under the same dir the
-  // todowrite.ts loader uses (~/.agents/sessions/<sid>/todos.json).
-  async function seedTodos(sessionId: string, todos: any[]): Promise<void> {
-    const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
-    const dir = join(home, '.agents', 'sessions', sessionId)
-    await mkdir(dir, { recursive: true })
-    await writeFile(
-      join(dir, 'todos.json'),
-      JSON.stringify({ updatedAt: new Date().toISOString(), todos }),
-      'utf-8',
-    )
+  // Helper: seed todos into a fresh v4 store; returns store + coordinator for
+  // makeConfig injection (the SAME store instance the engine will read).
+  async function seedTodos(sessionId: string, todos: import('./types.js').TodoInfo[]): Promise<{
+    store: InMemorySessionStore
+    coordinator: WriteCoordinator
+  }> {
+    const store = new InMemorySessionStore()
+    const coordinator = new WriteCoordinator({ store })
+    await coordinator.execute(sessionId, { kind: 'save-todos', todos })
+    return { store, coordinator }
   }
 
   it('injects <system-reminder> at end of apiMessages when todos exist', async () => {
     const sid = 'engine-test-with-todos'
-    await seedTodos(sid, [
+    const { store, coordinator } = await seedTodos(sid, [
       { content: 'First task', status: 'in_progress', priority: 'high' },
       { content: 'Second task', status: 'pending', priority: 'medium' },
     ])
@@ -920,7 +918,7 @@ describe('QueryEngine per-turn todos reminder injection', () => {
       },
     }
 
-    const config = { ...makeConfig(provider), sessionId: sid }
+    const config = makeConfig(provider, [], { store, coordinator, sessionId: sid })
     await run(new QueryEngine(config))
 
     expect(captured).toBeDefined()
@@ -958,7 +956,7 @@ describe('QueryEngine per-turn todos reminder injection', () => {
 
   it('does NOT persist the reminder into engine.messages (ephemeral injection)', async () => {
     const sid = 'engine-test-persistence'
-    await seedTodos(sid, [
+    const { store, coordinator } = await seedTodos(sid, [
       { content: 'sticky task', status: 'in_progress', priority: 'high' },
     ])
 
@@ -971,7 +969,7 @@ describe('QueryEngine per-turn todos reminder injection', () => {
       },
     }
 
-    const engine = new QueryEngine({ ...makeConfig(provider), sessionId: sid })
+    const engine = new QueryEngine(makeConfig(provider, [], { store, coordinator, sessionId: sid }))
     await run(engine)
 
     // engine.getMessages() returns the persistent history — must NOT contain the reminder.
@@ -1009,13 +1007,13 @@ describe('QueryEngine per-turn todos reminder injection', () => {
 
   it('does NOT inject an all-completed TodoList into the next turn (issue #32)', async () => {
     const sid = 'engine-test-all-completed'
-    await seedTodos(sid, [
+    const { store, coordinator } = await seedTodos(sid, [
       { content: 'Implement change', status: 'completed', priority: 'high' },
       { content: 'Run tests', status: 'completed', priority: 'medium' },
     ])
     const { provider, getCaptured } = makeCapturingProvider()
 
-    await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+    await run(new QueryEngine(makeConfig(provider, [], { store, coordinator, sessionId: sid })))
 
     const content = lastMessageContent(getCaptured())
     expect(content).not.toContain('<system-reminder>')
@@ -1024,13 +1022,13 @@ describe('QueryEngine per-turn todos reminder injection', () => {
 
   it('does NOT inject a mixed completed + cancelled TodoList (all-terminal)', async () => {
     const sid = 'engine-test-completed-cancelled'
-    await seedTodos(sid, [
+    const { store, coordinator } = await seedTodos(sid, [
       { content: 'Done task', status: 'completed', priority: 'high' },
       { content: 'Abandoned task', status: 'cancelled', priority: 'low' },
     ])
     const { provider, getCaptured } = makeCapturingProvider()
 
-    await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+    await run(new QueryEngine(makeConfig(provider, [], { store, coordinator, sessionId: sid })))
 
     expect(lastMessageContent(getCaptured())).not.toContain('<system-reminder>')
   })
@@ -1039,11 +1037,11 @@ describe('QueryEngine per-turn todos reminder injection', () => {
     // pending-only
     {
       const sid = 'engine-test-pending-active'
-      await seedTodos(sid, [
+      const { store, coordinator } = await seedTodos(sid, [
         { content: 'Queued task', status: 'pending', priority: 'medium' },
       ])
       const { provider, getCaptured } = makeCapturingProvider()
-      await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+      await run(new QueryEngine(makeConfig(provider, [], { store, coordinator, sessionId: sid })))
       const content = lastMessageContent(getCaptured())
       expect(content).toContain('<system-reminder>')
       expect(content).toContain('1. Queued task [pending|medium]')
@@ -1051,48 +1049,48 @@ describe('QueryEngine per-turn todos reminder injection', () => {
     // in_progress-only
     {
       const sid = 'engine-test-inprogress-active'
-      await seedTodos(sid, [
+      const { store, coordinator } = await seedTodos(sid, [
         { content: 'Active task', status: 'in_progress', priority: 'high' },
       ])
       const { provider, getCaptured } = makeCapturingProvider()
-      await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+      await run(new QueryEngine(makeConfig(provider, [], { store, coordinator, sessionId: sid })))
       expect(lastMessageContent(getCaptured())).toContain('<system-reminder>')
     }
   })
 
   it('clears the terminal TodoList before the provider request is constructed', async () => {
     const sid = 'engine-test-cleanup-before-request'
-    await seedTodos(sid, [
+    const { store, coordinator } = await seedTodos(sid, [
       { content: 'Finished', status: 'completed', priority: 'high' },
     ])
     const { provider, getCaptured } = makeCapturingProvider()
 
-    await run(new QueryEngine({ ...makeConfig(provider), sessionId: sid }))
+    await run(new QueryEngine(makeConfig(provider, [], { store, coordinator, sessionId: sid })))
 
     // The provider received NO reminder — proving cleanup happened before request build,
     // not merely that the reminder was stripped afterwards.
     expect(lastMessageContent(getCaptured())).not.toContain('<system-reminder>')
     // And the persisted store is empty right after the run completes.
-    expect(await getTodos(sid)).toEqual([])
+    expect(await store.loadTodos(sid)).toEqual([])
   })
 
   it('leaves getTodos empty after clearing an all-terminal list (host consistency)', async () => {
     const sid = 'engine-test-gettodos-empty'
-    await seedTodos(sid, [
+    const { store, coordinator } = await seedTodos(sid, [
       { content: 'Task A', status: 'completed', priority: 'high' },
       { content: 'Task B', status: 'cancelled', priority: 'low' },
     ])
 
-    await run(new QueryEngine({ ...makeConfig(makeCapturingProvider().provider), sessionId: sid }))
+    await run(new QueryEngine(makeConfig(makeCapturingProvider().provider, [], { store, coordinator, sessionId: sid })))
 
-    const after = await getTodos(sid)
+    const after = await store.loadTodos(sid)
     expect(after).toEqual([])
   })
 
   it('list completed during query A survives until query B starts (lifecycle boundary, issue #32)', async () => {
     const sid = 'engine-test-multiquery-lifecycle'
     // Seed an ACTIVE list — query A start will NOT clear it.
-    await seedTodos(sid, [
+    const { store, coordinator } = await seedTodos(sid, [
       { content: 'Implement feature', status: 'in_progress', priority: 'high' },
     ])
 
@@ -1127,14 +1125,14 @@ describe('QueryEngine per-turn todos reminder injection', () => {
     }
 
     // TodoWriteTool is the real tool so the engine actually persists the list.
-    const engine = new QueryEngine({ ...makeConfig(provider, [TodoWriteTool]), sessionId: sid })
+    const engine = new QueryEngine(makeConfig(provider, [TodoWriteTool], { store, coordinator, sessionId: sid }))
 
     // --- Query A ---
     await run(engine)
 
     // SURVIVAL: the all-terminal list written during query A is still persisted.
     // Cleanup did NOT fire mid-query (only at the NEXT query's start).
-    const afterA = await getTodos(sid)
+    const afterA = await store.loadTodos(sid)
     expect(afterA).toHaveLength(1)
     expect(afterA[0].status).toBe('completed')
 
@@ -1146,7 +1144,7 @@ describe('QueryEngine per-turn todos reminder injection', () => {
     expect(lastMessageContent(capturedB)).not.toContain('Current task list:')
 
     // And the persisted store is now empty.
-    const afterB = await getTodos(sid)
+    const afterB = await store.loadTodos(sid)
     expect(afterB).toEqual([])
   })
 })
@@ -1694,38 +1692,38 @@ describe('engine todo wiring via injected storage (issue #128)', () => {
       },
     }
   }
-  function failingTodosStorage(err: Error): SessionStorage {
-    return {
-      load: async () => null,
-      save: async () => {},
-      loadTodos: async () => { throw err },
-      saveTodos: async () => {},
-    }
+  function failingTodosStore(err: Error): InMemorySessionStore {
+    const store = new InMemorySessionStore()
+    store.loadTodos = async (): Promise<never> => { throw err }
+    return store
   }
 
-  it('expires all-terminal todo list at query start through the injected storage', async () => {
+  it('expires all-terminal todo list at query start through the injected store', async () => {
     const sid = 'expire-s1'
-    const storage = new InMemorySessionStorage()
-    await storage.saveTodos(sid, [{ content: 'x', status: 'completed', priority: 'high' }])
-    await run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: storage, sessionId: sid })))
-    expect(storage.todosStore.get(sid)).toEqual([])          // cleared via storage — not files
+    const store = new InMemorySessionStore()
+    const coordinator = new WriteCoordinator({ store })
+    await coordinator.execute(sid, { kind: 'save-todos', todos: [{ content: 'x', status: 'completed', priority: 'high' }] })
+    await run(new QueryEngine(makeConfig(stubProvider(), [], { store, coordinator, sessionId: sid })))
+    expect(await store.loadTodos(sid)).toEqual([])          // cleared via coordinator — not files
   })
 
   it('does NOT clear a list with active items', async () => {
     const sid = 'active-s1'
-    const storage = new InMemorySessionStorage()
+    const store = new InMemorySessionStore()
+    const coordinator = new WriteCoordinator({ store })
     const keep = [{ content: 'a', status: 'in_progress' as const, priority: 'high' as const }]
-    await storage.saveTodos(sid, keep)
-    await run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: storage, sessionId: sid })))
-    expect(storage.todosStore.get(sid)).toEqual(keep)
+    await coordinator.execute(sid, { kind: 'save-todos', todos: keep })
+    await run(new QueryEngine(makeConfig(stubProvider(), [], { store, coordinator, sessionId: sid })))
+    expect(await store.loadTodos(sid)).toEqual(keep)
   })
 
-  it('injects active todos as <system-reminder> into the provider request via injected storage', async () => {
+  it('injects active todos as <system-reminder> into the provider request via injected store', async () => {
     const sid = 'reminder-s1'
-    const storage = new InMemorySessionStorage()
-    await storage.saveTodos(sid, [{ content: 'First task', status: 'in_progress', priority: 'high' }])
+    const store = new InMemorySessionStore()
+    const coordinator = new WriteCoordinator({ store })
+    await coordinator.execute(sid, { kind: 'save-todos', todos: [{ content: 'First task', status: 'in_progress', priority: 'high' }] })
     const captured: NormalizedMessageParam[] = []
-    await run(new QueryEngine(makeConfig(capturingStreamProvider(captured), [], { sessionStorage: storage, sessionId: sid })))
+    await run(new QueryEngine(makeConfig(capturingStreamProvider(captured), [], { store, coordinator, sessionId: sid })))
     const last = captured[captured.length - 1]
     expect(String(last.content)).toContain('Current task list:')
     expect(String(last.content)).toContain('First task')
@@ -1739,7 +1737,7 @@ describe('engine todo wiring via injected storage (issue #128)', () => {
       debug() {}, trace() {}, error() {}, child: () => sink,
       warn,
     }
-    await run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(err), sessionId: sid, logger: sink })))
+    await run(new QueryEngine(makeConfig(stubProvider(), [], { store: failingTodosStore(err), sessionId: sid, logger: sink })))
     expect(warn).toHaveBeenCalled()
     const a = warn.mock.calls[0]
     expect(String(a[0])).toContain('[session] todo')
@@ -1750,14 +1748,14 @@ describe('engine todo wiring via injected storage (issue #128)', () => {
   it('load failure: plain Logger degrades warn → error', async () => {
     const error = vi.fn()
     const logger: Logger = { debug() {}, trace() {}, error, child: () => logger }
-    await run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(new Error('boom')), sessionId: 'diag-s2', logger })))
+    await run(new QueryEngine(makeConfig(stubProvider(), [], { store: failingTodosStore(new Error('boom')), sessionId: 'diag-s2', logger })))
     expect(error).toHaveBeenCalled()
   })
 
   it('load failure: host logger throwing does NOT break the run', async () => {
     const logger: Logger = { debug() {}, trace() {}, error() { throw new Error('host logger blew up') }, child: () => logger }
     await expect(
-      run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(new Error('boom')), sessionId: 'diag-s3', logger }))),
+      run(new QueryEngine(makeConfig(stubProvider(), [], { store: failingTodosStore(new Error('boom')), sessionId: 'diag-s3', logger }))),
     ).resolves.toBeDefined()
   })
 
@@ -1765,7 +1763,7 @@ describe('engine todo wiring via injected storage (issue #128)', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
       await expect(
-        run(new QueryEngine(makeConfig(stubProvider(), [], { sessionStorage: failingTodosStorage(new Error('boom')), sessionId: 'diag-s4' }))),
+        run(new QueryEngine(makeConfig(stubProvider(), [], { store: failingTodosStore(new Error('boom')), sessionId: 'diag-s4' }))),
       ).resolves.toBeDefined()
       // Review P2: "no logger" must NOT be a silent path — the built-in logger
       // prints the degraded warn (via console.error) like any other diagnostic.

@@ -40,10 +40,9 @@ import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
 import { resolveTransportKind } from './mcp/client.js'
 import { adaptToDiagnosticsSink, createDiagnosticsSink, sanitizeLogField, stableErrorType, type DiagnosticsSink } from './utils/diagnostics.js'
-import { defaultSessionStorage, loadSessionFrom, saveSessionTo, SessionNotFoundError, type SaveOptions, type SessionStorage } from './session-storage.js'
 import { WriteCoordinator } from './store/coordinator.js'
 import { CommittedMessageIndex } from './store/index-map.js'
-import { SessionConflictError } from './store/errors.js'
+import { SessionConflictError, SessionNotFoundError } from './store/errors.js'
 import type { SessionMetadata } from './session.js'
 import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
@@ -134,10 +133,8 @@ interface SessionConfig {
   snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   enableFileRevert?: boolean
   snapshotTimeoutMs?: number
-  sessionStorage?: import('./session-storage.js').SessionStorage
-  sessionErrorMode?: 'best-effort' | 'strict'
   sessionCloseTimeoutMs?: number
-  /** v4 SessionStore (issue #131 P3) — replaces sessionStorage when provided */
+  /** v4 SessionStore (issue #131 P3) — persistence backend; without it the agent does not persist */
   store?: import('./store/session-store.js').SessionStore
   /** v4 WriteCoordinator (issue #131 P3) — defaults to one wrapping `store` */
   coordinator?: import('./store/coordinator.js').WriteCoordinator
@@ -236,8 +233,6 @@ export class Agent {
   private sink: DiagnosticsSink
   private lastInputTokens = 0
   private lastOutputTokens = 0
-  private storage: SessionStorage
-  private strict: boolean
   /** Optimistic-concurrency revision of the persisted session; null = not yet persisted (issue #4). */
   private sessionRevision: number | null = null
   /** Stable creation time: minted once at construction, overwritten on resume (issue #4). */
@@ -292,19 +287,6 @@ export class Agent {
         )
       }
     }
-    this.storage = this.cfg.sessionStorage ?? defaultSessionStorage
-    // issue #128: TodoWrite persists through this storage. TS enforces the todo
-    // primitives on custom implementations; this guards untyped (JS) consumers
-    // too — fail fast at construction, never silently fall back to files.
-    if (typeof this.storage.loadTodos !== 'function' || typeof this.storage.saveTodos !== 'function') {
-      throw new TypeError(
-        'SessionStorage must implement loadTodos and saveTodos (issue #128). ' +
-        'FileSessionStorage does; custom backends must add both methods for TodoWrite support.',
-      )
-    }
-    this.strict = this.cfg.sessionErrorMode === 'strict'
-      || (this.cfg.sessionErrorMode === undefined && this.cfg.sessionStorage !== undefined)
-
     // ── v4 SessionStore wiring (issue #131 P3) ──
     this.v4store = this.cfg.store ?? null
     this.v4coordinator = this.cfg.coordinator
@@ -650,41 +632,23 @@ export class Agent {
         this.v4Registered = true  // resume implies the session already exists (registered)
         // Resume from a resolved setup — clear engine compact tracking
         this.engineCompactRevision = undefined
-        return  // skip v3 resume logic
-      }
-
-      // ── v3 fallback (existing path — removed in T8) ──
-      const sessionData = await loadSessionFrom(this.storage, this.cfg.resume)
-      if (!sessionData && this.strict) {
-        // spec §7: strict resume must fail explicitly — a silent new session
-        // would leave the host's session mapping pointing at a dead ID.
-        throw new SessionNotFoundError(this.cfg.resume)
-      }
-      // best-effort default with a missing session: silent new session
-      // (pre-existing behavior).
-      if (sessionData) {
-        this.history = sessionData.messages
-        this.sid = this.cfg.resume
-        this.sessionCreatedAt = sessionData.metadata.createdAt
-        this.sessionRevision = sessionData.metadata.revision ?? 0
-        this.sessionTag = sessionData.metadata.tag
-        if (sessionData.metadata.lastInputTokens) {
-          this.lastInputTokens = sessionData.metadata.lastInputTokens
-        }
-        if (sessionData.metadata.lastOutputTokens) {
-          this.lastOutputTokens = sessionData.metadata.lastOutputTokens
-        }
         // issue #115: restore deferred activations into the session-owned
         // registry (unfiltered — availability is re-derived per turn by the
         // engine's activatedTools ∩ deferredTools intersection).
-        const activated = sessionData.metadata.activatedTools
+        const activated = state.metadata.activatedTools
         if (Array.isArray(activated)) {
           const registry = this.effectiveBaseServices().findTool
           for (const name of activated) {
             if (typeof name === 'string') registry.activatedTools.add(name)
           }
         }
+        return  // v4-only resume (v3 retired, issue #131 P3)
       }
+
+      // v3 retired (issue #131 P3): resume requires the v4 store — a silent
+      // fresh session would leave the host's session mapping pointing at a
+      // session that never resumes its history.
+      throw new TypeError('resume requires AgentOptions.store (v4 SessionStore, issue #131)')
     }
 
     // Auto-create SnapshotEngine if file revert is enabled (default: auto-detect git)
@@ -820,7 +784,8 @@ export class Agent {
       abortSignal: this.abortCtrl.signal,
       hookRegistry: this.hookRegistry,
       sessionId: this.sid,
-      sessionStorage: this.storage,
+      store: this.v4store ?? undefined,
+      coordinator: this.v4coordinator ?? undefined,
       contextWindow: opts.contextWindow,
       maxRequestBodyBytes: opts.maxRequestBodyBytes,
       maxSessionQueries: opts.maxSessionQueries,
@@ -1012,25 +977,11 @@ export class Agent {
     return [...this.history]
   }
 
-  /** Converged checkpoint metadata (issue #4): replaces the 4 former inline literals. */
-  private buildCheckpointMetadata(): Partial<SessionMetadata> {
-    return {
-      cwd: this.cfg.cwd || process.cwd(),
-      model: this.modelId,
-      provider: this.apiType,
-      createdAt: this.sessionCreatedAt,
-      tag: this.sessionTag,
-      lastInputTokens: this.lastInputTokens,
-      lastOutputTokens: this.lastOutputTokens,
-      activatedTools: this.activatedToolsSnapshot(),
-    }
-  }
-
   /**
-   * Persist the current history as a session checkpoint (issue #4).
-   * Best-effort mode: log + swallow (pre-existing semantics). Strict mode:
-   * CAS-guarded — save failures and conflicts propagate; query() masks
-   * behind any in-flight error.
+   * Persist the current history as a session checkpoint (v4, issue #131 P3):
+   * WriteCoordinator + CommittedMessageIndex incremental diff. Without a
+   * store the agent is ephemeral (no persistence). Conflicts propagate;
+   * query() masks behind any in-flight error.
    */
   private async persistCheckpoint(): Promise<void> {
     if (this.cfg.persistSession === false || this.history.length === 0) return
@@ -1073,26 +1024,18 @@ export class Agent {
       const receipt = await this.v4coordinator.execute(this.sid, {
         kind: 'checkpoint',
         expectedRevision: this.v4Revision === 0 ? null : this.v4Revision,
-        changeSet: { kind: 'checkpoint', branchId, newRecords, metadataPatch: {} },
+        changeSet: {
+          kind: 'checkpoint', branchId, newRecords,
+          // issue #115: activations ride every checkpoint (resume restores them)
+          metadataPatch: { activatedTools: this.activatedToolsSnapshot() },
+        },
       })
       this.v4Index.apply(newRecords)
       this.v4Revision = receipt.revision ?? this.v4Revision
-      this.sessionRevision = this.v4Revision  // keep v3 field in sync
+      this.sessionRevision = this.v4Revision
       return
     }
-
-    // ── v3 fallback (existing path — removed in T8) ──
-    if (!this.strict) {
-      try {
-        await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata())
-      } catch (err) {
-        this.sink.error('[session] checkpoint failed', { errorType: stableErrorType(err) }, err)
-      }
-      return
-    }
-    const opts: SaveOptions = { expectedRevision: this.sessionRevision }
-    await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata(), opts)
-    this.sessionRevision = (this.sessionRevision ?? 0) + 1
+    // v3 retired (issue #131 P3): no store → ephemeral agent (no persistence)
   }
 
   /**

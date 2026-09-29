@@ -4,7 +4,7 @@ import { WriteCoordinator } from './store/coordinator.js'
 import { CommittedMessageIndex } from './store/index-map.js'
 import { InMemorySessionStore } from './store/in-memory.js'
 import { prepareOperation } from './store/prepare.js'
-import { SessionConflictError, SessionNotFoundError } from './session-storage.js'
+import { SessionConflictError, SessionNotFoundError } from './store/errors.js'
 import type { AgentOptions, SDKMessage } from './types.js'
 import type { NormalizedMessageParam } from './providers/types.js'
 
