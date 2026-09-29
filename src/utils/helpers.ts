@@ -43,6 +43,16 @@ export function formatInputPreview(input: unknown, maxLength = 200): string {
 }
 
 /**
+ * Truncate so the RESULT never exceeds maxLen code units, appending '...'
+ * when truncation happens. (Shared home for the `slice(0, n-3) + '...'`
+ * idiom — keeps total length bounded, unlike formatInputPreview above.)
+ */
+export function ellipsize(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s
+  return `${s.slice(0, Math.max(0, maxLen - 3))}...`
+}
+
+/**
  * Keys whose values may carry credentials or other sensitive data.
  * Matching is case-insensitive and covers common spellings
  * (api_key / apiKey / api-key, access_token, etc.).

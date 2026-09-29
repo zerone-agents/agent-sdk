@@ -863,8 +863,13 @@ describe('description guidance (issue #137)', () => {
     const d = MultiTaskTool.description
     expect(d).toContain('single required field')
     expect(d).toContain('non-empty array')
-    expect(d).toContain('1-10')
-    expect(d).toContain('"tasks"')
+    // #138 review: the documented range must track inputSchema bounds, not a hardcoded copy
+    const tasks = MultiTaskTool.inputSchema.properties.tasks as { minItems: number; maxItems: number }
+    expect(d).toContain(`${tasks.minItems}-${tasks.maxItems}`)
+    // Strong JSON pins: tasks must be an array of objects carrying the required keys
+    expect(d).toContain('"tasks": [')
+    expect(d).toContain('"description":')
+    expect(d).toContain('"prompt":')
     // Pseudo-syntax example must be gone
     expect(d).not.toContain('tasks=[')
   })

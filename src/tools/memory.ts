@@ -27,6 +27,7 @@ import { MEMORY_IMPORTANCE_LABELS } from '../memory/render.js'
 import { MEMORY_SEARCH_DEFAULT_LIMIT, MEMORY_SEARCH_MAX_LIMIT } from '../memory/search.js'
 import type { MemoryRecord, MemoryReplaceChanges, MemoryScope } from '../memory/types.js'
 import type { MemoryService } from '../memory/service.js'
+import { ellipsize } from '../utils/helpers.js'
 
 const IMPORTANCE_BY_LABEL = { low: 25, medium: 50, high: 75, never_forget: 100 } as const
 type ImportanceLabel = keyof typeof IMPORTANCE_BY_LABEL
@@ -96,7 +97,7 @@ const TARGET_TO_SCOPE: Readonly<Record<string, MemoryScope>> = {
 /** One deterministic result line: id + scope + label + revision + status + preview. */
 function formatSearchResult(record: MemoryRecord): string {
   const label = MEMORY_IMPORTANCE_LABELS[record.importance]
-  const preview = record.content.length > 60 ? `${record.content.slice(0, 57)}...` : record.content
+  const preview = ellipsize(record.content, 60)
   return `[${record.id}] (${record.scope}, ${label}, rev ${record.revision}, ${record.status}) ${preview}`
 }
 

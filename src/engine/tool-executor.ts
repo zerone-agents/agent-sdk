@@ -30,7 +30,47 @@ import { AsyncQueue } from '../utils/async-queue.js'
 import type { HookRegistry } from '../hooks.js'
 import type { Logger } from '../utils/logger.js'
 import { adaptToDiagnosticsSink, stableErrorType } from '../utils/diagnostics.js'
-import { formatInputPreview, redactSensitiveFields } from '../utils/helpers.js'
+import { ellipsize, formatInputPreview, redactSensitiveFields } from '../utils/helpers.js'
+
+/**
+ * #137: render a compact expected-shape hint per missing field, derived from
+ * inputSchema.properties — so the model can fix the call in ONE retry.
+ * Constraints render independently (enum AND array bounds are never mutually
+ * exclusive); entries are `any`, so every access is defensive. Fields absent
+ * from properties are skipped gracefully (no hint line).
+ */
+export function renderExpectedShape(
+  missing: string[],
+  properties: Record<string, any> | undefined,
+): string[] {
+  return missing.flatMap((key) => {
+    const p = properties?.[key]
+    if (!p || typeof p !== 'object') return []
+    const type = typeof p.type === 'string' ? p.type : 'value'
+    let shape = `${key}: ${type}`
+    if (p.type === 'array') {
+      if (typeof p.minItems === 'number' && typeof p.maxItems === 'number') {
+        shape += ` (${p.minItems}-${p.maxItems} items)`
+      } else if (typeof p.minItems === 'number') {
+        shape += ` (>=${p.minItems} items)`
+      } else if (typeof p.maxItems === 'number') {
+        shape += ` (<=${p.maxItems} items)`
+      }
+    }
+    if (Array.isArray(p.enum) && p.enum.length > 0) {
+      shape += ` (${p.enum.map(String).join(' | ')})`
+    } else if (
+      p.type === 'array' && p.items && typeof p.items === 'object'
+      && Array.isArray(p.items.enum) && p.items.enum.length > 0
+    ) {
+      shape += ` (items: ${p.items.enum.map(String).join(' | ')})`
+    }
+    if (typeof p.description === 'string' && p.description.length > 0) {
+      shape += ` — ${ellipsize(p.description, 80)}`
+    }
+    return [`- ${shape}`]
+  })
+}
 
 // ============================================================================
 // Types
@@ -535,28 +575,7 @@ export async function executeSingleTool(
       }
       // #137: show the expected shape of each missing field (from
       // inputSchema.properties) so the model can fix the call in ONE retry.
-      const shapeHints = missing.flatMap((key) => {
-        const p = tool.inputSchema?.properties?.[key]
-        if (!p || typeof p !== 'object') return []
-        const type = typeof p.type === 'string' ? p.type : 'value'
-        let shape = `${key}: ${type}`
-        if (Array.isArray(p.enum) && p.enum.length > 0) {
-          shape += ` (${p.enum.map(String).join(' | ')})`
-        } else if (p.type === 'array') {
-          if (typeof p.minItems === 'number' && typeof p.maxItems === 'number') {
-            shape += ` (${p.minItems}-${p.maxItems} items)`
-          } else if (typeof p.minItems === 'number') {
-            shape += ` (>=${p.minItems} items)`
-          } else if (typeof p.maxItems === 'number') {
-            shape += ` (<=${p.maxItems} items)`
-          }
-        }
-        if (typeof p.description === 'string' && p.description.length > 0) {
-          const d = p.description.length > 80 ? `${p.description.slice(0, 77)}...` : p.description
-          shape += ` — ${d}`
-        }
-        return [`- ${shape}`]
-      })
+      const shapeHints = renderExpectedShape(missing, tool.inputSchema?.properties)
       const lines = [
         `Tool input validation failed for "${block.name}":`,
         `Missing required fields: ${missing.join(', ')}`,
