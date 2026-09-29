@@ -16,6 +16,7 @@ import {
 } from './tokens.js'
 import { isUserQuery } from './session-queries.js'
 import { normalizeCaughtError } from './diagnostics.js'
+import { truncateHeadPairSafe, truncateText } from './messages.js'
 
 export const PRUNE_PROTECTED_QUERIES = 4
 
@@ -175,7 +176,8 @@ const COMPACT_ERROR_MAX_LENGTH = 500
  * constant so a failed compaction ALWAYS carries a non-empty error.
  */
 function sanitizeCompactionError(err: unknown): string {
-  const message = normalizeCaughtError(err).message.trim().slice(0, COMPACT_ERROR_MAX_LENGTH)
+  // Pair-safe head cap (issue #133): never end on a split surrogate.
+  const message = truncateHeadPairSafe(normalizeCaughtError(err).message.trim(), COMPACT_ERROR_MAX_LENGTH)
   return message.length > 0 ? message : 'compaction provider call failed'
 }
 
@@ -419,11 +421,10 @@ function stripImagesFromMessages(
 
 /**
  * Truncate long text keeping both head and tail (middle elided).
+ * Surrogate-safe via truncateText (issue #133).
  */
 function truncateHeadTail(text: string, max: number): string {
-  if (text.length <= max) return text
-  const half = Math.floor(max / 2)
-  return text.slice(0, half) + '\n...(truncated)...\n' + text.slice(-half)
+  return truncateText(text, max)
 }
 
 /**
@@ -544,10 +545,8 @@ export function microCompactMessages(
 
           return {
             ...block,
-            content:
-              block.content.slice(0, maxToolResultChars / 2) +
-              '\n...(truncated)...\n' +
-              block.content.slice(-maxToolResultChars / 2),
+            // Pair-safe head/tail truncation (issue #133).
+            content: truncateText(block.content, maxToolResultChars),
           }
         }
       }

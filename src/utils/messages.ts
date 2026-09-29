@@ -187,9 +187,39 @@ export function createCompactBoundaryMessage(): { role: string; content: string 
 
 /**
  * Truncate text to max length with ellipsis.
+ *
+ * Surrogate-safe (issue #133): a cut boundary never lands inside a surrogate
+ * pair — a dangling HIGH surrogate at the head cut or LOW surrogate at the
+ * tail cut is dropped, so the result is always well-formed for well-formed
+ * input.
  */
 export function truncateText(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text
   const half = Math.floor(maxLength / 2)
-  return text.slice(0, half) + '\n...(truncated)...\n' + text.slice(-half)
+  let headEnd = half
+  if (headEnd > 0) {
+    const c = text.charCodeAt(headEnd - 1)
+    if (c >= 0xd800 && c <= 0xdbff) headEnd -= 1
+  }
+  let tailStart = text.length - half
+  if (tailStart < text.length) {
+    const c = text.charCodeAt(tailStart)
+    if (c >= 0xdc00 && c <= 0xdfff) tailStart += 1
+  }
+  return text.slice(0, headEnd) + '\n...(truncated)...\n' + text.slice(tailStart)
+}
+
+/**
+ * Truncate to at most maxLength code units keeping only the head — never
+ * ending inside a surrogate pair (a dangling HIGH surrogate at the cut is
+ * dropped). For strings bounded for display or error reporting.
+ */
+export function truncateHeadPairSafe(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text
+  let end = maxLength
+  if (end > 0) {
+    const c = text.charCodeAt(end - 1)
+    if (c >= 0xd800 && c <= 0xdbff) end -= 1
+  }
+  return text.slice(0, end)
 }
