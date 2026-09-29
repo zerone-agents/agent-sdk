@@ -533,18 +533,46 @@ export async function executeSingleTool(
           // Hook errors are non-fatal
         }
       }
+      // #137: show the expected shape of each missing field (from
+      // inputSchema.properties) so the model can fix the call in ONE retry.
+      const shapeHints = missing.flatMap((key) => {
+        const p = tool.inputSchema?.properties?.[key]
+        if (!p || typeof p !== 'object') return []
+        const type = typeof p.type === 'string' ? p.type : 'value'
+        let shape = `${key}: ${type}`
+        if (Array.isArray(p.enum) && p.enum.length > 0) {
+          shape += ` (${p.enum.map(String).join(' | ')})`
+        } else if (p.type === 'array') {
+          if (typeof p.minItems === 'number' && typeof p.maxItems === 'number') {
+            shape += ` (${p.minItems}-${p.maxItems} items)`
+          } else if (typeof p.minItems === 'number') {
+            shape += ` (>=${p.minItems} items)`
+          } else if (typeof p.maxItems === 'number') {
+            shape += ` (<=${p.maxItems} items)`
+          }
+        }
+        if (typeof p.description === 'string' && p.description.length > 0) {
+          const d = p.description.length > 80 ? `${p.description.slice(0, 77)}...` : p.description
+          shape += ` — ${d}`
+        }
+        return [`- ${shape}`]
+      })
+      const lines = [
+        `Tool input validation failed for "${block.name}":`,
+        `Missing required fields: ${missing.join(', ')}`,
+      ]
+      if (shapeHints.length > 0) lines.push('', 'Expected shape:', ...shapeHints)
+      lines.push(
+        '',
+        'Input was:',
+        JSON.stringify(block.input, null, 2).slice(0, 2000),
+        '',
+        'Please fix the input and try again.',
+      )
       return {
         type: 'tool_result',
         tool_use_id: block.id,
-        content: [
-          `Tool input validation failed for "${block.name}":`,
-          `Missing required fields: ${missing.join(', ')}`,
-          '',
-          'Input was:',
-          JSON.stringify(block.input, null, 2).slice(0, 2000),
-          '',
-          'Please fix the input and try again.',
-        ].join('\n'),
+        content: lines.join('\n'),
         is_error: true,
         tool_name: block.name,
       }

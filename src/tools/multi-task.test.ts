@@ -854,3 +854,18 @@ describe('todo storage threading (issue #128)', () => {
     expect(config.sessionStorage).toBe(storage)
   })
 })
+
+describe('description guidance (issue #137)', () => {
+  // Models anchored on the pseudo-syntax example ("tasks=[...]") emitted empty
+  // {} inputs; the description must show the actual JSON wire format and state
+  // the required shape explicitly.
+  it('shows the JSON wire format for tasks and states the required shape', () => {
+    const d = MultiTaskTool.description
+    expect(d).toContain('single required field')
+    expect(d).toContain('non-empty array')
+    expect(d).toContain('1-10')
+    expect(d).toContain('"tasks"')
+    // Pseudo-syntax example must be gone
+    expect(d).not.toContain('tasks=[')
+  })
+})

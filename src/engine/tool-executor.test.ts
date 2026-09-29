@@ -258,6 +258,54 @@ describe('executeSingleTool', () => {
     expect(result.content).toContain('Missing required fields: path')
   })
 
+  it('missing-field error includes an expected-shape hint from inputSchema (issue #137)', async () => {
+    const ctx = makeCtx()
+    const block = makeBlock({ id: 't1', name: 'test', input: {} })
+    const tool = makeTool({
+      name: 'test',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          tasks: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 10,
+            description: 'List of independent subtasks to run in parallel',
+          },
+          mode: {
+            type: 'string',
+            enum: ['Explore', 'General'],
+            description: 'Agent mode',
+          },
+        },
+        // 'ghost' is required but absent from properties — must not break rendering
+        required: ['tasks', 'mode', 'ghost'],
+      },
+    })
+
+    const result = await executeSingleTool(ctx, block, tool, {
+      cwd: '/test',
+      abortSignal: undefined,
+      agentId: 'test',
+      sessionId: 's1',
+      toolUseId: 't1',
+      resolvedSkills: [],
+      skillRegistry: undefined as any,
+      runtime: {} as any,
+      subAgents: {},
+      services: createEmptyServices(),
+      subprocessEnv: {},
+    })
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('Missing required fields: tasks, mode, ghost')
+    expect(result.content).toContain('Expected shape:')
+    expect(result.content).toContain('- tasks: array (1-10 items) — List of independent subtasks to run in parallel')
+    expect(result.content).toContain('- mode: string (Explore | General) — Agent mode')
+    // Fields without a properties entry get no hint line (graceful fallback)
+    expect(result.content).not.toContain('- ghost')
+  })
+
   it('returns tool result on success', async () => {
     const ctx = makeCtx()
     const block = makeBlock({ id: 't1', name: 'test', input: { path: '/tmp/x' } })

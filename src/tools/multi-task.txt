@@ -1,5 +1,7 @@
 Launch multiple subagents in parallel to handle independent subtasks in one tool call. Each subtask runs autonomously in its own isolated fresh context — it cannot see your conversation or other subtasks' work. Events stream back in real time with per-subtask metadata (task_index, task_description).
 
+Input is a single required field `tasks`: a non-empty array (1-10 items) of objects, each with `description` (3-5 words) and `prompt` (the detailed task), plus optional `subagent_type` and `subagent_name`. Always pass it as a JSON object — see the example below for the exact wire format.
+
 subagent_type (per subtask):
 - 'Explore': read-only. Can read files, search code, run non-mutating shell commands, fetch web content. For research and information gathering.
 - 'General': full capabilities including file editing and execution. For code changes.
@@ -15,14 +17,18 @@ Rules:
 4. Turn limit is inherited from the agent definition (maxTurns, default 10), same as the Task tool. maxTurnsHit=true means soft truncation — re-run with a more focused prompt.
 5. Result is plain markdown text: a summary section combining all completed subtask outputs (headed by each subtask's description), followed by a "Failed subtasks" list if any subtask failed or was aborted. Summarize for the user in your own words — do not forward the raw text verbatim.
 
-Example usage:
+Example usage (note the exact JSON input shape):
 
 <example>
 user: "Review the auth module for security issues and the database module for transaction bugs, then give me a combined report."
 assistant: I'll launch two Explore subagents in parallel.
-assistant: [MultiTask tasks=[
-  {description: "review-auth", subagent_type: "Explore", prompt: "Review src/auth/ for security vulnerabilities: auth bypass, session flaws, insecure password storage. Report each issue with file path, line, severity, suggested fix."},
-  {description: "review-db", subagent_type: "Explore", prompt: "Review src/db/ for transaction bugs: missing transactions, race conditions, SQL injection. Report each issue with file path, line, severity, suggested fix."}
-]]
+assistant: [MultiTask input:
+{
+  "tasks": [
+    {"description": "review-auth", "subagent_type": "Explore", "prompt": "Review src/auth/ for security vulnerabilities: auth bypass, session flaws, insecure password storage. Report each issue with file path, line, severity, suggested fix."},
+    {"description": "review-db", "subagent_type": "Explore", "prompt": "Review src/db/ for transaction bugs: missing transactions, race conditions, SQL injection. Report each issue with file path, line, severity, suggested fix."}
+  ]
+}
+]
 assistant: The auth review found 2 issues (1 high, 1 medium) and the db review found 3 (2 high, 1 low). Here's the combined report...
 </example>
