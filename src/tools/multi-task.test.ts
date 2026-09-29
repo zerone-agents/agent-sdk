@@ -854,3 +854,23 @@ describe('todo storage threading (issue #128)', () => {
     expect(config.sessionStorage).toBe(storage)
   })
 })
+
+describe('description guidance (issue #137)', () => {
+  // Models anchored on the pseudo-syntax example ("tasks=[...]") emitted empty
+  // {} inputs; the description must show the actual JSON wire format and state
+  // the required shape explicitly.
+  it('shows the JSON wire format for tasks and states the required shape', () => {
+    const d = MultiTaskTool.description
+    expect(d).toContain('single required field')
+    expect(d).toContain('non-empty array')
+    // #138 review: the documented range must track inputSchema bounds, not a hardcoded copy
+    const tasks = MultiTaskTool.inputSchema.properties.tasks as { minItems: number; maxItems: number }
+    expect(d).toContain(`${tasks.minItems}-${tasks.maxItems}`)
+    // Strong JSON pins: tasks must be an array of objects carrying the required keys
+    expect(d).toContain('"tasks": [')
+    expect(d).toContain('"description":')
+    expect(d).toContain('"prompt":')
+    // Pseudo-syntax example must be gone
+    expect(d).not.toContain('tasks=[')
+  })
+})

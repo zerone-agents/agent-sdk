@@ -12,6 +12,7 @@
 
 import type { ToolDefinition, ToolResult, ToolContext } from '../types.js'
 import { computeNextCronRun, cronToHuman, parseCronExpression } from '../cron/cron.js'
+import { ellipsize } from '../utils/helpers.js'
 
 function notInitializedResult(): ToolResult {
   return {
@@ -27,7 +28,7 @@ function errorResult(message: string): ToolResult {
 }
 
 function formatPrompt(prompt: string): string {
-  return prompt.length > 80 ? `${prompt.slice(0, 77)}...` : prompt
+  return ellipsize(prompt, 80)
 }
 
 /** Resolve the per-agent cron service from the tool context (ADR 0005). */

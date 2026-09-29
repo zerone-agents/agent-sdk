@@ -90,6 +90,24 @@ function makeCtx(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionCo
   }
 }
 
+/** #138 review: shared factory for the executeSingleTool execution-context arg. */
+function makeExecContext(overrides: Record<string, unknown> = {}) {
+  return {
+    cwd: '/test',
+    abortSignal: undefined,
+    agentId: 'test',
+    sessionId: 's1',
+    toolUseId: 't1',
+    resolvedSkills: [],
+    skillRegistry: undefined as any,
+    runtime: {} as any,
+    subAgents: {},
+    services: createEmptyServices(),
+    subprocessEnv: {},
+    ...overrides,
+  }
+}
+
 // ============================================================================
 // executeSingleTool
 // ============================================================================
@@ -123,19 +141,7 @@ describe('executeSingleTool', () => {
     const block = makeBlock({ id: 't1', name: 'test', input: 'not-json' })
     const tool = makeTool({ name: 'test' })
 
-    const result = await executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('not valid JSON')
@@ -146,19 +152,7 @@ describe('executeSingleTool', () => {
     const block = makeBlock({ id: 't1', name: 'test' })
     const tool = makeTool({ name: 'test', isEnabled: () => false })
 
-    const result = await executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('not enabled')
@@ -174,19 +168,7 @@ describe('executeSingleTool', () => {
     const block = makeBlock({ id: 't1', name: 'test' })
     const tool = makeTool({ name: 'test' })
 
-    const result = await executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('Nope')
@@ -210,19 +192,7 @@ describe('executeSingleTool', () => {
     const block = makeBlock({ id: 't1', name: 'test', input: { original: true } })
     const tool = makeTool({ name: 'test', call: callFn })
 
-    await executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    await executeSingleTool(ctx, block, tool, makeExecContext())
 
     // Tool should be called with the updated input, not the original
     expect(callFn).toHaveBeenCalledWith({ modified: true }, expect.anything())
@@ -240,22 +210,55 @@ describe('executeSingleTool', () => {
       },
     })
 
-    const result = await executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('Missing required fields: path')
+  })
+
+  it('missing-field error includes an expected-shape hint from inputSchema (issue #137)', async () => {
+    const ctx = makeCtx()
+    const block = makeBlock({ id: 't1', name: 'test', input: {} })
+    const tool = makeTool({
+      name: 'test',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          tasks: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 10,
+            description: 'List of independent subtasks to run in parallel',
+          },
+          mode: {
+            type: 'string',
+            enum: ['Explore', 'General'],
+            description: 'Agent mode',
+          },
+          flags: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 3,
+            items: { enum: ['a', 'b'] },
+            description: 'Flag list',
+          },
+        },
+        // 'ghost' is required but absent from properties — must not break rendering
+        required: ['tasks', 'mode', 'ghost', 'flags'],
+      },
+    })
+
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('Missing required fields: tasks, mode, ghost, flags')
+    expect(result.content).toContain('Expected shape:')
+    expect(result.content).toContain('- tasks: array (1-10 items) — List of independent subtasks to run in parallel')
+    expect(result.content).toContain('- mode: string (Explore | General) — Agent mode')
+    // #138 review: array bounds and enum constraints are NOT mutually exclusive
+    expect(result.content).toContain('- flags: array (1-3 items) (items: a | b) — Flag list')
+    // Fields without a properties entry get no hint line (graceful fallback)
+    expect(result.content).not.toContain('- ghost')
   })
 
   it('returns tool result on success', async () => {
@@ -270,19 +273,7 @@ describe('executeSingleTool', () => {
       }),
     })
 
-    const result = await executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBeFalsy()
     expect(result.content).toBe('file contents')
@@ -298,19 +289,7 @@ describe('executeSingleTool', () => {
       call: vi.fn().mockRejectedValue(new Error('boom')),
     })
 
-    const result = await executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('boom')
@@ -326,19 +305,7 @@ describe('executeSingleTool', () => {
     const block = makeBlock({ id: 't1', name: 'test' })
     const tool = makeTool({ name: 'test' })
 
-    const result = await executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBe(true)
     expect(result.content).toContain('Permission check error')
@@ -666,19 +633,7 @@ describe('executeSingleTool logging security', () => {
     const ctx = makeCtx({ logger })
     const block = makeBlock({ id: 't1', name: 'Bash', input })
     const tool = makeTool({ name: 'Bash' })
-    return executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    return executeSingleTool(ctx, block, tool, makeExecContext())
   }
 
   it('default debug level is silent — tool metadata moved to trace', async () => {
@@ -706,19 +661,7 @@ describe('executeSingleTool logging security', () => {
       name: 'Bash',
       call: vi.fn().mockRejectedValue(new Error('boom')),
     })
-    await executeSingleTool(ctx, block, tool, {
-      cwd: '/test',
-      abortSignal: undefined,
-      agentId: 'test',
-      sessionId: 's1',
-      toolUseId: 't1',
-      resolvedSkills: [],
-      skillRegistry: undefined as any,
-      runtime: {} as any,
-      subAgents: {},
-      services: createEmptyServices(),
-      subprocessEnv: {},
-    })
+    await executeSingleTool(ctx, block, tool, makeExecContext())
 
     const allLogged = [...calls.debug, ...calls.trace, ...calls.error].join('\n')
     expect(allLogged).not.toContain(SECRET)
