@@ -11,6 +11,16 @@ The conversation-history unit has always conceptually been a **query**. Any exis
 
 Reserve **turn** strictly for LLM loop iterations. Do NOT introduce or retain `…Turn(s)` identifiers for the conversation-history unit. Identifiers such as `maxTurns` remain correct when they count provider-loop iterations rather than conversation queries.
 
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues (via `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at repo root (created lazily). See `docs/agents/domain.md`.
+
 ## Release Process
 
 Publishing: push tag `sdk-vX.Y.Z` on `main` → `ci-publish.yml` runs `npm publish` automatically.
