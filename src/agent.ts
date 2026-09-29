@@ -42,8 +42,9 @@ import { resolveTransportKind } from './mcp/client.js'
 import { adaptToDiagnosticsSink, createDiagnosticsSink, sanitizeLogField, stableErrorType, type DiagnosticsSink } from './utils/diagnostics.js'
 import { WriteCoordinator } from './store/coordinator.js'
 import { CommittedMessageIndex } from './store/index-map.js'
+import { prepareOperation } from './store/prepare.js'
 import { planCompact } from './store/plan.js'
-import type { NewRecord, SessionOwnership } from './store/types.js'
+import type { NewRecord, SessionOwnership, MessageRecord, PreparedOperation } from './store/types.js'
 import { SessionConflictError, SessionNotFoundError, SessionCloseTimeoutError } from './store/errors.js'
 import type { SessionMetadata } from './session.js'
 import { SnapshotEngine } from './snapshot/index.js'
@@ -252,6 +253,8 @@ export class Agent {
   private rootSessionId = ''
   private engineCompactRevision?: number
   private v4Registered = false
+  /** R16：在途 checkpoint prepared——close 超时时作为恢复句柄暴露（query/retry 同一操作）。 */
+  private inFlightCheckpointPrepared?: PreparedOperation
 
   /** Per-agent skill registry: defaultRegistry (programmatic) as base + own filesystem overlay. */
   readonly skillRegistry = new SkillRegistry(defaultRegistry)
@@ -855,12 +858,15 @@ export class Agent {
       this.lastOutputTokens = engineState.lastOutputTokens
 
       try {
-        // 评审 R1：引擎自动压缩的原文快照 → §4.2 compact 原子提交（先于普通 checkpoint；
-        // 兼容缺该方法的旧引擎 mock）
-        const preCompact = typeof engine.consumePreCompactCapture === 'function'
-          ? engine.consumePreCompactCapture()
-          : undefined
-        if (preCompact !== undefined) await this.commitCompactOperation(preCompact)
+        // 评审 R1/R12：引擎全部自动压缩的原文快照 → 依次提交 §4.2 compact 操作
+        // （post = 下一快照 ?? 当前 history——不依长度猜测；兼容缺该方法的旧引擎 mock）
+        const captures = typeof engine.consumePreCompactCaptures === 'function'
+          ? engine.consumePreCompactCaptures()
+          : []
+        for (let idx = 0; idx < captures.length; idx++) {
+          const postState = captures[idx + 1] ?? this.history
+          await this.commitCompactOperation(captures[idx]!, postState)
+        }
         await this.persistCheckpoint()
       } catch (saveErr) {
         if (inFlightError) {
@@ -991,16 +997,18 @@ export class Agent {
   }
 
   /**
-   * v4 §4.2（评审 R1）：压缩原子提交——pending 原文 + summary 以**一个 compact 操作**
-   * 落库（planCompact 构造；coordinator 提交）。成功后推进 v4Revision /
-   * engineCompactRevision（own-compact 识别回执）并更新索引；失败传播。
-   * post 形状：[summary-user, summary-assistant, ...kept]（compactMessagesStream 约定）。
+   * v4 §4.2（评审 R1/R11/R12）：压缩原子提交——pending 原文 + summary 以**一个 compact
+   * 操作**落库（planCompact 构造；coordinator 提交）。pre/post 由压缩发生点显式提供
+   * （不依长度猜测）。covers 展开自旧 context（§2.2 单层——多轮压缩不把旧摘要装入新
+   * covers）；双头 summary 均为 summary 记录（synthetic summary-user 不进有效用户历史）。
    */
-  private async commitCompactOperation(pre: readonly NormalizedMessageParam[]): Promise<void> {
+  private async commitCompactOperation(
+    pre: readonly NormalizedMessageParam[],
+    post: readonly NormalizedMessageParam[],
+  ): Promise<void> {
     if (this.cfg.persistSession === false) return
     if (!this.v4store || !this.v4coordinator) return
-    const post = this.history
-    if (post.length < 3 || post.length >= pre.length) return   // 未实际压缩 → 无操作
+    if (post.length < 3) return   // 形状下限：[summary-user, summary-assistant, ...kept]
     // 与 persistCheckpoint 相同的登记/索引前提
     if (!this.v4Registered) {
       await this.v4coordinator.execute(this.sid, {
@@ -1030,28 +1038,43 @@ export class Agent {
       ? await this.v4store.loadRecords(this.sid, branch.records)
       : []
     const committedRid = new Map<string, string>()
+    const recordMap = new Map<string, MessageRecord>()
     for (const r of records) {
-      if (r !== null) committedRid.set(r.messageId, r.recordId)
+      if (r !== null) {
+        committedRid.set(r.messageId, r.recordId)
+        recordMap.set(r.recordId, r)
+      }
     }
     const mid = (m: NormalizedMessageParam): string | undefined => (m as { id?: string }).id
     const head = post.slice(0, 2)   // [summary-user, summary-assistant]
     const kept = post.slice(2)
     const keptIds = new Set(kept.map((m) => mid(m) ?? '\u0000'))
-    const covered = pre.filter((m) => !keptIds.has(mid(m) ?? '\u0000'))
-    // pending = 未提交的 covered 原文 + 未提交的 kept 尾部（单次提交原子落库）
+    // 评审 R11：covers 展开自**旧 context**（§2.2 单层）——records 段直取；summary
+    // 段展开至其 covers 原文（多轮 compact 不把旧摘要装入新 covers；revise 原文可失效）
     const pendingRecords: NewRecord[] = []
     const coveredRids: string[] = []
-    for (const m of covered) {
+    const coveredMid = new Set<string>()
+    if (branch !== undefined) {
+      for (const seg of branch.context.segments) {
+        const rids = seg.kind === 'records' ? seg.recordIds : seg.covers.recordIds
+        for (const rid of rids) {
+          const r = recordMap.get(rid)
+          if (!r) continue
+          if (keptIds.has(r.messageId) || coveredMid.has(r.messageId)) continue
+          coveredMid.add(r.messageId)
+          coveredRids.push(rid)
+        }
+      }
+    }
+    // pending：内存 pre 中未提交、未保留、未覆盖的原文（首检前/本 query 新增）
+    for (const m of pre) {
       const id = mid(m)
       if (id === undefined) continue
-      const rid = committedRid.get(id)
-      if (rid !== undefined) {
-        coveredRids.push(rid)
-      } else {
-        const nr: NewRecord = { recordId: crypto.randomUUID(), message: m, actor: { kind: 'main' } }
-        pendingRecords.push(nr)
-        coveredRids.push(nr.recordId)
-      }
+      if (keptIds.has(id) || coveredMid.has(id) || committedRid.has(id)) continue
+      const nr: NewRecord = { recordId: crypto.randomUUID(), message: m, actor: { kind: 'main' } }
+      pendingRecords.push(nr)
+      coveredRids.push(nr.recordId)
+      coveredMid.add(id)
     }
     const keptRids: string[] = []
     for (const m of kept) {
@@ -1066,9 +1089,9 @@ export class Agent {
         keptRids.push(nr.recordId)
       }
     }
-    // 双头 summary：user 进完整历史（普通记录，UI 视图可见）；assistant 是 §4.2
-    // 的 summary 记录（kind:'summary'——折叠排除 effective，经 context 段渲染）
-    pendingRecords.push({ recordId: crypto.randomUUID(), message: head[0]!, actor: { kind: 'sdk' } })
+    // 双头 summary：均为 kind:'summary'（评审 R11：synthetic summary-user 不进有效
+    // 用户历史；两者均入 records/索引——resume 后不重复提交）
+    pendingRecords.push({ recordId: crypto.randomUUID(), message: head[0]!, actor: { kind: 'sdk' }, kind: 'summary' })
     const summaryRecord: NewRecord = { recordId: crypto.randomUUID(), message: head[1]!, actor: { kind: 'sdk' }, kind: 'summary' }
     const changeSet = planCompact({
       branchId,
@@ -1132,7 +1155,10 @@ export class Agent {
       }))
       if (newRecords.length === 0) return  // no change — skip
       const branchId = state?.currentBranchId ?? 'b1'
-      const receipt = await this.v4coordinator.execute(this.sid, {
+      // R16：Agent 侧 prepare——operationId 先于 dispatch 可知；close 超时可暴露
+      // prepared 供宿主 query/retry 恢复同一操作。经 coordinator.retry 派发
+      //（与 execute 相同的 dispatch 路径；auth 于 dispatch 注入、指纹不含 auth）。
+      const prepared = prepareOperation(this.sid, {
         kind: 'checkpoint',
         // §8.3：create-only 由 store 侧按转录存在性判定（checkCas hasTranscript）；
         // 恒发数值 premise——register 建行 revision=0 匹配，导入 initialRevision=0
@@ -1143,6 +1169,10 @@ export class Agent {
           // issue #115: activations ride every checkpoint (resume restores them)
           metadataPatch: { activatedTools: this.activatedToolsSnapshot() },
         },
+      })
+      this.inFlightCheckpointPrepared = prepared
+      const receipt = await this.v4coordinator.retry(this.sid, prepared).finally(() => {
+        this.inFlightCheckpointPrepared = undefined
       })
       this.v4Index.apply(newRecords)
       this.v4Revision = receipt.revision ?? this.v4Revision
@@ -1212,8 +1242,10 @@ export class Agent {
       // Leave history unchanged on failure; skip PostCompact
     }
 
-    // 评审 R1：§4.2 压缩原子提交（pending 原文 + summary 一个 compact 操作）——先于普通 checkpoint
-    if (pre !== undefined) await this.commitCompactOperation(pre)
+    // 评审 R1/R12：§4.2 压缩原子提交（仅实际压缩时；post 显式传入——不猜测）
+    if (pre !== undefined && this.history.length < pre.length) {
+      await this.commitCompactOperation(pre, this.history)
+    }
     await this.persistCheckpoint()
   }
 
@@ -1390,7 +1422,10 @@ export class Agent {
     // 先 query 回执再决定重试，不盲目重发）。
     let timerHandle: ReturnType<typeof setTimeout> | undefined
     const timer = new Promise<never>((_, reject) => {
-      timerHandle = setTimeout(() => reject(new SessionCloseTimeoutError(this.sid, timeoutMs)), timeoutMs)
+      timerHandle = setTimeout(
+        () => reject(new SessionCloseTimeoutError(this.sid, timeoutMs, this.inFlightCheckpointPrepared)),
+        timeoutMs,
+      )
     })
     const checkpoint = this.persistCheckpoint()
     try {

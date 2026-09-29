@@ -21,7 +21,7 @@ import { resolveAgent } from '../resolve-agent.js'
 import { resolvePrompt } from '../prompts/system-prompts.js'
 import type { SessionStore } from '../store/session-store.js'
 import type { WriteCoordinator } from '../store/coordinator.js'
-import type { SessionOwnership } from '../store/types.js'
+import type { SessionOwnership, NewRecord } from '../store/types.js'
 
 import type { DiagnosticsSink } from '../utils/diagnostics.js'
 
@@ -84,6 +84,24 @@ export function buildSubagentSystemPrompt(
 ): string {
   const base = resolvePrompt(definition.prompt) ?? FALLBACK_PROMPT
   return mode === 'Explore' ? base + '\n' + EXPLORE_RESTRICTION_PROMPT : base
+}
+
+/**
+ * R2/R18：父链预登记（幂等）+ 子 ownership 构造——Task/MultiTask 共用。
+ * 集中派生协议（root 不变、parent = 直接父、toolUseId 锚定派生点），防协议分叉。
+ */
+export async function prepareChildOwnership(
+  context: { agentId: string; ownership?: SessionOwnership },
+  toolUseId: string,
+  coordinator: WriteCoordinator,
+): Promise<SessionOwnership> {
+  const parentOwnership = context.ownership ?? { rootSessionId: context.agentId }
+  await coordinator.execute(context.agentId, { kind: 'register', ownership: parentOwnership })
+  return {
+    rootSessionId: parentOwnership.rootSessionId,
+    parentSessionId: context.agentId,
+    parentToolUseId: toolUseId,
+  }
 }
 
 export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentRun> {
@@ -161,8 +179,57 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     logger: opts.diagnostics, // #78: child inherits the diagnostics channel
   })
 
+  /**
+   * R13（§2.3）：终态提交子会话转录——成功/失败/取消均按契约进入同一后端
+   *（预登记 ownership ≠ transcript 落库；此前裸引擎零正文字节）。
+   */
+  const persistChildTranscript = async (): Promise<void> => {
+    if (!opts.coordinator) return
+    const messages = typeof engine.getMessages === 'function' ? engine.getMessages() : []
+    if (messages.length === 0) return
+    let state = await opts.store.loadSession(sessionId)
+    if (!state) {
+      // 未预登记（直接调用未传 ownership）→ 自登记为自身 root
+      await opts.coordinator.execute(sessionId, {
+        kind: 'register',
+        ownership: { rootSessionId: sessionId },
+      })
+      state = await opts.store.loadSession(sessionId)
+    }
+    if (!state) return
+    const branch = state.branches.find((b) => b.branchId === state!.currentBranchId)
+    const newRecords: NewRecord[] = messages.map((m) => ({
+      recordId: crypto.randomUUID(),
+      message: m,
+      actor: { kind: 'sdk' },
+    }))
+    await opts.coordinator.execute(sessionId, {
+      kind: 'checkpoint',
+      expectedRevision: state.revision,
+      changeSet: {
+        kind: 'checkpoint',
+        branchId: branch?.branchId ?? state.currentBranchId ?? 'b1',
+        newRecords,
+        metadataPatch: {},
+      },
+    })
+  }
+
   // subtask_completed is emitted exactly once for every post-spawn terminal state.
-  const finish = (r: SubagentRun): SubagentRun => {
+  const finish = async (r: SubagentRun): Promise<SubagentRun> => {
+    let outcome = r
+    try {
+      await persistChildTranscript()
+    } catch (err) {
+      // R13：正文必须入库——已完成运行的落库失败视为失败（不静默）；失败/取消保留原错误
+      if (outcome.status === 'completed') {
+        outcome = {
+          ...outcome,
+          status: 'failed',
+          error: `Subagent transcript persistence failed: ${String(err)}`,
+        }
+      }
+    }
     opts.emitEvent?.({
       type: 'subagent',
       parent_tool_use_id: opts.toolUseId,
@@ -171,14 +238,14 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
       task_description: opts.description,
       event: {
         type: 'subtask_completed',
-        status: r.status,
-        output: r.output,
-        error: r.error,
-        toolsUsed: r.toolsUsed,
-        maxTurnsHit: r.maxTurnsHit,
+        status: outcome.status,
+        output: outcome.output,
+        error: outcome.error,
+        toolsUsed: outcome.toolsUsed,
+        maxTurnsHit: outcome.maxTurnsHit,
       },
     })
-    return r
+    return outcome
   }
 
   const toolCalls = new Set<string>()

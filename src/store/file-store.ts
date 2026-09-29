@@ -124,6 +124,10 @@ export class FileSessionStore extends InMemorySessionStore {
     return this.readThrough(() => super.queryOperation(...args))
   }
 
+  override async listSessions(...args: Parameters<InMemorySessionStore['listSessions']>): ReturnType<InMemorySessionStore['listSessions']> {
+    return this.readThrough(() => super.listSessions(...args))
+  }
+
   // ── 写路径：统一事务（reload → 快照 → super → flush；失败回滚）──
 
   override async commit(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): ReturnType<InMemorySessionStore['commit']> {

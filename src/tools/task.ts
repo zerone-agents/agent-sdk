@@ -1,5 +1,5 @@
 import type { ToolDefinition, ToolContext, ToolResult, SubagentContext } from '../types.js'
-import { runSubagent } from './spawn-subagent.js'
+import { runSubagent, prepareChildOwnership } from './spawn-subagent.js'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -71,15 +71,8 @@ export const TaskTool: ToolDefinition = {
         is_error: true,
       }
     }
-    // R2（§2.3）：父链预登记（幂等）——Task 在父首个 checkpoint 前运行，父可能未登记
-    const parentOwnership = context.ownership ?? { rootSessionId: context.agentId }
-    await coordinator.execute(context.agentId, { kind: 'register', ownership: parentOwnership })
-    // R2：子 ownership——root 不变、parent = 直接父、toolUseId 锚定派生点
-    const childOwnership = {
-      rootSessionId: parentOwnership.rootSessionId,
-      parentSessionId: context.agentId,
-      parentToolUseId: toolUseId,
-    }
+    // R2/R18：父链预登记（幂等）+ 子 ownership 构造——集中 helper（防协议分叉）
+    const childOwnership = await prepareChildOwnership(context, toolUseId, coordinator)
 
     const run = await runSubagent({
       runtime: ctx.runtime,

@@ -157,8 +157,8 @@ export class QueryEngine {
   private hookRegistry?: HookRegistry
   private snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   private _compactBoundaryId?: string
-  /** 评审 R1：最近一次压缩前的消息快照（query 结束由 Agent 消费，提交 §4.2 compact 操作）。 */
-  private preCompactCapture?: NormalizedMessageParam[]
+  /** 评审 R1/R12：压缩前消息快照列表（每次实际压缩点压入；query 结束由 Agent 依次消费）。 */
+  private readonly preCompactCaptures: NormalizedMessageParam[][] = []
   private logger: Logger
   private store: SessionStore | null
   private coordinator: WriteCoordinator | null
@@ -587,7 +587,12 @@ export class QueryEngine {
               this.messages as any[],
               this.compactState,
             )
-            this.messages = result.compactedMessages as NormalizedMessageParam[]
+            // 评审 R12：prompt-too-long 压缩同样冻结压缩前快照（首检前原文不丢）
+            const compacted = result.compactedMessages as NormalizedMessageParam[]
+            if (compacted.length < this.messages.length) {
+              this.preCompactCaptures.push(this.messages)
+            }
+            this.messages = compacted
             this.compactState = result.state
             // All messages were summarized — nothing to revert to
             this._compactBoundaryId = undefined
@@ -857,10 +862,9 @@ export class QueryEngine {
       while (true) {
         const next = await gen.next()
         if (next.done) {
-          // 评审 R1：实际发生压缩（消息数减少）→ 捕获压缩前原文，供 Agent 在
-          // query 收尾时以一个 compact 操作原子提交（pending 原文 + summary）。
+          // 评审 R1/R12：实际发生压缩 → 捕获压缩前原文（列表——同 query 多次压缩不丢失）。
           if (next.value.messages.length < this.messages.length) {
-            this.preCompactCapture = this.messages
+            this.preCompactCaptures.push(this.messages)
           }
           this.messages = next.value.messages
           this.compactState = next.value.state
@@ -881,11 +885,9 @@ export class QueryEngine {
     }
   }
 
-  /** 消费压缩前消息快照（一次性——取后即清；未压缩返回 undefined）。 */
-  consumePreCompactCapture(): NormalizedMessageParam[] | undefined {
-    const pre = this.preCompactCapture
-    this.preCompactCapture = undefined
-    return pre
+  /** 消费全部压缩前快照（一次性——取后即清；无压缩返回空数组）。 */
+  consumePreCompactCaptures(): NormalizedMessageParam[][] {
+    return this.preCompactCaptures.splice(0, this.preCompactCaptures.length)
   }
 
   /**

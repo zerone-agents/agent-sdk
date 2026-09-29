@@ -234,4 +234,20 @@ describe('FileSessionStore transactional semantics (review R4-R6)', () => {
     const c = new FileSessionStore({ dir })
     expect(await c.loadSession('s1')).not.toBeNull()
   })
+
+  it('review R17: listSessions read-through — fresh and existing instances see disk sessions', async () => {
+    const dir = await tmpDir()
+    const a = new FileSessionStore({ dir })
+    const coordA = new WriteCoordinator({ store: a })
+    await coordA.execute('s1', ckpt(null, [rec('r1', 'm1', 'x')]))
+    // Fresh instance: previously [] despite a disk-persisted session
+    const b = new FileSessionStore({ dir })
+    const listB = await b.listSessions?.()
+    expect(listB?.map((m) => m.id)).toContain('s1')
+    // Existing (already-hydrated) instance sees another instance's later write
+    await b.loadSession('s1')   // hydrate B
+    await coordA.execute('s2', ckpt(null, [rec('r2', 'm2', 'y')]))   // A writes s2
+    const listB2 = await b.listSessions?.()
+    expect(listB2?.map((m) => m.id)).toContain('s2')
+  })
 })

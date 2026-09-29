@@ -1773,3 +1773,74 @@ describe('engine todo wiring via injected storage (issue #128)', () => {
     }
   })
 })
+
+describe('compact capture for store commits (review R12)', () => {
+  it('prompt-too-long compaction freezes the pre-compact snapshot (real engine path)', async () => {
+    let streamCalls = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage(): Promise<CreateMessageResponse> {
+        // compactConversation's summary request
+        return { content: [{ type: 'text', text: 'THE SUMMARY' }] } as unknown as CreateMessageResponse
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        streamCalls++
+        if (streamCalls === 1) {
+          throw { status: 400, error: { error: { message: 'prompt is too long' } } }
+        }
+        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider, [], { sessionId: 'r12-long' }))
+    ;(engine as any).messages.push(
+      { role: 'user', id: 'p1', content: 'old query' },
+      { role: 'assistant', id: 'p2', content: 'old answer' },
+    )
+    for await (const _ev of engine.submitMessage('hi')) { /* drain */ }
+    const captures = engine.consumePreCompactCaptures()
+    expect(captures).toHaveLength(1)
+    // Frozen artifact = the PRE-compact messages (original query preserved)
+    expect(captures[0]!.some((m) => (m as { id?: string }).id === 'p1')).toBe(true)
+    // Consumed once — cleared afterwards
+    expect(engine.consumePreCompactCaptures()).toHaveLength(0)
+  })
+
+  it('multi-compact across queries accumulates INDEPENDENT artifacts (list, not single slot)', async () => {
+    let streams = 0
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage(): Promise<CreateMessageResponse> {
+        return { content: [{ type: 'text', text: 'SUMMARY' }] } as unknown as CreateMessageResponse
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        streams++
+        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+    const engine = new QueryEngine(makeConfig(provider, [], { sessionId: 'r12-multi', maxSessionQueries: 2 }))
+    // Seed > maxSessionQueries queries → the query-limit compact fires (compaction #1)
+    ;(engine as any).messages.push(
+      { role: 'user', id: 'q1', content: 'query one' }, { role: 'assistant', id: 'a1', content: 'ans' },
+      { role: 'user', id: 'q2', content: 'query two' }, { role: 'assistant', id: 'a2', content: 'ans' },
+      { role: 'user', id: 'q3', content: 'query three' }, { role: 'assistant', id: 'a3', content: 'ans' },
+    )
+    for await (const _ev of engine.submitMessage('hi')) { /* drain */ }
+    const afterFirst = engine.consumePreCompactCaptures()
+    expect(afterFirst).toHaveLength(1)
+    expect(afterFirst[0]!.some((m) => (m as { id?: string }).id === 'q1')).toBe(true)
+    // Second query over the limit again → compaction #2 (would OVERWRITE a single slot)
+    ;(engine as any).messages.push(
+      { role: 'user', id: 'q4', content: 'query four' }, { role: 'assistant', id: 'a4', content: 'ans' },
+      { role: 'user', id: 'q5', content: 'query five' }, { role: 'assistant', id: 'a5', content: 'ans' },
+      { role: 'user', id: 'q6', content: 'query six' }, { role: 'assistant', id: 'a6', content: 'ans' },
+    )
+    for await (const _ev of engine.submitMessage('again')) { /* drain */ }
+    const captures = engine.consumePreCompactCaptures()
+    expect(captures).toHaveLength(1)   // #2's artifact — independent, not merged
+    // Artifact #2 starts from the post-#1 state: q1 already summarized away
+    expect(captures[0]!.some((m) => (m as { id?: string }).id === 'q1')).toBe(false)
+    expect(captures[0]!.some((m) => (m as { id?: string }).id === 'q4')).toBe(true)
+  })
+})

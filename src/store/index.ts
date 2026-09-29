@@ -83,5 +83,5 @@ export { FileSessionStore } from './file-store.js'
 export type { FileSessionStoreOptions } from './file-store.js'
 export type { StoreSnapshot } from './in-memory.js'
 
-export { importLegacySession } from './import.js'
-export type { ImportReport, ImportLegacyOptions } from './import.js'
+export { importLegacySession, importLegacyArchive } from './import.js'
+export type { ImportReport, ImportArchiveReport, ImportLegacyOptions } from './import.js'

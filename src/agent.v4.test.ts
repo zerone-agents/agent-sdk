@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Agent } from './agent.js'
 import { WriteCoordinator } from './store/coordinator.js'
+import { createSessionManagerV2 } from './store/session-manager.js'
 import { CommittedMessageIndex } from './store/index-map.js'
 import { InMemorySessionStore } from './store/in-memory.js'
 import { prepareOperation } from './store/prepare.js'
 import { SessionConflictError, SessionNotFoundError, SessionCloseTimeoutError } from './store/errors.js'
 import type { AgentOptions, SDKMessage } from './types.js'
 import type { NormalizedMessageParam } from './providers/types.js'
+import type { PreparedOperation } from './store/types.js'
 
 const msg = (mid: string, text = 'x'): NormalizedMessageParam =>
   ({ id: mid, role: 'user', content: text }) as NormalizedMessageParam
@@ -16,7 +18,7 @@ interface AgentInternals {
   setupDone: Promise<void>
   history: NormalizedMessageParam[]
   persistCheckpoint(): Promise<void>
-  commitCompactOperation(pre: readonly NormalizedMessageParam[]): Promise<void>
+  commitCompactOperation(pre: readonly NormalizedMessageParam[], post: readonly NormalizedMessageParam[]): Promise<void>
   sessionRevision: number
   engineCompactRevision?: number
   rootSessionId: string
@@ -261,7 +263,7 @@ describe('Agent on v4 SessionStore (issue #131, P3 T3)', () => {
     // Simulate engine auto-compact: pre → post [summaryUser, summaryAssistant, kept m4]
     const pre = [...i.history]
     i.history = [msg('sum-u', 'summarize this'), msg('sum-a', 'summary of one-two-three'), msg('m4', 'four')]
-    await i.commitCompactOperation(pre)
+    await i.commitCompactOperation(pre, i.history)
     // Compact op advanced the revision; own-compact receipt wired
     expect(i.sessionRevision).toBe(rev1 + 1)
     expect(i.engineCompactRevision).toBe(rev1 + 1)
@@ -287,7 +289,7 @@ describe('Agent on v4 SessionStore (issue #131, P3 T3)', () => {
     // 5 messages in memory, NOTHING committed yet — compact fires first
     const pre = [msg('m1', 'a'), msg('m2', 'b'), msg('m3', 'c'), msg('m4', 'd'), msg('m5', 'e')]
     i.history = [msg('sum-u', 'summarize'), msg('sum-a', 'the summary'), msg('m4', 'd'), msg('m5', 'e')]
-    await i.commitCompactOperation(pre)
+    await i.commitCompactOperation(pre, i.history)
     const state = await store.loadSession(i.sid)
     expect(state).not.toBeNull()
     const branch = state!.branches.find((b) => b.branchId === state!.currentBranchId)!
@@ -302,6 +304,84 @@ describe('Agent on v4 SessionStore (issue #131, P3 T3)', () => {
     // Model context: [summary, m4, m5]
     const msgs = await store.loadContext(i.sid, branch.branchId)
     expect(msgs.map((m) => (m as { id?: string }).id)).toEqual(['sum-a', 'm4', 'm5'])
+  })
+
+  it('review R16: close timeout exposes the in-flight prepared; recovery reuses the SAME operation', async () => {
+    const store = new InMemorySessionStore()
+    const originalCommit = store.commit.bind(store)
+    let release!: () => void
+    const gate = new Promise<void>((res) => { release = res })
+    let gateUsed = false
+    ;(store as unknown as { commit: unknown }).commit = async (
+      sid: string,
+      prepared: PreparedOperation,
+      opts?: unknown,
+    ) => {
+      if (!gateUsed && prepared.kind === 'checkpoint') {
+        gateUsed = true
+        await gate   // hold the checkpoint past the close timeout
+      }
+      return originalCommit(sid, prepared, opts as never)
+    }
+    const agent = new Agent(base({ store, sessionCloseTimeoutMs: 50 }))
+    const i = internals(agent)
+    i.history = [msg('m1', 'bye')]
+    let caught: SessionCloseTimeoutError | undefined
+    try {
+      await agent.close()
+    } catch (e) {
+      caught = e as SessionCloseTimeoutError
+    }
+    expect(caught).toBeInstanceOf(SessionCloseTimeoutError)
+    // Recovery handle: the in-flight checkpoint prepared (operationId known BEFORE dispatch)
+    expect(caught!.prepared).toBeDefined()
+    const opId = caught!.prepared!.operationId
+    // Release the gate → the SAME operation lands in the background; host queries it
+    release()
+    await new Promise((r) => setTimeout(r, 30))
+    const q = await new WriteCoordinator({ store }).query(i.sid, opId)
+    expect(q).not.toBeNull()
+    expect(q!.operationId).toBe(opId)
+  })
+
+  it('review R11: multi-round compact covers expand to ORIGINALS (no old-summary in new covers)', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    const agent = new Agent(base({ store, coordinator: coord }))
+    const i = internals(agent)
+    // Round 0: commit a..f
+    i.history = [msg('a', '1'), msg('b', '2'), msg('c', '3'), msg('d', '4'), msg('e', '5'), msg('f', '6')]
+    await i.persistCheckpoint()
+    // Round 1 compact: [a..f] → [u1, s1, d, e, f]
+    const pre1 = [...i.history]
+    i.history = [msg('u1', 'sum1-u'), msg('s1', 'sum1-a'), msg('d', '4'), msg('e', '5'), msg('f', '6')]
+    await i.commitCompactOperation(pre1, i.history)
+    // Round 2 compact: [u1,s1,d,e,f] → [u2, s2, f]
+    const pre2 = [...i.history]
+    i.history = [msg('u2', 'sum2-u'), msg('s2', 'sum2-a'), msg('f', '6')]
+    await i.commitCompactOperation(pre2, i.history)
+    // Round-2 summary covers the ORIGINALS a..e — not u1/s1/d/e (§2.2 单层展开)
+    const state = await store.loadSession(i.sid)
+    const branch = state!.branches.find((b) => b.branchId === state!.currentBranchId)!
+    const summarySeg = branch.context.segments.find((s) => s.kind === 'summary')
+    expect(summarySeg).toBeDefined()
+    if (summarySeg?.kind !== 'summary') return
+    const records = await store.loadRecords(i.sid, branch.records)
+    const midOf = new Map(records.filter((r) => r !== null).map((r) => [r!.recordId, r!.messageId]))
+    const coveredMids = summarySeg.covers.recordIds.map((rid) => midOf.get(rid)).sort()
+    expect(coveredMids).toEqual(['a', 'b', 'c', 'd', 'e'])
+    // Synthetic summary-users never enter effective user history (§4.2)
+    const effectiveMids = branch.effective.map((rid) => midOf.get(rid))
+    expect(effectiveMids).not.toContain('u1')
+    expect(effectiveMids).not.toContain('u2')
+    // Model context: [s2, f]
+    const ctx = await store.loadContext(i.sid, branch.branchId)
+    expect(ctx.map((m) => (m as { id?: string }).id)).toEqual(['s2', 'f'])
+    // revise(a) can now invalidate s2 (§2.2: covers only reference message records)
+    const mgr = createSessionManagerV2({ store, coordinator: coord })
+    await mgr.revise(i.sid, 'a', 'REVISED-A')
+    const ctxAfter = await mgr.getMessages(i.sid)
+    expect(ctxAfter.map((m) => (m as { id?: string }).id)).toContain('a')
   })
 })
 

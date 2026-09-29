@@ -86,6 +86,11 @@ describe('subagent todo storage behavior (issue #128 review P2)', () => {
 
       expect(run.status).toBe('completed')
       expect(run.sessionId).not.toBe('')
+      // R13: child transcript actually persisted (register ≠ transcript)
+      const childState = await store.loadSession(run.sessionId)
+      expect(childState).not.toBeNull()
+      const childBranch = childState!.branches.find((b) => b.branchId === childState!.currentBranchId)
+      expect(childBranch?.records.length ?? 0).toBeGreaterThan(0)
       // Behavior: the child's TodoWrite call persisted through the shared store.
       expect(await store.loadTodos(run.sessionId)).toEqual([
         { content: 'child task', status: 'pending', priority: 'high' },

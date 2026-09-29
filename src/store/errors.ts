@@ -1,5 +1,6 @@
 /** v4 SessionStore 契约错误（issue #131 SPEC §3.2）。
  * SessionConflictError / SessionDataInvalidError 自 v3 搬迁至此（P3 退场统一收口）。 */
+import type { PreparedOperation } from './types.js'
 
 /** 乐观并发冲突（revision CAS / create-only）。 */
 export class SessionConflictError extends Error {
@@ -33,15 +34,24 @@ export class SessionNotFoundError extends Error {
   }
 }
 
-/** close() 等待落盘超时——写入结果未知（可能仍在后台完成；先 query 再重试）。§8.2 */
+/** close() 等待落盘超时——§8.2（评审 R16）：携带在途 prepared 作恢复句柄。 */
 export class SessionCloseTimeoutError extends Error {
   constructor(
     public readonly sessionId: string,
     public readonly timeoutMs: number,
+    /**
+     * 超时时在途的 prepared（若有）——宿主以 `coordinator.query(operationId)` 判定结果；
+     * 未提交则以 `retry(prepared)` 恢复**同一操作**（不清 pending 直到判定）。
+     * undefined = 尚未 prepare（写入未开始——可直接重试关闭）。
+     */
+    public readonly prepared?: PreparedOperation,
   ) {
     super(
-      `close checkpoint timed out after ${timeoutMs}ms on ${sessionId}: outcome unknown — `
-      + 'the write may still land; query the coordinator before retrying',
+      `close checkpoint timed out after ${timeoutMs}ms on ${sessionId}: `
+      + (prepared !== undefined
+        ? `outcome unknown for operation ${prepared.operationId} — query the coordinator, `
+          + 'then retry the same prepared if not committed'
+        : 'no operation was in flight yet (not prepared) — safe to retry close'),
     )
     this.name = 'SessionCloseTimeoutError'
   }
