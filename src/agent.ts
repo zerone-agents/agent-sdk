@@ -41,6 +41,9 @@ import { isSdkServerConfig } from './sdk-mcp-server.js'
 import { resolveTransportKind } from './mcp/client.js'
 import { adaptToDiagnosticsSink, createDiagnosticsSink, sanitizeLogField, stableErrorType, type DiagnosticsSink } from './utils/diagnostics.js'
 import { defaultSessionStorage, loadSessionFrom, saveSessionTo, SessionNotFoundError, type SaveOptions, type SessionStorage } from './session-storage.js'
+import { WriteCoordinator } from './store/coordinator.js'
+import { CommittedMessageIndex } from './store/index-map.js'
+import { SessionConflictError } from './store/errors.js'
 import type { SessionMetadata } from './session.js'
 import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
@@ -134,6 +137,12 @@ interface SessionConfig {
   sessionStorage?: import('./session-storage.js').SessionStorage
   sessionErrorMode?: 'best-effort' | 'strict'
   sessionCloseTimeoutMs?: number
+  /** v4 SessionStore (issue #131 P3) — replaces sessionStorage when provided */
+  store?: import('./store/session-store.js').SessionStore
+  /** v4 WriteCoordinator (issue #131 P3) — defaults to one wrapping `store` */
+  coordinator?: import('./store/coordinator.js').WriteCoordinator
+  /** v4 ownership (issue #131 P3) — background agents must set rootSessionId explicitly */
+  ownership?: { rootSessionId: string }
 }
 
 /** Permission and access control */
@@ -236,6 +245,15 @@ export class Agent {
   /** Stable session tag: captured on resume, preserved by every checkpoint (issue #4 review). */
   private sessionTag?: string | null
 
+  // ── v4 SessionStore fields (issue #131 P3) ──
+  private v4store: import('./store/session-store.js').SessionStore | null = null
+  private v4coordinator: import('./store/coordinator.js').WriteCoordinator | null = null
+  private v4Index: import('./store/index-map.js').CommittedMessageIndex | null = null
+  private v4Revision = 0
+  private rootSessionId = ''
+  private engineCompactRevision?: number
+  private v4Registered = false
+
   /** Per-agent skill registry: defaultRegistry (programmatic) as base + own filesystem overlay. */
   readonly skillRegistry = new SkillRegistry(defaultRegistry)
 
@@ -286,6 +304,16 @@ export class Agent {
     }
     this.strict = this.cfg.sessionErrorMode === 'strict'
       || (this.cfg.sessionErrorMode === undefined && this.cfg.sessionStorage !== undefined)
+
+    // ── v4 SessionStore wiring (issue #131 P3) ──
+    this.v4store = this.cfg.store ?? null
+    this.v4coordinator = this.cfg.coordinator
+      ?? (this.v4store ? new WriteCoordinator({ store: this.v4store }) : null)
+    this.v4Index = null  // built on first write or resume
+    this.v4Revision = 0
+    this.rootSessionId = this.cfg.ownership?.rootSessionId ?? this.sid
+    this.engineCompactRevision = undefined
+
     this.sessionCreatedAt = new Date().toISOString()
 
     // Resolve API type
@@ -608,6 +636,24 @@ export class Agent {
 
     // Resume or continue session
     if (this.cfg.resume) {
+      // ── v4 path (issue #131 P3) ──
+      if (this.v4store && this.v4coordinator) {
+        const state = await this.v4store.loadSession(this.cfg.resume)
+        if (!state) {
+          throw new SessionNotFoundError(this.cfg.resume)
+        }
+        this.sid = this.cfg.resume
+        this.history = await this.v4store.loadContext(this.sid, state.currentBranchId)
+        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId)
+        this.v4Revision = state.revision
+        this.sessionRevision = state.revision
+        this.v4Registered = true  // resume implies the session already exists (registered)
+        // Resume from a resolved setup — clear engine compact tracking
+        this.engineCompactRevision = undefined
+        return  // skip v3 resume logic
+      }
+
+      // ── v3 fallback (existing path — removed in T8) ──
       const sessionData = await loadSessionFrom(this.storage, this.cfg.resume)
       if (!sessionData && this.strict) {
         // spec §7: strict resume must fail explicitly — a silent new session
@@ -988,6 +1034,54 @@ export class Agent {
    */
   private async persistCheckpoint(): Promise<void> {
     if (this.cfg.persistSession === false || this.history.length === 0) return
+
+    // ── v4 path (issue #131 P3): WriteCoordinator + CommittedMessageIndex ──
+    if (this.v4store && this.v4coordinator) {
+      // Self-register before first write (spec §2.3)
+      if (!this.v4Registered) {
+        await this.v4coordinator.execute(this.sid, {
+          kind: 'register',
+          ownership: { rootSessionId: this.rootSessionId },
+        })
+        this.v4Registered = true
+      }
+      // Build index on first use or after compact
+      if (!this.v4Index) {
+        const state = await this.v4store.loadSession(this.sid)
+        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state?.currentBranchId ?? 'b1')
+      }
+      // syncBeforeCheckpoint: detect external modifications → throw on conflict
+      const state = await this.v4store.loadSession(this.sid)
+      if (state && state.revision !== this.v4Revision) {
+        const isOwnCompact = this.engineCompactRevision === state.revision
+        if (isOwnCompact) {
+          this.v4Revision = state.revision
+          this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId)
+        } else {
+          // External modification: throw — do NOT auto-reload (would silently drop pending content)
+          throw new SessionConflictError(this.sid, this.v4Revision, state.revision)
+        }
+      }
+      // Incremental diff → only new records
+      const newRecords = this.v4Index.diff(this.history, (message) => ({
+        recordId: crypto.randomUUID(),
+        message,
+        actor: { kind: 'main' },
+      }))
+      if (newRecords.length === 0) return  // no change — skip
+      const branchId = state?.currentBranchId ?? 'b1'
+      const receipt = await this.v4coordinator.execute(this.sid, {
+        kind: 'checkpoint',
+        expectedRevision: this.v4Revision === 0 ? null : this.v4Revision,
+        changeSet: { kind: 'checkpoint', branchId, newRecords, metadataPatch: {} },
+      })
+      this.v4Index.apply(newRecords)
+      this.v4Revision = receipt.revision ?? this.v4Revision
+      this.sessionRevision = this.v4Revision  // keep v3 field in sync
+      return
+    }
+
+    // ── v3 fallback (existing path — removed in T8) ──
     if (!this.strict) {
       try {
         await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata())

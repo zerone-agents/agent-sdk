@@ -828,6 +828,12 @@ export interface AgentOptions {
    * NaN / Infinity / negative values throw TypeError at construction.
    */
   sessionCloseTimeoutMs?: number
+  /** v4 SessionStore (issue #131 P3) — replaces sessionStorage when provided */
+  store?: import('./store/session-store.js').SessionStore
+  /** v4 WriteCoordinator (issue #131 P3) — defaults to one wrapping `store` */
+  coordinator?: import('./store/coordinator.js').WriteCoordinator
+  /** v4 ownership (issue #131 P3) — background agents must set rootSessionId explicitly */
+  ownership?: { rootSessionId: string }
 
   // ===========================================================================
   // === PermissionConfig === (5 fields)
