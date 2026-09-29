@@ -198,6 +198,10 @@ export function applyChangeSet(sessionId: string, data: StoreData, changeSet: Ch
       Object.assign(data.state.metadata, changeSet.metadata)
       data.state.metadata.messageCount = branch.effective.length
       data.state.updatedAt = meta.committedAt
+      // 导入 todos 原子落库（issue #131 P3 T7：会话与 todos 单次提交内一致）
+      if (changeSet.todos !== undefined) {
+        data.todos = structuredClone(changeSet.todos)
+      }
       return data
     }
     default: {

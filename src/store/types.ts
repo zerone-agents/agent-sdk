@@ -113,7 +113,7 @@ export type ChangeSet =
   | { kind: 'fork'; newSessionId: string; source: { sessionId: string; branchId: string }; sourceRevision: number; records: string[]; effective: string[]; context: ContextRef; metadata: Partial<SessionMetadata>; ownership: SessionOwnership }
   | { kind: 'append'; branchId: string; newRecords: NewRecord[]; contextAppend: boolean }
   | { kind: 'revise'; branchId: string; messageId: string; newRecord: NewRecord; contextUpdate: ContextRef }
-  | { kind: 'import'; branchId: string; newRecords: NewRecord[]; effective: string[]; context: ContextRef; metadata: Partial<SessionMetadata>; ownership: SessionOwnership; initialRevision?: number }
+  | { kind: 'import'; branchId: string; newRecords: NewRecord[]; effective: string[]; context: ContextRef; metadata: Partial<SessionMetadata>; ownership: SessionOwnership; initialRevision?: number; todos?: TodoInfo[] }
 
 // ============================================================================
 // §3 OperationIntent / PreparedOperation / 回执
