@@ -456,18 +456,44 @@ export async function executeSingleTool(
 
   // Validate input: must be an object (not a raw string from failed JSON parse)
   if (typeof block.input === 'string') {
+    // #139: fire PostToolUseFailure consistently with the missing-field path.
+    if (ctx.hooks) {
+      try {
+        await ctx.hooks.execute('PostToolUseFailure', {
+          event: 'PostToolUseFailure',
+          toolName: block.name,
+          toolInput: block.input,
+          toolUseId: block.id,
+          error: 'input is not valid JSON',
+        })
+      } catch {
+        // Hook errors are non-fatal
+      }
+    }
+    const lines = [
+      `Tool call "${block.name}" failed — input is not valid JSON.`,
+      '',
+      'Raw input (first 500 chars):',
+      String(block.input).slice(0, 500),
+    ]
+    // #139: reuse the #137 expected-shape rendering so the model can fix the
+    // call in ONE retry instead of resending the same oversized arguments.
+    if (tool.inputSchema?.properties) {
+      const shapeHints = renderExpectedShape(
+        tool.inputSchema.required ?? Object.keys(tool.inputSchema.properties),
+        tool.inputSchema.properties,
+      )
+      if (shapeHints.length > 0) lines.push('', 'Expected shape:', ...shapeHints)
+    }
+    lines.push(
+      '',
+      'This usually happens when maxTokens is too low and the response was truncated.',
+      'Please try again with shorter content, or break the task into smaller steps.',
+    )
     return {
       type: 'tool_result',
       tool_use_id: block.id,
-      content: [
-        `Tool call "${block.name}" failed — input is not valid JSON.`,
-        '',
-        'Raw input (first 500 chars):',
-        String(block.input).slice(0, 500),
-        '',
-        'This usually happens when maxTokens is too low and the response was truncated.',
-        'Please try again with shorter content, or break the task into smaller steps.',
-      ].join('\n'),
+      content: lines.join('\n'),
       is_error: true,
       tool_name: block.name,
     }
