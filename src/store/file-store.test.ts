@@ -3,8 +3,9 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileSessionStore } from './file-store.js'
-import { WriteCoordinator } from './coordinator.js'
+import { WriteCoordinator, CoordinatorUnknownError } from './coordinator.js'
 import { prepareOperation } from './prepare.js'
+import { WriteNotAuthorizedError } from './errors.js'
 import type { NewRecord } from './types.js'
 
 const rec = (rid: string, mid: string, text: string): NewRecord => ({
@@ -145,5 +146,92 @@ describe('import with todos (issue #131 P3 T7)', () => {
     })
     const todos = await store.loadTodos('s-plain')
     expect(todos).toEqual([])
+  })
+})
+
+describe('FileSessionStore transactional semantics (review R4-R6)', () => {
+  it('review R4: flush failure rolls back memory — no phantom committed receipt', async () => {
+    const dir = await tmpDir()
+    const store = new FileSessionStore({ dir })
+    const coord = new WriteCoordinator({ store })
+    // Inject a rename-like failure into the FIRST flush only
+    const inner = store as unknown as { flush: () => Promise<void> }
+    const originalFlush = inner.flush.bind(store)
+    let flushCalls = 0
+    inner.flush = async (): Promise<void> => {
+      flushCalls++
+      if (flushCalls === 1) throw new Error('EIO: rename failed')
+      await originalFlush()
+    }
+    let caught: unknown
+    try {
+      await coord.execute('s1', ckpt(null, [rec('r1', 'm1', 'hello')]))
+    } catch (e) {
+      caught = e
+    }
+    // R7 wiring: unknown outcome carries the original prepared for recovery
+    expect(caught).toBeInstanceOf(CoordinatorUnknownError)
+    const opId = (caught as CoordinatorUnknownError).prepared.operationId
+    // R4: memory rolled back to disk state — query must NOT report committed
+    const q = await store.queryOperation('s1', opId)
+    expect(q.status).toBe('not-committed')
+    // Fresh instance sees nothing either (disk never got the write)
+    const b = new FileSessionStore({ dir })
+    expect(await b.loadSession('s1')).toBeNull()
+  })
+
+  it("review R5: already-hydrated instance A sees instance B's committed writes", async () => {
+    const dir = await tmpDir()
+    const a = new FileSessionStore({ dir })
+    const b = new FileSessionStore({ dir })
+    // A reads first (loads the empty disk snapshot into memory)
+    expect(await a.loadSession('s1')).toBeNull()
+    // B commits + flushes
+    const coordB = new WriteCoordinator({ store: b })
+    await coordB.execute('s1', ckpt(null, [rec('r1', 'm1', 'from-b')]))
+    // A must now see B's write (previously: stale in-memory snapshot → null forever)
+    const stateA = await a.loadSession('s1')
+    expect(stateA).not.toBeNull()
+    expect(stateA!.revision).toBe(1)
+  })
+
+  it('review R5: fresh instance reads disk session history via loadHistory', async () => {
+    const dir = await tmpDir()
+    const a = new FileSessionStore({ dir })
+    const coordA = new WriteCoordinator({ store: a })
+    await coordA.execute('s1', ckpt(null, [rec('r1', 'm1', 'one'), rec('r2', 'm2', 'two')]))
+    const b = new FileSessionStore({ dir })
+    const page = await b.loadHistory('s1', 'b1')
+    expect(page.records).toHaveLength(2)
+  })
+
+  it('review R6: expired authorization persists — writes stay rejected (no resurrection)', async () => {
+    const auth = { ownerId: 'exec-1', epoch: 1 }
+    const dir = await tmpDir()
+    const store = new FileSessionStore({ dir, fencing: { initialAuth: auth } })
+    const coord = new WriteCoordinator({ store, fencing: { identity: auth } })
+    await coord.execute('s1', ckpt(null, [rec('r1', 'm1', 'x')]))
+    await store.expireAuthorization()   // transactional — null persists to disk
+    // Same instance: write after expiry rejected (previously: write-reload resurrected disk auth)
+    await expect(coord.execute('s1', { kind: 'save-todos', todos: [] })).rejects.toThrow(WriteNotAuthorizedError)
+    // Fresh instance: expiry survives construction + read-through reload
+    const b = new FileSessionStore({ dir, fencing: { initialAuth: auth } })
+    const coordB = new WriteCoordinator({ store: b, fencing: { identity: auth } })
+    await b.loadSession('s1')   // force read-through reload (expired state loaded from disk)
+    await expect(coordB.execute('s1', { kind: 'save-todos', todos: [] })).rejects.toThrow(WriteNotAuthorizedError)
+  })
+
+  it('review R6: refresh on a fresh instance must not wipe existing data', async () => {
+    const dir = await tmpDir()
+    const a = new FileSessionStore({ dir })
+    const coordA = new WriteCoordinator({ store: a })
+    await coordA.execute('s1', ckpt(null, [rec('r1', 'm1', 'keep-me')]))
+    // Fresh (not-yet-hydrated) instance refreshes auth — previously flushed its
+    // EMPTY memory snapshot → wiped A's data off disk
+    const b = new FileSessionStore({ dir, fencing: { initialAuth: { ownerId: 'x', epoch: 1 } } })
+    await b.refreshAuthorization({ ownerId: 'exec-2', epoch: 2 })
+    // Data survives on disk
+    const c = new FileSessionStore({ dir })
+    expect(await c.loadSession('s1')).not.toBeNull()
   })
 })

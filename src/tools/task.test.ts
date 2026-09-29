@@ -523,4 +523,21 @@ describe('todo storage threading (issue #128)', () => {
     const [config] = engineMock().mock.calls.at(-1)!
     expect(config.store).toBe(store)
   })
+
+  it('review R2: Task pre-registers the parent chain and wires child ownership', async () => {
+    const store = new InMemorySessionStore()
+    const coordinator = new WriteCoordinator({ store })
+    const result = await TaskTool.call({
+      prompt: 'test',
+      description: 'test task',
+      subagent_type: 'General',
+      subagent_name: 'general',
+    }, makeContext({ store, coordinator, agentId: 'main-9', ownership: { rootSessionId: 'main-9' } }))
+    expect(result.is_error).toBeFalsy()
+    // Parent pre-registered (idempotent) by Task — before its first checkpoint
+    expect(await store.loadSession('main-9')).not.toBeNull()
+    // Child pre-registered by spawn with parent=main-9 (§2.3)
+    const listed = await (store.listSessions?.({ parentSessionId: 'main-9' }) ?? Promise.resolve([]))
+    expect(listed).toHaveLength(1)
+  })
 })

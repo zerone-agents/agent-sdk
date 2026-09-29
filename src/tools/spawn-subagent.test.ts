@@ -8,6 +8,7 @@ import type {
 } from '../types.js'
 import { createEmptyServices } from './services.js'
 import { InMemorySessionStore } from '../store/in-memory.js'
+import { WriteCoordinator } from '../store/coordinator.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
 vi.mock('../engine.js', () => ({
@@ -373,5 +374,24 @@ describe('subagent todo storage wiring (issue #128)', () => {
     expect(calls[0][0].store).toBe(store)
     expect(calls[1][0].store).toBe(store)
     expect(calls[0][0].sessionId).not.toBe(calls[1][0].sessionId)   // sibling isolation by sessionId
+  })
+
+  it('review R2: pre-registers child with provided ownership; cascade delete reaches it', async () => {
+    const store = new InMemorySessionStore()
+    const coordinator = new WriteCoordinator({ store })
+    // parent (main agent) registered as its own root
+    await coordinator.execute('main-1', { kind: 'register', ownership: { rootSessionId: 'main-1' } })
+    await runSubagent(baseOpts({
+      store,
+      coordinator,
+      ownership: { rootSessionId: 'main-1', parentSessionId: 'main-1', parentToolUseId: 'tu-r2' },
+    }))
+    // child registered with the given ownership (findable by parentSessionId)
+    const listed = await (store.listSessions?.({ parentSessionId: 'main-1' }) ?? Promise.resolve([]))
+    expect(listed).toHaveLength(1)
+    const childSid = listed[0]!.id
+    // cascade delete of the root covers the child (§2.3)
+    await coordinator.execute('main-1', { kind: 'delete', cascadeOwned: true })
+    expect(await store.loadSession(childSid)).toBeNull()
   })
 })

@@ -40,6 +40,7 @@ export {
   OperationConflictError,
   OwnershipMismatchError,
   RollbackTargetInvalidError,
+  SessionCloseTimeoutError,
   SessionConflictError,
   SessionDataInvalidError,
   WriteNotAuthorizedError,
@@ -81,3 +82,6 @@ export type { SessionManagerV2, SessionManagerV2Init } from './session-manager.j
 export { FileSessionStore } from './file-store.js'
 export type { FileSessionStoreOptions } from './file-store.js'
 export type { StoreSnapshot } from './in-memory.js'
+
+export { importLegacySession } from './import.js'
+export type { ImportReport, ImportLegacyOptions } from './import.js'

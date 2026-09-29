@@ -11,6 +11,15 @@ import type { ActorRef, AuthorizationContext, OperationIntent, OperationReceipt,
 import type { SessionStore } from './session-store.js'
 import { prepareOperation } from './prepare.js'
 import { NoopJournal, type OperationJournal } from './journal.js'
+import {
+  OperationConflictError,
+  OwnershipMismatchError,
+  RollbackTargetInvalidError,
+  SessionConflictError,
+  SessionDataInvalidError,
+  SessionNotFoundError,
+  WriteNotAuthorizedError,
+} from './errors.js'
 
 export interface WriteCoordinatorOptions {
   store: SessionStore
@@ -82,8 +91,20 @@ export class WriteCoordinator {
         receipt = await this.store.commit(sessionId, prepared, auth !== undefined ? { auth } : undefined)
       }
     } catch (err) {
-      // commit 明确失败 → 不调 release（journal 条目保留供 retry）
-      throw err
+      // 语义区分（spec §5，评审 R7）：
+      // - 契约拒绝（CAS 冲突/形状非法/授权/归属/目标非法）——原样传播，调用方可修正后重试或放弃；
+      // - 其余（网络/超时/断连——提交可能已生效）→ CoordinatorUnknownError 携带原
+      //   prepared（含 operationId），供 query(三态)/retry(原 prepared) 恢复。
+      if (err instanceof SessionConflictError
+        || err instanceof SessionDataInvalidError
+        || err instanceof SessionNotFoundError
+        || err instanceof WriteNotAuthorizedError
+        || err instanceof OperationConflictError
+        || err instanceof RollbackTargetInvalidError
+        || err instanceof OwnershipMismatchError) {
+        throw err
+      }
+      throw new CoordinatorUnknownError(sessionId, prepared, err)
     }
     // commit 成功 → release（失败仅 warn，不影响返回——committed-pending-handoff）
     try {

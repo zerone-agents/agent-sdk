@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { WriteCoordinator, type WriteCoordinatorOptions } from './coordinator.js'
+import { WriteCoordinator, CoordinatorUnknownError, type WriteCoordinatorOptions } from './coordinator.js'
 import { NoopJournal, type OperationJournal } from './journal.js'
 import { InMemorySessionStore } from './in-memory.js'
 import { prepareOperation } from './prepare.js'
@@ -132,5 +132,40 @@ describe('WriteCoordinator (issue #131, spec §5/§6)', () => {
     const coord = new WriteCoordinator({ store })  // no journal → NoopJournal
     const r = await coord.execute('s1', ckpt(null))
     expect(r.revision).toBe(1)
+  })
+
+  it('review R7: non-contract failure → CoordinatorUnknownError carrying prepared for recovery', async () => {
+    // Network-like failure (plain Error): commit outcome UNKNOWN — may have applied
+    const store = new InMemorySessionStore()
+    const flaky = store as unknown as { commit: unknown }
+    const originalCommit = store.commit.bind(store)
+    let calls = 0
+    flaky.commit = async (sid: string, prepared: PreparedOperation, opts?: unknown) => {
+      calls++
+      if (calls === 1) throw new Error('ECONNRESET: connection lost mid-commit')
+      return originalCommit(sid, prepared, opts as never)
+    }
+    const coord = new WriteCoordinator({ store })
+    let caught: CoordinatorUnknownError | undefined
+    try {
+      await coord.execute('s1', ckpt(null))
+    } catch (e) {
+      caught = e as CoordinatorUnknownError
+    }
+    expect(caught).toBeInstanceOf(CoordinatorUnknownError)
+    // Recovery info rides the error: original prepared with operationId
+    expect(caught!.prepared.operationId).toBeTruthy()
+    expect(caught!.prepared.kind).toBe('checkpoint')
+    // Recovery path: retry(原 prepared) succeeds once the fault clears
+    const receipt = await coord.retry('s1', caught!.prepared)
+    expect(receipt.revision).toBe(1)
+  })
+
+  it('review R7: contract rejection still propagates as-is (not unknown)', async () => {
+    const store = new InMemorySessionStore()
+    await store.commit('s1', prepareOperation('s1', ckpt(null)))
+    const coord = new WriteCoordinator({ store })
+    // CAS conflict is an explicit rejection — must stay SessionConflictError
+    await expect(coord.execute('s1', ckpt(null))).rejects.toThrow(SessionConflictError)
   })
 })

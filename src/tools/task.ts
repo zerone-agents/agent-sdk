@@ -71,6 +71,15 @@ export const TaskTool: ToolDefinition = {
         is_error: true,
       }
     }
+    // R2（§2.3）：父链预登记（幂等）——Task 在父首个 checkpoint 前运行，父可能未登记
+    const parentOwnership = context.ownership ?? { rootSessionId: context.agentId }
+    await coordinator.execute(context.agentId, { kind: 'register', ownership: parentOwnership })
+    // R2：子 ownership——root 不变、parent = 直接父、toolUseId 锚定派生点
+    const childOwnership = {
+      rootSessionId: parentOwnership.rootSessionId,
+      parentSessionId: context.agentId,
+      parentToolUseId: toolUseId,
+    }
 
     const run = await runSubagent({
       runtime: ctx.runtime,
@@ -86,6 +95,7 @@ export const TaskTool: ToolDefinition = {
       diagnostics: context.diagnostics, // #78: child inherits diagnostics
       store, // issue #131 P3: narrowed above — no silent fallback
       coordinator,
+      ownership: childOwnership, // R2：spawn 预登记子会话（级联删除可达）
       emitEvent: ctx.emitEvent
         ? (event) => ctx.emitEvent?.(event)
         : undefined,

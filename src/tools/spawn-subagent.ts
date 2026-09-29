@@ -21,6 +21,7 @@ import { resolveAgent } from '../resolve-agent.js'
 import { resolvePrompt } from '../prompts/system-prompts.js'
 import type { SessionStore } from '../store/session-store.js'
 import type { WriteCoordinator } from '../store/coordinator.js'
+import type { SessionOwnership } from '../store/types.js'
 
 import type { DiagnosticsSink } from '../utils/diagnostics.js'
 
@@ -59,6 +60,11 @@ export interface SpawnSubagentOptions {
   store: SessionStore
   /** Optional shared coordinator (defaults to one wrapping `store` in the child). */
   coordinator?: WriteCoordinator
+  /**
+   * issue #131 P3 R2（§2.3）：子会话 ownership——spawn 前预登记；此后子代理全部
+   * 写入自动继承登记归属（root 级联删除可达子会话）。
+   */
+  ownership?: SessionOwnership
 }
 
 export interface SubagentRun {
@@ -132,6 +138,12 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
 
   const sessionId = crypto.randomUUID()
 
+  // R2（§2.3）：预登记子会话——后续写入（TodoWrite/checkpoint）自动继承登记
+  // 归属；级联删除自 root 可达。幂等：同归属重复 register 为 no-op。
+  if (opts.ownership && opts.coordinator) {
+    await opts.coordinator.execute(sessionId, { kind: 'register', ownership: opts.ownership })
+  }
+
   const engine = new QueryEngine({
     runtime: childRuntime,
     resolved,
@@ -144,6 +156,7 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     sessionId,
     store: opts.store,
     ...(opts.coordinator !== undefined ? { coordinator: opts.coordinator } : {}),
+    ...(opts.ownership !== undefined ? { ownership: opts.ownership } : {}),
     abortSignal: opts.abortSignal,
     logger: opts.diagnostics, // #78: child inherits the diagnostics channel
   })

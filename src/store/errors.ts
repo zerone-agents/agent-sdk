@@ -33,6 +33,20 @@ export class SessionNotFoundError extends Error {
   }
 }
 
+/** close() 等待落盘超时——写入结果未知（可能仍在后台完成；先 query 再重试）。§8.2 */
+export class SessionCloseTimeoutError extends Error {
+  constructor(
+    public readonly sessionId: string,
+    public readonly timeoutMs: number,
+  ) {
+    super(
+      `close checkpoint timed out after ${timeoutMs}ms on ${sessionId}: outcome unknown — `
+      + 'the write may still land; query the coordinator before retrying',
+    )
+    this.name = 'SessionCloseTimeoutError'
+  }
+}
+
 /** fencing 校验失败（与 revision CAS 独立约束；P2 启用校验，P1 透传不校验）。 */
 export class WriteNotAuthorizedError extends Error {
   constructor(message: string) {

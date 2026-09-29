@@ -131,6 +131,15 @@ export const MultiTaskTool: ToolDefinition = {
         is_error: true,
       }
     }
+    // R2（§2.3）：父链预登记（幂等）——在父首个 checkpoint 前运行，父可能未登记
+    const parentOwnership = context.ownership ?? { rootSessionId: context.agentId }
+    await coordinator.execute(context.agentId, { kind: 'register', ownership: parentOwnership })
+    // R2：子 ownership——本组全部子任务共享 parent/toolUseId（兄弟关系；root 不变）
+    const childOwnership = {
+      rootSessionId: parentOwnership.rootSessionId,
+      parentSessionId: context.agentId,
+      parentToolUseId: toolUseId,
+    }
 
     const executions = tasks.map(async (task, index): Promise<SubtaskResult> => {
       const baseResult = { index, description: task.description }
@@ -148,6 +157,7 @@ export const MultiTaskTool: ToolDefinition = {
         diagnostics: context.diagnostics, // #78: child inherits diagnostics
         store, // issue #131 P3: narrowed above — no silent fallback
         coordinator,
+        ownership: childOwnership, // R2：spawn 预登记子会话（级联删除可达）
         emitEvent: ctx.emitEvent ? (event) => ctx.emitEvent?.(event) : undefined,
       })
       return {

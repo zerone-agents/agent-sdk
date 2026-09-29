@@ -73,7 +73,7 @@ export interface ToolPermissionResult {
 export interface ToolExecutionContext {
   config: Pick<
     QueryEngineConfig,
-    'runtime' | 'resolved' | 'subAgents' | 'canUseTool' | 'abortSignal' | 'agentId' | 'store' | 'coordinator'
+    'runtime' | 'resolved' | 'subAgents' | 'canUseTool' | 'abortSignal' | 'agentId' | 'store' | 'coordinator' | 'ownership'
   >
   messages: NormalizedMessageParam[]
   sessionId: string
@@ -311,6 +311,7 @@ export async function runToolsBackground(
     // issue #131 P3: tools (TodoWrite) persist through the v4 coordinator.
     store: ctx.config.store,
     coordinator: ctx.config.coordinator,
+    ownership: ctx.config.ownership,
     toolUseId: block.id,
     // Per-agent tool services (use provided or create empty)
     services: ctx.config.resolved.services,

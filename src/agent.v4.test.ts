@@ -4,7 +4,7 @@ import { WriteCoordinator } from './store/coordinator.js'
 import { CommittedMessageIndex } from './store/index-map.js'
 import { InMemorySessionStore } from './store/in-memory.js'
 import { prepareOperation } from './store/prepare.js'
-import { SessionConflictError, SessionNotFoundError } from './store/errors.js'
+import { SessionConflictError, SessionNotFoundError, SessionCloseTimeoutError } from './store/errors.js'
 import type { AgentOptions, SDKMessage } from './types.js'
 import type { NormalizedMessageParam } from './providers/types.js'
 
@@ -16,7 +16,9 @@ interface AgentInternals {
   setupDone: Promise<void>
   history: NormalizedMessageParam[]
   persistCheckpoint(): Promise<void>
+  commitCompactOperation(pre: readonly NormalizedMessageParam[]): Promise<void>
   sessionRevision: number
+  engineCompactRevision?: number
   rootSessionId: string
   sid: string  // narrow seam for private sid
 }
@@ -182,6 +184,124 @@ describe('Agent on v4 SessionStore (issue #131, P3 T3)', () => {
     const state = await store.loadSession(internals(agent).sid)
     expect(state).not.toBeNull()
     expect(state!.revision).toBeGreaterThanOrEqual(1)
+  })
+
+  it('review R8: imported session with initialRevision=0 can continue checkpointing after resume', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    // Import an existing transcript with initialRevision 0 (§8.3 legal)
+    await coord.execute('imported-0', {
+      kind: 'import',
+      expectedRevision: null,
+      changeSet: {
+        kind: 'import',
+        branchId: 'b1',
+        newRecords: [{ recordId: 'r1', message: msg('m1', 'old'), actor: { kind: 'main' } }],
+        effective: ['r1'],
+        context: { segments: [{ kind: 'records', recordIds: ['r1'] }] },
+        metadata: {},
+        ownership: { rootSessionId: 'imported-0' },
+        initialRevision: 0,
+      },
+    })
+    const state0 = await store.loadSession('imported-0')
+    expect(state0!.revision).toBe(0)  // legal revision-0 session WITH transcript
+    // Agent resumes and checkpoints a new message — must NOT conflict
+    const agent = new Agent(base({ store, coordinator: coord, resume: 'imported-0' }))
+    const i = internals(agent)
+    await i.setupDone
+    i.history = [...i.history, msg('m2', 'fresh')]
+    await i.persistCheckpoint()   // previously: v4Revision===0 → create-only null → hasTranscript → SessionConflictError
+    const state1 = await store.loadSession('imported-0')
+    expect(state1!.revision).toBe(1)
+    expect(i.sessionRevision).toBe(1)
+  })
+
+  it('review R9: close propagates checkpoint failures (no swallow)', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    const agent = new Agent(base({ store, coordinator: coord }))
+    const i = internals(agent)
+    i.history = [msg('m1')]
+    await i.persistCheckpoint()   // revision 1
+    // External modification → revision 2 (the agent's next checkpoint conflicts)
+    const state = await store.loadSession(i.sid)
+    await store.commit(i.sid, prepareOperation(i.sid, {
+      kind: 'append', expectedRevision: 1,
+      changeSet: {
+        kind: 'append', branchId: state!.currentBranchId,
+        newRecords: [{ recordId: 'ext-r', message: msg('ext-m', 'external'), actor: { kind: 'sdk' } }],
+        contextAppend: false,
+      },
+    }))
+    i.history = [...i.history, msg('m2')]
+    // Previously: close() swallowed the conflict and returned normally
+    await expect(agent.close()).rejects.toThrow(SessionConflictError)
+  })
+
+  it('review R9: close timeout surfaces as SessionCloseTimeoutError (no silent return)', async () => {
+    const store = new InMemorySessionStore()
+    // Hanging commit: the checkpoint never completes
+    ;(store as unknown as { commit: unknown }).commit = () => new Promise(() => {})
+    const agent = new Agent(base({ store, sessionCloseTimeoutMs: 50 }))
+    const i = internals(agent)
+    i.history = [msg('m1')]
+    // Previously: the timeout raced to a normal return with the write still pending
+    await expect(agent.close()).rejects.toThrow(SessionCloseTimeoutError)
+  })
+
+  it('review R1: post-checkpoint compact commits a compact op (summary record + covers; next checkpoint no-op)', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    const agent = new Agent(base({ store, coordinator: coord }))
+    const i = internals(agent)
+    i.history = [msg('m1', 'one'), msg('m2', 'two'), msg('m3', 'three'), msg('m4', 'four')]
+    await i.persistCheckpoint()
+    const rev1 = i.sessionRevision
+    // Simulate engine auto-compact: pre → post [summaryUser, summaryAssistant, kept m4]
+    const pre = [...i.history]
+    i.history = [msg('sum-u', 'summarize this'), msg('sum-a', 'summary of one-two-three'), msg('m4', 'four')]
+    await i.commitCompactOperation(pre)
+    // Compact op advanced the revision; own-compact receipt wired
+    expect(i.sessionRevision).toBe(rev1 + 1)
+    expect(i.engineCompactRevision).toBe(rev1 + 1)
+    // Records: 4 originals + sum-u + sum-a = 6 (full history preserved)
+    const state = await store.loadSession(i.sid)
+    const branch = state!.branches.find((b) => b.branchId === state!.currentBranchId)!
+    expect(branch.records).toHaveLength(6)
+    expect(branch.context.segments.some((s) => s.kind === 'summary')).toBe(true)
+    // Model context: [summary, kept m4] — originals summarized away
+    const msgs = await store.loadContext(i.sid, branch.branchId)
+    expect(msgs).toHaveLength(2)
+    expect((msgs[1] as { id?: string }).id).toBe('m4')
+    // Next checkpoint: everything indexed → no-op (no revision bump)
+    await i.persistCheckpoint()
+    expect(i.sessionRevision).toBe(rev1 + 1)
+  })
+
+  it('review R1: compact BEFORE first checkpoint lands pending originals atomically (§4.2 no data loss)', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    const agent = new Agent(base({ store, coordinator: coord }))
+    const i = internals(agent)
+    // 5 messages in memory, NOTHING committed yet — compact fires first
+    const pre = [msg('m1', 'a'), msg('m2', 'b'), msg('m3', 'c'), msg('m4', 'd'), msg('m5', 'e')]
+    i.history = [msg('sum-u', 'summarize'), msg('sum-a', 'the summary'), msg('m4', 'd'), msg('m5', 'e')]
+    await i.commitCompactOperation(pre)
+    const state = await store.loadSession(i.sid)
+    expect(state).not.toBeNull()
+    const branch = state!.branches.find((b) => b.branchId === state!.currentBranchId)!
+    // §4.2: pending covered originals (m1-m3) + pending kept (m4,m5) + 2 head records
+    // landed in ONE compact op — 7 records; the covered originals are NOT lost
+    expect(branch.records).toHaveLength(7)
+    const records = await store.loadRecords(i.sid, branch.records)
+    const mids = records.filter((r) => r !== null).map((r) => r!.messageId)
+    expect(mids).toContain('m1')
+    expect(mids).toContain('m2')
+    expect(mids).toContain('m3')
+    // Model context: [summary, m4, m5]
+    const msgs = await store.loadContext(i.sid, branch.branchId)
+    expect(msgs.map((m) => (m as { id?: string }).id)).toEqual(['sum-a', 'm4', 'm5'])
   })
 })
 

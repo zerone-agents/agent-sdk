@@ -530,8 +530,10 @@ export class InMemorySessionStore implements SessionStore {
       this.receiptSeqs.set(key, seq)
     }
     this.recyclingWatermarkSeq = snap.recyclingWatermarkSeq
-    if (this.fencingEnabled && snap.currentAuth !== null) {
-      this.currentAuth = structuredClone(snap.currentAuth)
+    if (this.fencingEnabled) {
+      // 评审 R6：null（过期）同样恢复——磁盘为权威；跳过会让构造器 initialAuth
+      // 复活已过期授权
+      this.currentAuth = snap.currentAuth !== null ? structuredClone(snap.currentAuth) : null
     }
   }
 }

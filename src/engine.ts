@@ -157,6 +157,8 @@ export class QueryEngine {
   private hookRegistry?: HookRegistry
   private snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   private _compactBoundaryId?: string
+  /** 评审 R1：最近一次压缩前的消息快照（query 结束由 Agent 消费，提交 §4.2 compact 操作）。 */
+  private preCompactCapture?: NormalizedMessageParam[]
   private logger: Logger
   private store: SessionStore | null
   private coordinator: WriteCoordinator | null
@@ -855,6 +857,11 @@ export class QueryEngine {
       while (true) {
         const next = await gen.next()
         if (next.done) {
+          // 评审 R1：实际发生压缩（消息数减少）→ 捕获压缩前原文，供 Agent 在
+          // query 收尾时以一个 compact 操作原子提交（pending 原文 + summary）。
+          if (next.value.messages.length < this.messages.length) {
+            this.preCompactCapture = this.messages
+          }
           this.messages = next.value.messages
           this.compactState = next.value.state
           // Record compact boundary: first surviving message after summary
@@ -872,6 +879,13 @@ export class QueryEngine {
     } catch {
       // Leave messages unchanged on failure; skip PostCompact
     }
+  }
+
+  /** 消费压缩前消息快照（一次性——取后即清；未压缩返回 undefined）。 */
+  consumePreCompactCapture(): NormalizedMessageParam[] | undefined {
+    const pre = this.preCompactCapture
+    this.preCompactCapture = undefined
+    return pre
   }
 
   /**

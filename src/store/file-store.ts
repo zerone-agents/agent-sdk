@@ -1,10 +1,17 @@
 /**
- * FileSessionStore——文件持久化 SessionStore（issue #131 P3 T7）。
+ * FileSessionStore——文件持久化 SessionStore（issue #131 P3 T7；评审 R4/R5/R6 事务化重做）。
  *
- * 复用 InMemorySessionStore 全部校验/apply/CAS/去重/fencing 逻辑；单文件
- * `<dir>/sessions.json` 承载全量快照，temp+rename 原子落盘。模块级目录锁
- * 串行化同进程多实例；写路径 = 锁内 reload（拾取他实例已落盘写入，防止
- * 旧内存快照覆盖）→ super 提交 → flush。跨进程无锁（单进程多实例场景）。
+ * 一致性模型：
+ * - **读穿（read-through，评审 R5）**：每个公开读入口在目录锁内先从磁盘 reload 最新
+ *   快照再委托 super——任何实例已落盘的写入对其他实例立即可见，无陈旧读；
+ *   queryOperation 不误报 not-committed。
+ * - **事务写（评审 R4）**：三个写入口统一 `transaction` 包装 = 锁内 reload → 内存快照
+ *   → super 提交 → flush 落盘；flush 失败 → 内存回滚到快照并抛错——持久化与可见
+ *   状态发布是同一提交边界，绝无「已返回 committed 但磁盘无数据」。
+ * - **授权事务（评审 R6）**：refresh/expire 在锁内 reload → 修改 → 可靠落盘（错误传播，
+ *   不 fire-and-forget）；过期（null）状态同样持久化，不会被写前 reload 从磁盘复活。
+ *
+ * 跨进程无锁（单进程多实例经模块级目录锁串行）；落盘 = temp+rename 原子替换。
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -24,7 +31,6 @@ export interface FileSessionStoreOptions {
 
 export class FileSessionStore extends InMemorySessionStore {
   private readonly file: string
-  private hydrated = false
 
   constructor(opts: FileSessionStoreOptions) {
     super({
@@ -52,15 +58,7 @@ export class FileSessionStore extends InMemorySessionStore {
     }
   }
 
-  /** 首次访问懒水合（文件不存在 → 全新 store）。 */
-  private async hydrateOnce(): Promise<void> {
-    if (this.hydrated) return
-    const snap = await this.readDisk()
-    if (snap !== null) this.hydrateStoreSnapshot(snap)
-    this.hydrated = true
-  }
-
-  /** 写前重载：拾取同目录其他实例已落盘的写入（防止旧内存快照覆盖它们）。 */
+  /** 锁内重载磁盘快照（读穿与事务写的共同前置：内存 === 磁盘最新）。 */
   private async reloadFromDisk(): Promise<void> {
     const snap = await this.readDisk()
     if (snap !== null) this.hydrateStoreSnapshot(snap)
@@ -75,68 +73,85 @@ export class FileSessionStore extends InMemorySessionStore {
     await rename(tmp, this.file)
   }
 
-  // ── 读路径：懒水合后委托 super ──
-
-  override async loadSession(...args: Parameters<InMemorySessionStore['loadSession']>): ReturnType<InMemorySessionStore['loadSession']> {
-    await this.withLock(() => this.hydrateOnce())
-    return super.loadSession(...args)
+  /** 读穿：锁内 reload 最新快照后委托 super（评审 R5——跨实例无陈旧读）。 */
+  private readThrough<T>(read: () => Promise<T>): Promise<T> {
+    return this.withLock(async () => {
+      await this.reloadFromDisk()
+      return read()
+    })
   }
 
-  override async loadContext(...args: Parameters<InMemorySessionStore['loadContext']>): ReturnType<InMemorySessionStore['loadContext']> {
-    await this.withLock(() => this.hydrateOnce())
-    return super.loadContext(...args)
+  /** 事务：锁内 reload → 快照 → 提交 → flush；任一步失败回滚内存（评审 R4——提交边界）。 */
+  private transaction<T>(mutate: () => Promise<T>): Promise<T> {
+    return this.withLock(async () => {
+      await this.reloadFromDisk()
+      const snapshot = this.exportStoreSnapshot()
+      let result: T
+      try {
+        result = await mutate()
+        await this.flush()
+      } catch (err) {
+        this.hydrateStoreSnapshot(snapshot)   // 回滚到事务前状态（= 磁盘现状）
+        throw err
+      }
+      return result
+    })
+  }
+
+  // ── 读路径：一律读穿 ──
+
+  override async loadSession(...args: Parameters<InMemorySessionStore['loadSession']>): ReturnType<InMemorySessionStore['loadSession']> {
+    return this.readThrough(() => super.loadSession(...args))
   }
 
   override async loadRecords(...args: Parameters<InMemorySessionStore['loadRecords']>): ReturnType<InMemorySessionStore['loadRecords']> {
-    await this.withLock(() => this.hydrateOnce())
-    return super.loadRecords(...args)
+    return this.readThrough(() => super.loadRecords(...args))
+  }
+
+  override async loadHistory(...args: Parameters<InMemorySessionStore['loadHistory']>): ReturnType<InMemorySessionStore['loadHistory']> {
+    return this.readThrough(() => super.loadHistory(...args))
+  }
+
+  override async loadContext(...args: Parameters<InMemorySessionStore['loadContext']>): ReturnType<InMemorySessionStore['loadContext']> {
+    return this.readThrough(() => super.loadContext(...args))
   }
 
   override async loadTodos(...args: Parameters<InMemorySessionStore['loadTodos']>): ReturnType<InMemorySessionStore['loadTodos']> {
-    await this.withLock(() => this.hydrateOnce())
-    return super.loadTodos(...args)
+    return this.readThrough(() => super.loadTodos(...args))
   }
 
   override async queryOperation(...args: Parameters<InMemorySessionStore['queryOperation']>): ReturnType<InMemorySessionStore['queryOperation']> {
-    await this.withLock(() => this.hydrateOnce())
-    return super.queryOperation(...args)
+    return this.readThrough(() => super.queryOperation(...args))
   }
 
-  // ── 写路径：锁内 hydrate → reload（拾取他实例写入）→ super → flush ──
+  // ── 写路径：统一事务（reload → 快照 → super → flush；失败回滚）──
 
-  override async commit(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<ReturnType<InMemorySessionStore['commit']> extends Promise<infer R> ? R : never> {
-    return this.withLock(async () => {
-      await this.hydrateOnce()
-      await this.reloadFromDisk()
-      const receipt = await super.commit(sessionId, prepared, opts)
-      await this.flush()
-      return receipt
+  override async commit(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): ReturnType<InMemorySessionStore['commit']> {
+    return this.transaction(() => super.commit(sessionId, prepared, opts))
+  }
+
+  override async saveTodos(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): ReturnType<InMemorySessionStore['saveTodos']> {
+    return this.transaction(() => super.saveTodos(sessionId, prepared, opts))
+  }
+
+  override async deleteSession(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): ReturnType<InMemorySessionStore['deleteSession']> {
+    return this.transaction(() => super.deleteSession(sessionId, prepared, opts))
+  }
+
+  // ── 授权：锁内加载 → 修改 → 可靠持久化（评审 R6；错误传播，不吞）──
+  // 返回 Promise<void> 与基类 void 签名兼容；调用方应 await（FileSessionStore 类型下可见）。
+
+  override async refreshAuthorization(auth: AuthorizationContext): Promise<void> {
+    await this.transaction(() => {
+      super.refreshAuthorization(auth)
+      return Promise.resolve()
     })
   }
 
-  override async saveTodos(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<ReturnType<InMemorySessionStore['saveTodos']> extends Promise<infer R> ? R : never> {
-    return this.withLock(async () => {
-      await this.hydrateOnce()
-      await this.reloadFromDisk()
-      const receipt = await super.saveTodos(sessionId, prepared, opts)
-      await this.flush()
-      return receipt
+  override async expireAuthorization(): Promise<void> {
+    await this.transaction(() => {
+      super.expireAuthorization()
+      return Promise.resolve()
     })
-  }
-
-  override async deleteSession(sessionId: string, prepared: PreparedOperation, opts?: CommitEntryOpts): Promise<ReturnType<InMemorySessionStore['deleteSession']> extends Promise<infer R> ? R : never> {
-    return this.withLock(async () => {
-      await this.hydrateOnce()
-      await this.reloadFromDisk()
-      const receipt = await super.deleteSession(sessionId, prepared, opts)
-      await this.flush()
-      return receipt
-    })
-  }
-
-  /** fencing 刷新也持久化（同步签名约束——fire-and-forget 落盘）。 */
-  override refreshAuthorization(auth: AuthorizationContext): void {
-    super.refreshAuthorization(auth)
-    void this.withLock(() => this.flush()).catch(() => {})
   }
 }

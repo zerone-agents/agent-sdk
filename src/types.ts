@@ -378,6 +378,8 @@ export interface ToolContext {
   store?: import('./store/session-store.js').SessionStore
   /** v4 WriteCoordinator (issue #131 P3) — required for v4 write paths */
   coordinator?: import('./store/coordinator.js').WriteCoordinator
+  /** v4 ownership of the OWNING agent (issue #131 P3 R2) — Task/MultiTask derive child ownership from it. */
+  ownership?: import('./store/types.js').SessionOwnership
 }
 
 /** Context available to the Skill tool: resolved skill set + registry. */
@@ -822,8 +824,8 @@ export interface AgentOptions {
   store?: import('./store/session-store.js').SessionStore
   /** v4 WriteCoordinator (issue #131 P3) — defaults to one wrapping `store` */
   coordinator?: import('./store/coordinator.js').WriteCoordinator
-  /** v4 ownership (issue #131 P3) — background agents must set rootSessionId explicitly */
-  ownership?: { rootSessionId: string }
+  /** v4 ownership (issue #131 P3) — full chain; main agents default to self-root */
+  ownership?: import('./store/types.js').SessionOwnership
 
   // ===========================================================================
   // === PermissionConfig === (5 fields)
@@ -1007,6 +1009,8 @@ export interface QueryEngineConfig {
   store?: import('./store/session-store.js').SessionStore
   /** v4 WriteCoordinator (issue #131 P3) — engine todo writes (terminal cleanup). */
   coordinator?: import('./store/coordinator.js').WriteCoordinator
+  /** v4 ownership of the OWNING agent (issue #131 P3 R2) — Task/MultiTask derive child ownership from it. */
+  ownership?: import('./store/types.js').SessionOwnership
   /** Context window size in tokens for the model. Overrides auto-detection from model name. */
   contextWindow?: number
   /** Maximum request body size in bytes. Images are stripped from oldest messages when exceeded. */
