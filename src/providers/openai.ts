@@ -138,10 +138,23 @@ export class OpenAIProvider implements LLMProvider {
   private baseURL: string
 
   private diagnostics: DiagnosticsSink
-  constructor(opts: { apiKey?: string; baseURL?: string; diagnostics?: DiagnosticsSink }) {
+  /**
+   * #142: OpenAI deprecated `max_tokens` in favor of `max_completion_tokens`
+   * (o-series models reject the legacy field). Default is the new field; set
+   * this flag ONLY for older OpenAI-compatible endpoints that still require
+   * `max_tokens`. Never send both fields.
+   */
+  private legacyMaxTokens: boolean
+  constructor(opts: { apiKey?: string; baseURL?: string; diagnostics?: DiagnosticsSink; legacyMaxTokens?: boolean }) {
     this.diagnostics = opts.diagnostics ?? createDiagnosticsSink()
     this.apiKey = opts.apiKey || ''
     this.baseURL = (opts.baseURL || 'https://api.openai.com/v1').replace(/\/$/, '')
+    this.legacyMaxTokens = opts.legacyMaxTokens ?? false
+  }
+
+  /** The single limit field to send for a given request (never both). */
+  private get maxTokensField(): 'max_completion_tokens' | 'max_tokens' {
+    return this.legacyMaxTokens ? 'max_tokens' : 'max_completion_tokens'
   }
 
   async createMessage(params: CreateMessageParams): Promise<CreateMessageResponse> {
@@ -150,7 +163,7 @@ export class OpenAIProvider implements LLMProvider {
 
     const body: Record<string, any> = {
       model: params.model,
-      max_tokens: params.maxTokens,
+      [this.maxTokensField]: params.maxTokens,
       messages,
     }
 
@@ -225,7 +238,7 @@ export class OpenAIProvider implements LLMProvider {
 
     const body: Record<string, any> = {
       model: params.model,
-      max_tokens: params.maxTokens,
+      [this.maxTokensField]: params.maxTokens,
       messages,
       stream: true,
       stream_options: { include_usage: true },

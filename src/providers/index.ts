@@ -17,11 +17,18 @@ import { OpenAIProvider } from './openai.js'
  * Create an LLM provider based on the API type.
  *
  * @param apiType - 'anthropic-messages' or 'openai-completions'
- * @param opts - API credentials
+ * @param opts - API credentials (apiKey/baseURL), diagnostics sink, and the
+ *   OpenAI-path legacyMaxTokens compatibility flag
  */
 export function createProvider(
   apiType: ApiType,
-  opts: { apiKey?: string; baseURL?: string; diagnostics?: import('../utils/diagnostics.js').DiagnosticsSink },
+  opts: {
+    apiKey?: string
+    baseURL?: string
+    diagnostics?: import('../utils/diagnostics.js').DiagnosticsSink
+    /** #142: OpenAI path only — send legacy `max_tokens` instead of `max_completion_tokens`. Ignored by the Anthropic provider. */
+    legacyMaxTokens?: boolean
+  },
 ): LLMProvider {
   switch (apiType) {
     case 'anthropic-messages':

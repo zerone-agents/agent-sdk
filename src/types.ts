@@ -699,7 +699,7 @@ export interface ModelInfo {
  */
 export interface AgentOptions {
   // ===========================================================================
-  // === ProviderConfig === (11 fields)
+  // === ProviderConfig === (12 fields)
   // LLM provider configuration: model selection, credentials, reasoning, and API tuning.
   // ===========================================================================
 
@@ -714,6 +714,13 @@ export interface AgentOptions {
   apiKey?: string
   /** API base URL override. */
   baseURL?: string
+  /**
+   * OpenAI path only (issue #142): send legacy `max_tokens` instead of the
+   * default `max_completion_tokens`. For older OpenAI-compatible endpoints
+   * that reject the new field. Falls back to ZERONE_AGENT_LEGACY_MAX_TOKENS
+   * env var ('1'/'true'). Anthropic path unaffected.
+   */
+  legacyMaxTokens?: boolean
   /** Maximum tokens for responses. */
   maxTokens?: number
   /** Effort level for reasoning. Preset values: 'low' | 'medium' | 'high' | 'xhigh' | 'max'. Custom values passed through as-is. */
