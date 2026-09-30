@@ -113,16 +113,106 @@ describe('importLegacySession (issue #131 P3; review R14/R15 三态协议)', () 
     if (report.status === 'not-imported') expect(report.reason).toContain('corrupt archive')
   })
 
-  it('unreadable legacy todos → imported report carries a warning (no silent drop)', async () => {
+  it('review R24: legacy todos read failure BLOCKS the import (not-imported; nothing committed)', async () => {
     const store = new InMemorySessionStore()
     const report = await importLegacySession({
       store,
       legacyReader: async () => legacy([{ id: 'm1', content: 'x' }]),
-      legacyTodosReader: async () => { throw new Error('todos.json corrupt') },
+      legacyTodosReader: async () => { throw new Error('EACCES: permission denied') },
     }, 'legacy-1')
-    expect(report.status).toBe('imported')
-    if (report.status !== 'imported') return
-    expect(report.warnings?.some((w) => w.includes('todos unreadable'))).toBe(true)
+    expect(report.status).toBe('not-imported')
+    if (report.status !== 'not-imported') return
+    expect(report.reason).toContain('todos unreadable')
+    // Nothing committed — fixing the archive then re-running imports cleanly
+    expect(await store.loadSession('legacy-1')).toBeNull()
+  })
+
+  it('review R23: indeterminate query outcome terminates in unknown (never re-prepares)', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    const prepared = prepareOperation('legacy-1', {
+      kind: 'import',
+      expectedRevision: null,
+      changeSet: {
+        kind: 'import',
+        branchId: 'b1',
+        newRecords: [rec('r1', 'm1', 'x')],
+        effective: ['r1'],
+        context: { segments: [{ kind: 'records', recordIds: ['r1'] }] },
+        metadata: {},
+        ownership: { rootSessionId: 'legacy-1' },
+        initialRevision: 0,
+      },
+    })
+    // queryOperation throws (recycled / query failure) — outcome indeterminate
+    ;(store as unknown as { queryOperation: unknown }).queryOperation = async () => { throw new Error('recycled') }
+    const report = await importLegacySession({
+      store, coordinator: coord, resume: prepared,
+      legacyReader: async () => legacy([{ id: 'm1', content: 'x' }]),
+    }, 'legacy-1')
+    // Must NOT proceed to a new execute — terminate in unknown with the ORIGINAL handle
+    expect(report.status).toBe('already-exists-unknown')
+    if (report.status !== 'already-exists-unknown') return
+    expect(report.prepared?.operationId).toBe(prepared.operationId)
+    expect(await store.loadSession('legacy-1')).toBeNull()   // nothing committed
+  })
+
+  it('review R23: retry create-only conflict → already-exists-unknown (not not-imported)', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    const prepared = prepareOperation('legacy-1', {
+      kind: 'import',
+      expectedRevision: null,
+      changeSet: {
+        kind: 'import',
+        branchId: 'b1',
+        newRecords: [rec('r1', 'm1', 'x')],
+        effective: ['r1'],
+        context: { segments: [{ kind: 'records', recordIds: ['r1'] }] },
+        metadata: {},
+        ownership: { rootSessionId: 'legacy-1' },
+        initialRevision: 0,
+      },
+    })
+    // Another operation created the target WITH a transcript meanwhile
+    await coord.execute('legacy-1', {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('r-other', 'm-other', 'other')], metadataPatch: {} },
+    })
+    const report = await importLegacySession({ store, coordinator: coord, resume: prepared }, 'legacy-1')
+    expect(report.status).toBe('already-exists-unknown')
+    if (report.status !== 'already-exists-unknown') return
+    expect(report.reason).toContain('create-only conflict')
+    expect(report.prepared?.operationId).toBe(prepared.operationId)
+  })
+
+  it('review R23: first-attempt create-only conflict (concurrent creator) → already-exists-unknown', async () => {
+    const store = new InMemorySessionStore()
+    const originalCommit = store.commit.bind(store)
+    let raced = false
+    ;(store as unknown as { commit: unknown }).commit = async (
+      sid: string,
+      prepared2: PreparedOperation,
+      opts?: unknown,
+    ) => {
+      if (!raced && prepared2.kind === 'import') {
+        raced = true
+        // Another operation wins the create-only race just before our import lands
+        await originalCommit(sid, prepareOperation(sid, {
+          kind: 'checkpoint', expectedRevision: null,
+          changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('r-win', 'm-win', 'winner')], metadataPatch: {} },
+        }))
+      }
+      return originalCommit(sid, prepared2, opts as never)
+    }
+    const report = await importLegacySession({
+      store,
+      legacyReader: async () => legacy([{ id: 'm1', content: 'x' }]),
+    }, 'legacy-1')
+    expect(report.status).toBe('already-exists-unknown')
+    if (report.status !== 'already-exists-unknown') return
+    expect(report.reason).toContain('create-only conflict')
+    expect(report.prepared).toBeDefined()   // recovery handle carried
   })
 
   it('resume: committed original operation → imported without duplicate (R14)', async () => {

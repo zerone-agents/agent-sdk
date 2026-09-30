@@ -2,12 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { Agent } from './agent.js'
 import { WriteCoordinator } from './store/coordinator.js'
 import { createSessionManagerV2 } from './store/session-manager.js'
+import { compactConversation, type AutoCompactState } from './utils/compact.js'
 import { CommittedMessageIndex } from './store/index-map.js'
 import { InMemorySessionStore } from './store/in-memory.js'
 import { prepareOperation } from './store/prepare.js'
 import { SessionConflictError, SessionNotFoundError, SessionCloseTimeoutError } from './store/errors.js'
 import type { AgentOptions, SDKMessage } from './types.js'
-import type { NormalizedMessageParam } from './providers/types.js'
+import type { NormalizedMessageParam, LLMProvider, CreateMessageResponse, StreamChunk } from './providers/types.js'
 import type { PreparedOperation } from './store/types.js'
 
 const msg = (mid: string, text = 'x'): NormalizedMessageParam =>
@@ -301,9 +302,9 @@ describe('Agent on v4 SessionStore (issue #131, P3 T3)', () => {
     expect(mids).toContain('m1')
     expect(mids).toContain('m2')
     expect(mids).toContain('m3')
-    // Model context: [summary, m4, m5]
+    // Model context: [summary(head[0]), m4, m5]（R19：真实产物 head[0] 含摘要正文）
     const msgs = await store.loadContext(i.sid, branch.branchId)
-    expect(msgs.map((m) => (m as { id?: string }).id)).toEqual(['sum-a', 'm4', 'm5'])
+    expect(msgs.map((m) => (m as { id?: string }).id)).toEqual(['sum-u', 'm4', 'm5'])
   })
 
   it('review R16: close timeout exposes the in-flight prepared; recovery reuses the SAME operation', async () => {
@@ -344,6 +345,49 @@ describe('Agent on v4 SessionStore (issue #131, P3 T3)', () => {
     expect(q!.operationId).toBe(opId)
   })
 
+  it('review R22: pre-prepare timeout exposes a completion handle (late write traceable)', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    const agent = new Agent(base({ store, coordinator: coord, sessionCloseTimeoutMs: 50 }))
+    const i = internals(agent)
+    // Seed revision 1 first
+    i.history = [msg('m1', 'one')]
+    await i.persistCheckpoint()
+    // Gate loadSession (called BEFORE prepare) so the timeout fires pre-prepare
+    const originalLoad = store.loadSession.bind(store)
+    let release!: () => void
+    const gate = new Promise<void>((res) => { release = res })
+    let gateUsed = false
+    ;(store as unknown as { loadSession: unknown }).loadSession = async (sid: string) => {
+      if (!gateUsed) {
+        gateUsed = true
+        await gate
+      }
+      return originalLoad(sid)
+    }
+    i.history = [...i.history, msg('m2', 'two')]
+    let caught: SessionCloseTimeoutError | undefined
+    try {
+      await agent.close()
+    } catch (e) {
+      caught = e as SessionCloseTimeoutError
+    }
+    expect(caught).toBeInstanceOf(SessionCloseTimeoutError)
+    // Pre-prepare: no operation handle YET — but a completion handle tracks the lifecycle
+    // （评审反例：释放后原 checkpoint 仍继续 prepare+提交，revision 1→2）
+    expect(caught!.prepared).toBeUndefined()
+    expect(caught!.completion).toBeDefined()
+    // Release → the late write proceeds; the completion handle reveals the final outcome
+    release()
+    const done = await caught!.completion!
+    expect(done.status).toBe('committed')
+    if (done.status !== 'committed') return
+    expect(done.receipt?.revision).toBe(2)
+    expect(done.prepared).toBeDefined()
+    const q = await coord.query(i.sid, done.prepared!.operationId)
+    expect(q).not.toBeNull()
+  })
+
   it('review R11: multi-round compact covers expand to ORIGINALS (no old-summary in new covers)', async () => {
     const store = new InMemorySessionStore()
     const coord = new WriteCoordinator({ store })
@@ -374,14 +418,51 @@ describe('Agent on v4 SessionStore (issue #131, P3 T3)', () => {
     const effectiveMids = branch.effective.map((rid) => midOf.get(rid))
     expect(effectiveMids).not.toContain('u1')
     expect(effectiveMids).not.toContain('u2')
-    // Model context: [s2, f]
+    // Model context: [summary(head[0] of round 2), f]（R19：摘要记录取 head[0]）
     const ctx = await store.loadContext(i.sid, branch.branchId)
-    expect(ctx.map((m) => (m as { id?: string }).id)).toEqual(['s2', 'f'])
+    expect(ctx.map((m) => (m as { id?: string }).id)).toEqual(['u2', 'f'])
     // revise(a) can now invalidate s2 (§2.2: covers only reference message records)
     const mgr = createSessionManagerV2({ store, coordinator: coord })
     await mgr.revise(i.sid, 'a', 'REVISED-A')
     const ctxAfter = await mgr.getMessages(i.sid)
     expect(ctxAfter.map((m) => (m as { id?: string }).id)).toContain('a')
+  })
+
+  it('review R19: summary BODY from the REAL compactor output lands in context (not the ack)', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    const agent = new Agent(base({ store, coordinator: coord }))
+    const i = internals(agent)
+    i.history = [msg('m1', 'alpha'), msg('m2', 'beta')]
+    await i.persistCheckpoint()
+    // REAL compactor output (compactConversation → buildCompactedMessages):
+    // head = [summary-user (SUMMARY BODY), summary-assistant (ack)]
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage(): Promise<CreateMessageResponse> {
+        return {
+          content: [{ type: 'text', text: 'KEY FACT: alpha and beta were discussed' }],
+        } as unknown as CreateMessageResponse
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+    const compactState: AutoCompactState = {
+      compacted: false, turnCounter: 0, consecutiveFailures: 0, lastInputTokens: 0, lastOutputTokens: 0,
+    }
+    const result = await compactConversation(provider, 'test-model', i.history, compactState)
+    const pre = [...i.history]
+    i.history = result.compactedMessages
+    await i.commitCompactOperation(pre, i.history)
+    // Model context carries the summary BODY (head[0]) — not the acknowledgment
+    const state = await store.loadSession(i.sid)
+    const branch = state!.branches.find((b) => b.branchId === state!.currentBranchId)!
+    const ctx = await store.loadContext(i.sid, branch.branchId)
+    const ctxText = JSON.stringify(ctx)
+    expect(ctxText).toContain('KEY FACT: alpha and beta were discussed')
+    expect(ctxText).not.toContain('I understand the context')
   })
 })
 

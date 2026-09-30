@@ -22,6 +22,7 @@ import { resolvePrompt } from '../prompts/system-prompts.js'
 import type { SessionStore } from '../store/session-store.js'
 import type { WriteCoordinator } from '../store/coordinator.js'
 import type { SessionOwnership, NewRecord } from '../store/types.js'
+import { planAndCommitCompact } from '../store/compact-commit.js'
 
 import type { DiagnosticsSink } from '../utils/diagnostics.js'
 
@@ -180,35 +181,56 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
   })
 
   /**
-   * R13（§2.3）：终态提交子会话转录——成功/失败/取消均按契约进入同一后端
-   *（预登记 ownership ≠ transcript 落库；此前裸引擎零正文字节）。
+   * R13/R21（§2.3/§4.2）：终态提交子会话正文——成功/失败/取消均按契约进入同一后端。
+   * 先消费引擎压缩捕获（原文+summary 原子 compact——与 Agent 共用核心），再差量
+   * checkpoint 余下未提交消息（此前直接全量 checkpoint：压缩后原文丢失、summary
+   * 被记成普通 message）。
    */
   const persistChildTranscript = async (): Promise<void> => {
     if (!opts.coordinator) return
+    const store = opts.store
+    const coordinator = opts.coordinator
     const messages = typeof engine.getMessages === 'function' ? engine.getMessages() : []
-    if (messages.length === 0) return
-    let state = await opts.store.loadSession(sessionId)
+    const captures = typeof engine.consumePreCompactCaptures === 'function'
+      ? engine.consumePreCompactCaptures()
+      : []
+    if (messages.length === 0 && captures.length === 0) return
+    let state = await store.loadSession(sessionId)
     if (!state) {
       // 未预登记（直接调用未传 ownership）→ 自登记为自身 root
-      await opts.coordinator.execute(sessionId, {
+      await coordinator.execute(sessionId, {
         kind: 'register',
         ownership: { rootSessionId: sessionId },
       })
-      state = await opts.store.loadSession(sessionId)
+      state = await store.loadSession(sessionId)
     }
     if (!state) return
-    const branch = state.branches.find((b) => b.branchId === state!.currentBranchId)
-    const newRecords: NewRecord[] = messages.map((m) => ({
-      recordId: crypto.randomUUID(),
-      message: m,
-      actor: { kind: 'sdk' },
-    }))
-    await opts.coordinator.execute(sessionId, {
+    // §4.2 compact 编排（与 Agent 共用核心；post = 下一快照 ?? 最终消息）
+    for (let idx = 0; idx < captures.length; idx++) {
+      const post = captures[idx + 1] ?? messages
+      await planAndCommitCompact({ store, coordinator }, sessionId, captures[idx]!, post)
+    }
+    // 差量 checkpoint：仅提交尚未入库的消息（压缩已入库的原文/summary 不重复）
+    if (messages.length === 0) return
+    state = await store.loadSession(sessionId)
+    if (!state) return
+    const branch = state.branches.find((b) => b.branchId === state.currentBranchId)
+    const records = branch ? await store.loadRecords(sessionId, branch.records) : []
+    const committed = new Set(records.filter((r) => r !== null).map((r) => r!.messageId))
+    const newRecords: NewRecord[] = []
+    for (const m of messages) {
+      const id = (m as { id?: string }).id
+      if (id === undefined || committed.has(id)) continue
+      committed.add(id)
+      newRecords.push({ recordId: crypto.randomUUID(), message: m, actor: { kind: 'sdk' } })
+    }
+    if (newRecords.length === 0) return
+    await coordinator.execute(sessionId, {
       kind: 'checkpoint',
       expectedRevision: state.revision,
       changeSet: {
         kind: 'checkpoint',
-        branchId: branch?.branchId ?? state.currentBranchId ?? 'b1',
+        branchId: branch?.branchId ?? (state.currentBranchId || 'b1'),
         newRecords,
         metadataPatch: {},
       },
@@ -221,13 +243,17 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
     try {
       await persistChildTranscript()
     } catch (err) {
-      // R13：正文必须入库——已完成运行的落库失败视为失败（不静默）；失败/取消保留原错误
-      if (outcome.status === 'completed') {
-        outcome = {
-          ...outcome,
-          status: 'failed',
-          error: `Subagent transcript persistence failed: ${String(err)}`,
-        }
+      // R13/R21：正文必须入库——已完成运行的落库失败视为失败（不静默）；失败/取消
+      // 并入持久化错误（含 unknown 的 operationId 恢复信息），不丢弃
+      const detail = err instanceof Error && err.name === 'CoordinatorUnknownError'
+        ? `${String(err)} (recoverable operation: ${(err as { prepared?: { operationId?: string } }).prepared?.operationId ?? 'unknown'})`
+        : String(err)
+      outcome = {
+        ...outcome,
+        status: outcome.status === 'completed' ? 'failed' : outcome.status,
+        error: outcome.error
+          ? `${outcome.error} | transcript persistence failed: ${detail}`
+          : `transcript persistence failed: ${detail}`,
       }
     }
     opts.emitEvent?.({

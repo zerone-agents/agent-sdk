@@ -1774,6 +1774,10 @@ describe('engine todo wiring via injected storage (issue #128)', () => {
   })
 })
 
+/** 测试注入缝合：引擎私有消息数组（已知形状——非动态 provider/tool 边界，R25）。 */
+const engineMessages = (engine: QueryEngine): NormalizedMessageParam[] =>
+  (engine as unknown as { messages: NormalizedMessageParam[] }).messages
+
 describe('compact capture for store commits (review R12)', () => {
   it('prompt-too-long compaction freezes the pre-compact snapshot (real engine path)', async () => {
     let streamCalls = 0
@@ -1793,7 +1797,7 @@ describe('compact capture for store commits (review R12)', () => {
       },
     }
     const engine = new QueryEngine(makeConfig(provider, [], { sessionId: 'r12-long' }))
-    ;(engine as any).messages.push(
+    engineMessages(engine).push(
       { role: 'user', id: 'p1', content: 'old query' },
       { role: 'assistant', id: 'p2', content: 'old answer' },
     )
@@ -1821,7 +1825,7 @@ describe('compact capture for store commits (review R12)', () => {
     }
     const engine = new QueryEngine(makeConfig(provider, [], { sessionId: 'r12-multi', maxSessionQueries: 2 }))
     // Seed > maxSessionQueries queries → the query-limit compact fires (compaction #1)
-    ;(engine as any).messages.push(
+    engineMessages(engine).push(
       { role: 'user', id: 'q1', content: 'query one' }, { role: 'assistant', id: 'a1', content: 'ans' },
       { role: 'user', id: 'q2', content: 'query two' }, { role: 'assistant', id: 'a2', content: 'ans' },
       { role: 'user', id: 'q3', content: 'query three' }, { role: 'assistant', id: 'a3', content: 'ans' },
@@ -1831,7 +1835,7 @@ describe('compact capture for store commits (review R12)', () => {
     expect(afterFirst).toHaveLength(1)
     expect(afterFirst[0]!.some((m) => (m as { id?: string }).id === 'q1')).toBe(true)
     // Second query over the limit again → compaction #2 (would OVERWRITE a single slot)
-    ;(engine as any).messages.push(
+    engineMessages(engine).push(
       { role: 'user', id: 'q4', content: 'query four' }, { role: 'assistant', id: 'a4', content: 'ans' },
       { role: 'user', id: 'q5', content: 'query five' }, { role: 'assistant', id: 'a5', content: 'ans' },
       { role: 'user', id: 'q6', content: 'query six' }, { role: 'assistant', id: 'a6', content: 'ans' },

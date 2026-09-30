@@ -1,6 +1,6 @@
 /** v4 SessionStore 契约错误（issue #131 SPEC §3.2）。
  * SessionConflictError / SessionDataInvalidError 自 v3 搬迁至此（P3 退场统一收口）。 */
-import type { PreparedOperation } from './types.js'
+import type { PreparedOperation, OperationReceipt } from './types.js'
 
 /** 乐观并发冲突（revision CAS / create-only）。 */
 export class SessionConflictError extends Error {
@@ -34,7 +34,12 @@ export class SessionNotFoundError extends Error {
   }
 }
 
-/** close() 等待落盘超时——§8.2（评审 R16）：携带在途 prepared 作恢复句柄。 */
+/** close() 超时后的完成句柄载荷（R22）——追踪整个 checkpoint 生命周期。 */
+export type CheckpointCompletion =
+  | { status: 'committed'; receipt?: OperationReceipt; prepared?: PreparedOperation }
+  | { status: 'failed'; error: unknown; prepared?: PreparedOperation }
+
+/** close() 等待落盘超时——§8.2（评审 R16/R22）：prepared + completion 双恢复句柄。 */
 export class SessionCloseTimeoutError extends Error {
   constructor(
     public readonly sessionId: string,
@@ -42,16 +47,23 @@ export class SessionCloseTimeoutError extends Error {
     /**
      * 超时时在途的 prepared（若有）——宿主以 `coordinator.query(operationId)` 判定结果；
      * 未提交则以 `retry(prepared)` 恢复**同一操作**（不清 pending 直到判定）。
-     * undefined = 尚未 prepare（写入未开始——可直接重试关闭）。
      */
     public readonly prepared?: PreparedOperation,
+    /**
+     * R22：completion 句柄——超时后 checkpoint 仍在进行时兑现最终结果
+     *（committed 携 receipt / failed 携错误），覆盖「超时时尚未 prepare、之后仍会
+     * 提交」的场景。宿主应 await 该句柄再决定 query/retry 或释放租约；不能把
+     * 「目前未 prepare」当成「后续不会写」。
+     */
+    public readonly completion?: Promise<CheckpointCompletion>,
   ) {
     super(
       `close checkpoint timed out after ${timeoutMs}ms on ${sessionId}: `
       + (prepared !== undefined
         ? `outcome unknown for operation ${prepared.operationId} — query the coordinator, `
           + 'then retry the same prepared if not committed'
-        : 'no operation was in flight yet (not prepared) — safe to retry close'),
+        : 'checkpoint still in progress (not yet prepared) — await the completion handle '
+          + 'to trace the final outcome; do not start another close checkpoint before it settles'),
     )
     this.name = 'SessionCloseTimeoutError'
   }

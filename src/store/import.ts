@@ -19,8 +19,15 @@ import { join } from 'node:path'
 import { loadSession as readLegacySession, type SessionData } from '../session.js'
 import type { SessionStore } from './session-store.js'
 import { WriteCoordinator } from './coordinator.js'
-import type { NewRecord, PreparedOperation } from './types.js'
+import { prepareOperation } from './prepare.js'
+import { SessionConflictError } from './errors.js'
+import type { NewRecord, PreparedOperation, OperationReceipt } from './types.js'
 import type { TodoInfo } from '../types.js'
+
+/** CoordinatorUnknownError 识别（提交结果未知——携原 prepared）。 */
+function isUnknownOutcome(err: unknown): boolean {
+  return err instanceof Error && err.name === 'CoordinatorUnknownError'
+}
 
 export type ImportReport =
   | {
@@ -53,18 +60,24 @@ export interface ImportLegacyOptions {
   resume?: PreparedOperation
 }
 
-/** v3 todos.json 默认读取器：数组缺失 → null；文件缺失 → null；损坏 → 抛出（编排转 warning）。 */
+/**
+ * v3 todos.json 默认读取器（R24 严格语义）：**仅 ENOENT 视为无 todos**（null）；
+ * 权限等其他文件错误、解析失败、结构错误（缺 todos 数组）一律上抛——编排阻止提交。
+ */
 async function readLegacyTodos(sessionId: string): Promise<TodoInfo[] | null> {
   const home = process.env.HOME || process.env.USERPROFILE || '/tmp'
   const file = join(home, '.agents', 'sessions', sessionId, 'todos.json')
   let raw: string
   try {
     raw = await readFile(file, 'utf-8')
-  } catch {
-    return null   // 文件缺失——无 todos（正常）
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
   }
   const parsed = JSON.parse(raw) as { todos?: unknown }
-  if (!Array.isArray(parsed.todos)) return null
+  if (!Array.isArray(parsed.todos)) {
+    throw new Error('legacy todos.json exists but has no todos array (structure error)')
+  }
   return parsed.todos as TodoInfo[]
 }
 
@@ -75,52 +88,75 @@ export async function importLegacySession(
 ): Promise<ImportReport> {
   const coordinator = init.coordinator ?? new WriteCoordinator({ store: init.store })
 
-  // ── 恢复协议（R14）：有原 prepared → 先查询其结果 ──
+  // ── 恢复协议（R14/R23）：有原 prepared → 先查询其结果（三态）──
   if (init.resume) {
-    let outcome: { status: string; receipt?: { operationId: string; revision?: number } } | null = null
+    let outcome: 'committed' | 'not-committed' | 'indeterminate'
+    let committedReceipt: OperationReceipt | undefined
     try {
       const q = await coordinator.query(sessionId, init.resume.operationId)
-      outcome = q === null ? { status: 'not-committed' } : { status: 'committed', receipt: q }
+      if (q === null) {
+        outcome = 'not-committed'
+      } else {
+        outcome = 'committed'
+        committedReceipt = q
+      }
     } catch {
-      outcome = null   // recycled / 查询故障——无法判定，落入状态检查
+      outcome = 'indeterminate'   // recycled / 查询故障——无法判定
     }
-    if (outcome?.status === 'committed' && outcome.receipt) {
+    if (outcome === 'committed' && committedReceipt) {
       return {
         status: 'imported',
         sessionId,
-        operationId: outcome.receipt.operationId,
-        revision: outcome.receipt.revision ?? 0,
+        operationId: committedReceipt.operationId,
+        revision: committedReceipt.revision ?? 0,
         messageCount: 0,   // 原回执不含明细——调用方以 store 读为准
         todoCount: 0,
       }
     }
-    if (outcome?.status === 'not-committed') {
-      // 用**原 prepared**重试——同 operationId 不重复生成（spec §5）
-      try {
-        const receipt = await coordinator.retry(sessionId, init.resume)
-        return {
-          status: 'imported',
-          sessionId,
-          operationId: receipt.operationId,
-          revision: receipt.revision ?? 0,
-          messageCount: 0,
-          todoCount: 0,
-        }
-      } catch (err) {
-        if (err instanceof Error && err.name === 'CoordinatorUnknownError') {
-          const prepared = (err as { prepared?: PreparedOperation }).prepared ?? init.resume
-          return {
-            status: 'already-exists-unknown',
-            sessionId,
-            existingRevision: -1,
-            prepared,
-            reason: `retry outcome unknown: ${String(err)}`,
-          }
-        }
-        return { status: 'not-imported', sessionId, reason: `retry rejected: ${String(err)}` }
+    if (outcome === 'indeterminate') {
+      // R23①：查询不确定**必须终止于 unknown**——不得重新 prepare/execute 新操作
+      return {
+        status: 'already-exists-unknown',
+        sessionId,
+        existingRevision: -1,
+        prepared: init.resume,
+        reason: 'original operation outcome could not be determined (recycled or query failure) — recovery handle preserved',
       }
     }
-    // 判定失败（recycled/查询故障）→ 落入状态检查（结果为 unknown 语义）
+    // not-committed → 用**原 prepared**重试（同 operationId，不重新生成——spec §5）
+    try {
+      const receipt = await coordinator.retry(sessionId, init.resume)
+      return {
+        status: 'imported',
+        sessionId,
+        operationId: receipt.operationId,
+        revision: receipt.revision ?? 0,
+        messageCount: 0,
+        todoCount: 0,
+      }
+    } catch (err) {
+      if (err instanceof SessionConflictError) {
+        // R23②：create-only 冲突 = 其他操作已创建目标——按契约 already-exists-unknown
+        return {
+          status: 'already-exists-unknown',
+          sessionId,
+          existingRevision: -1,
+          prepared: init.resume,
+          reason: `retry hit a create-only conflict (target created concurrently): ${String(err)}`,
+        }
+      }
+      if (isUnknownOutcome(err)) {
+        const prepared = (err as { prepared?: PreparedOperation }).prepared ?? init.resume
+        return {
+          status: 'already-exists-unknown',
+          sessionId,
+          existingRevision: -1,
+          prepared,
+          reason: `retry outcome unknown: ${String(err)}`,
+        }
+      }
+      return { status: 'not-imported', sessionId, reason: `retry rejected: ${String(err)}` }
+    }
   }
 
   // ── skip 判定按**转录存在性**（§8.3）：register-only 不跳过 ──
@@ -145,12 +181,17 @@ export async function importLegacySession(
   if (!legacy) {
     return { status: 'not-imported', sessionId, reason: 'legacy archive not found' }
   }
-  const warnings: string[] = []
+  // R24：todos 读取/结构故障**阻止提交**——不得当作完整 imported（否则 transcript
+  // 已存在、无法补导 todos）。未提交任何操作——修复档案后可直接重跑。
   let todos: TodoInfo[] | null = null
   try {
     todos = await (init.legacyTodosReader ?? readLegacyTodos)(sessionId)
   } catch (err) {
-    warnings.push(`legacy todos unreadable: ${String(err)}`)
+    return {
+      status: 'not-imported',
+      sessionId,
+      reason: `legacy todos unreadable — import blocked (nothing committed, safe to retry after fixing): ${String(err)}`,
+    }
   }
 
   // ── 物化记录：按 messageId 去重（折叠取最后版本；ensureMessageIds 保证 id）──
@@ -171,23 +212,25 @@ export async function importLegacySession(
   // §8.3：import 是 create-only（按转录存在性判定——register-only 行亦通过）
   const expectedRevision = null
 
-  try {
-    const receipt = await coordinator.execute(sessionId, {
+  // R23：编排侧 prepare（operationId 可知——首次冲突与 unknown 均可携带恢复句柄）
+  const prepared = prepareOperation(sessionId, {
+    kind: 'import',
+    expectedRevision,
+    changeSet: {
       kind: 'import',
-      expectedRevision,
-      changeSet: {
-        kind: 'import',
-        // register 行的 currentBranchId 为空串——`|| 'b1'` 规范化为 canonical 分支 id
-        branchId: existing?.currentBranchId || 'b1',
-        newRecords,
-        effective: recordIds,
-        context: { segments: [{ kind: 'records', recordIds }] },
-        metadata: mappable,
-        ownership,
-        initialRevision: legacy.metadata.revision ?? 0,
-        ...(todos !== null && todos.length > 0 ? { todos } : {}),
-      },
-    })
+      // register 行的 currentBranchId 为空串——`|| 'b1'` 规范化为 canonical 分支 id
+      branchId: existing?.currentBranchId || 'b1',
+      newRecords,
+      effective: recordIds,
+      context: { segments: [{ kind: 'records', recordIds }] },
+      metadata: mappable,
+      ownership,
+      initialRevision: legacy.metadata.revision ?? 0,
+      ...(todos !== null && todos.length > 0 ? { todos } : {}),
+    },
+  })
+  try {
+    const receipt = await coordinator.retry(sessionId, prepared)
     return {
       status: 'imported',
       sessionId,
@@ -195,15 +238,24 @@ export async function importLegacySession(
       revision: receipt.revision ?? 0,
       messageCount: newRecords.length,
       todoCount: todos?.length ?? 0,
-      ...(warnings.length > 0 ? { warnings } : {}),
     }
   } catch (err) {
-    if (err instanceof Error && err.name === 'CoordinatorUnknownError') {
+    if (err instanceof SessionConflictError) {
+      // R23：首次 create-only 冲突 = 目标被并发创建——按契约 already-exists-unknown
       return {
         status: 'already-exists-unknown',
         sessionId,
         existingRevision: existing?.revision ?? -1,
-        prepared: (err as { prepared?: PreparedOperation }).prepared,
+        prepared,
+        reason: `create-only conflict (target created concurrently): ${String(err)}`,
+      }
+    }
+    if (isUnknownOutcome(err)) {
+      return {
+        status: 'already-exists-unknown',
+        sessionId,
+        existingRevision: existing?.revision ?? -1,
+        prepared: (err as { prepared?: PreparedOperation }).prepared ?? prepared,
         reason: `import outcome unknown: ${String(err)}`,
       }
     }

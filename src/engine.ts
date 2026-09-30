@@ -587,11 +587,10 @@ export class QueryEngine {
               this.messages as any[],
               this.compactState,
             )
-            // 评审 R12：prompt-too-long 压缩同样冻结压缩前快照（首检前原文不丢）
+            // R12/R20/R21：compactConversation 成功即真实压缩——全量压缩产物可仅为
+            // summary pair（长度不减亦须捕获，不能用长度下限漏掉）
             const compacted = result.compactedMessages as NormalizedMessageParam[]
-            if (compacted.length < this.messages.length) {
-              this.preCompactCaptures.push(this.messages)
-            }
+            this.preCompactCaptures.push(this.messages)
             this.messages = compacted
             this.compactState = result.state
             // All messages were summarized — nothing to revert to
@@ -862,8 +861,11 @@ export class QueryEngine {
       while (true) {
         const next = await gen.next()
         if (next.done) {
-          // 评审 R1/R12：实际发生压缩 → 捕获压缩前原文（列表——同 query 多次压缩不丢失）。
-          if (next.value.messages.length < this.messages.length) {
+          // 评审 R1/R12/R20：实际发生压缩 → 捕获压缩前原文（列表——同 query 多次
+          // 压缩不丢失）。压缩判据：消息减少，或首次压缩标志翻转（全量压缩产物
+          // 可为仅 summary pair——长度不减时同样捕获）
+          if (next.value.messages.length < this.messages.length
+            || (next.value.state.compacted && !this.compactState.compacted)) {
             this.preCompactCaptures.push(this.messages)
           }
           this.messages = next.value.messages
