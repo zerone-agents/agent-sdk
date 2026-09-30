@@ -15,6 +15,36 @@ export ZERONE_AGENT_BASE_URL=https://api.openai.com/v1
 export ZERONE_AGENT_MODEL=gpt-4o
 ```
 
+#### maxTokens serialization (issue #142)
+
+The OpenAI Chat Completions adapter sends the configured `maxTokens` as
+`max_completion_tokens` by default — OpenAI deprecated `max_tokens`, and
+o-series models reject it. Exactly one limit field is sent, never both, and
+the value is never silently dropped or clamped. The setting applies
+consistently to streaming, non-streaming, and the image-fallback request
+reconstruction.
+
+**Semantic note**: `max_completion_tokens` bounds visible output **plus**
+reasoning tokens on reasoning models, so the same numeric value can yield
+shorter visible output than legacy `max_tokens` did. Legacy third-party
+endpoints' `max_tokens` behavior is not necessarily identical — the rename
+does not imply universal semantic equivalence.
+
+**Legacy endpoints (migration)**: for OpenAI-compatible gateways that only
+accept the old field, opt in explicitly — via the provider constructor or
+the factory:
+
+```ts
+new OpenAIProvider({ apiKey, baseURL, legacyMaxTokens: true })
+createProvider('openai-completions', { apiKey, baseURL, legacyMaxTokens: true })
+```
+
+With `legacyMaxTokens: true`, requests carry only `max_tokens` with the
+unchanged configured value. There is no model-name-based detection and no
+automatic field-switch retry on HTTP 400 — an endpoint that rejects the
+configured field fails loudly; choose the mode that matches your gateway.
+Anthropic's separate `max_tokens` parameter is unaffected.
+
 ### Third-party Anthropic-compatible providers
 
 ```bash
