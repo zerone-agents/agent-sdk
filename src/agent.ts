@@ -102,6 +102,7 @@ interface ProviderConfig {
   apiType?: ApiType
   apiKey?: string
   baseURL?: string
+  legacyMaxTokens?: boolean
   maxTokens?: number
   effort?: string
   fallbackModel?: string
@@ -196,12 +197,21 @@ interface MiscConfig {
 // Agent class
 // --------------------------------------------------------------------------
 
+/** Parse a boolean-ish env value: '1'/'true' → true, '0'/'false' → false, anything else → undefined. */
+function parseEnvBool(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined
+  const v = value.trim().toLowerCase()
+  if (v === '1' || v === 'true') return true
+  if (v === '0' || v === 'false') return false
+  return undefined
+}
+
 export class Agent {
   private cfg: AgentOptions
   private toolPool: ToolDefinition[]
   private modelId: string
   private apiType: ApiType
-  private apiCredentials: { key?: string; baseUrl?: string }
+  private apiCredentials: { key?: string; baseUrl?: string; legacyMaxTokens?: boolean }
   private provider: LLMProvider
   private mcpLinks: MCPConnection[] = []
   private history: NormalizedMessageParam[] = []
@@ -323,6 +333,7 @@ export class Agent {
       apiKey: this.apiCredentials.key,
       baseURL: this.apiCredentials.baseUrl,
       diagnostics: this.sink,
+      legacyMaxTokens: this.apiCredentials.legacyMaxTokens, // #142
     })
 
     // Build hook registry from options
@@ -391,7 +402,7 @@ export class Agent {
   }
 
   /** Pick API key and base URL from options or ZERONE_AGENT_* env vars. */
-  private pickCredentials(): { key?: string; baseUrl?: string } {
+  private pickCredentials(): { key?: string; baseUrl?: string; legacyMaxTokens?: boolean } {
     const envMap = this.cfg.env
     return {
       key:
@@ -404,21 +415,24 @@ export class Agent {
         this.cfg.baseURL ??
         envMap?.ZERONE_AGENT_BASE_URL ??
         this.readEnv('ZERONE_AGENT_BASE_URL'),
+      legacyMaxTokens:
+        this.cfg.legacyMaxTokens ??
+        parseEnvBool(envMap?.ZERONE_AGENT_LEGACY_MAX_TOKENS) ??
+        parseEnvBool(this.readEnv('ZERONE_AGENT_LEGACY_MAX_TOKENS')),
     }
   }
 
   /** Read a value from process.env (returns undefined if missing). */
   private readEnv(key: string): string | undefined {
     return process.env[key] || undefined
-  }
-
-  /** Extract provider configuration from options */
+  }  /** Extract provider configuration from options */
   private extractProviderConfig(opts: AgentOptions): ProviderConfig {
     return {
       model: opts.model,
       apiType: opts.apiType,
       apiKey: opts.apiKey,
       baseURL: opts.baseURL,
+      legacyMaxTokens: opts.legacyMaxTokens, // #142
       maxTokens: opts.maxTokens,
       effort: opts.effort,
       fallbackModel: opts.fallbackModel,
@@ -733,14 +747,15 @@ export class Agent {
       return { behavior: 'allow' }
     })
 
-    // Recreate provider if overrides change credentials or apiType
+    // Recreate provider if overrides change credentials, apiType, or (#142) the token-limit field mode
     let provider = this.provider
-    if (overrides?.apiType || overrides?.apiKey || overrides?.baseURL) {
+    if (overrides?.apiType || overrides?.apiKey || overrides?.baseURL || overrides?.legacyMaxTokens !== undefined) {
       const resolvedApiType = overrides.apiType ?? this.apiType
       provider = createProvider(resolvedApiType, {
         apiKey: overrides.apiKey ?? this.apiCredentials.key,
         baseURL: overrides.baseURL ?? this.apiCredentials.baseUrl,
         diagnostics: this.sink, // #78: construction-time sink (logger is construction-only, R4)
+        legacyMaxTokens: overrides.legacyMaxTokens ?? this.apiCredentials.legacyMaxTokens, // #142
       })
     }
 

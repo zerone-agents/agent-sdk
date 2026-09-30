@@ -31,10 +31,14 @@ endpoints' `max_tokens` behavior is not necessarily identical — the rename
 does not imply universal semantic equivalence.
 
 **Legacy endpoints (migration)**: for OpenAI-compatible gateways that only
-accept the old field, opt in explicitly — via the provider constructor or
-the factory:
+accept the old field, opt in explicitly — at any level:
 
 ```ts
+// Agent main path (also per-query override: agent.query(prompt, { legacyMaxTokens: true }))
+new Agent({ apiType: 'openai-completions', legacyMaxTokens: true, ... })
+// or via env: ZERONE_AGENT_LEGACY_MAX_TOKENS=true
+
+// Direct provider construction / factory
 new OpenAIProvider({ apiKey, baseURL, legacyMaxTokens: true })
 createProvider('openai-completions', { apiKey, baseURL, legacyMaxTokens: true })
 ```
@@ -372,6 +376,7 @@ server process (issue #87):
 | `ZERONE_AGENT_API_TYPE`      | `anthropic-messages` (default) or `openai-completions`   |
 | `ZERONE_AGENT_MODEL`         | Default model override                                   |
 | `ZERONE_AGENT_BASE_URL`      | Custom API endpoint                                      |
+| `ZERONE_AGENT_LEGACY_MAX_TOKENS` | OpenAI path only: `'1'`/`'true'` sends legacy `max_tokens` instead of `max_completion_tokens` |
 | `ZERONE_AGENT_MCP_GRACE_MS`  | MCP server shutdown grace period in ms (default: 30000)  |
 
 ## Cron

@@ -141,4 +141,29 @@ describe('OpenAIProvider maxTokens serialization (issue #142)', () => {
     expect(calls[0].body.max_tokens).toBe(1024)
     expect('max_completion_tokens' in calls[0].body).toBe(false)
   })
+
+  it('legacy mode + image fallback: the reconstruction retry also sends only max_tokens', async () => {
+    const calls = stubFetch([
+      { status: 400, body: '{"error":{"message":"image input is not supported"}}' },
+      { status: 200, json: SUCCESS_JSON },
+    ])
+    const provider = new OpenAIProvider({ apiKey: 'k', legacyMaxTokens: true })
+    const params = makeParams({
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+          { type: 'text', text: 'what is this?' },
+        ],
+      }],
+    })
+
+    await provider.createMessage(params)
+
+    expect(calls).toHaveLength(2)
+    for (const call of calls) {
+      expect(call.body.max_tokens).toBe(1024)
+      expect('max_completion_tokens' in call.body).toBe(false)
+    }
+  })
 })

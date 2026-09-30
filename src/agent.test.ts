@@ -1363,3 +1363,74 @@ describe('auto-compaction retention options (issue #122)', () => {
     await expect(drain()).rejects.toThrow(/autoCompactionToolProtectedQueries/)
   })
 })
+
+describe('legacyMaxTokens threading to the OpenAI provider (issue #142 review)', () => {
+  const SUCCESS_JSON = { choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }
+  const SUCCESS_SSE = [
+    'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}',
+    '',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
+    '',
+    'data: [DONE]',
+    '',
+    '',
+  ].join('\n')
+
+  /** Capture serialized request bodies from the provider's fetch calls. */
+  function stubFetchBodies(stream: boolean): Array<Record<string, any>> {
+    const bodies: Array<Record<string, any>> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
+      bodies.push(JSON.parse(init.body))
+      return stream
+        ? new Response(SUCCESS_SSE, { status: 200 })
+        : new Response(JSON.stringify(SUCCESS_JSON), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+    return bodies
+  }
+
+  function callProviderDirectly(agent: InstanceType<typeof Agent>): Promise<unknown> {
+    return (agent as any).provider.createMessage({
+      model: 'm', maxTokens: 77, system: '', messages: [{ role: 'user', content: 'hi' }],
+    })
+  }
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('constructor option reaches the constructed provider', async () => {
+    const bodies = stubFetchBodies(false)
+    const agent = new Agent(makeBaseOptions({ apiType: 'openai-completions', legacyMaxTokens: true }))
+    await callProviderDirectly(agent)
+    expect(bodies[0].max_tokens).toBe(77)
+    expect('max_completion_tokens' in bodies[0]).toBe(false)
+  })
+
+  it('env ZERONE_AGENT_LEGACY_MAX_TOKENS=true reaches the constructed provider', async () => {
+    process.env.ZERONE_AGENT_LEGACY_MAX_TOKENS = 'true'
+    try {
+      const bodies = stubFetchBodies(false)
+      const agent = new Agent(makeBaseOptions({ apiType: 'openai-completions' }))
+      await callProviderDirectly(agent)
+      expect(bodies[0].max_tokens).toBe(77)
+      expect('max_completion_tokens' in bodies[0]).toBe(false)
+    } finally {
+      delete process.env.ZERONE_AGENT_LEGACY_MAX_TOKENS
+    }
+  })
+
+  it('default (no option/env) sends max_completion_tokens', async () => {
+    const bodies = stubFetchBodies(false)
+    const agent = new Agent(makeBaseOptions({ apiType: 'openai-completions' }))
+    await callProviderDirectly(agent)
+    expect(bodies[0].max_completion_tokens).toBe(77)
+    expect('max_tokens' in bodies[0]).toBe(false)
+  })
+
+  it('per-query override recreates the provider in legacy mode', async () => {
+    const bodies = stubFetchBodies(true)
+    const agent = new Agent(makeBaseOptions({ apiType: 'openai-completions' }))
+    for await (const _ of agent.query('hi', { legacyMaxTokens: true })) { /* drain */ }
+    expect(bodies.length).toBeGreaterThan(0)
+    expect('max_tokens' in bodies[0]).toBe(true)
+    expect('max_completion_tokens' in bodies[0]).toBe(false)
+  })
+})

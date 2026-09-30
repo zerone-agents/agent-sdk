@@ -17,7 +17,8 @@ import { OpenAIProvider } from './openai.js'
  * Create an LLM provider based on the API type.
  *
  * @param apiType - 'anthropic-messages' or 'openai-completions'
- * @param opts - API credentials
+ * @param opts - API credentials (apiKey/baseURL), diagnostics sink, and the
+ *   OpenAI-path legacyMaxTokens compatibility flag
  */
 export function createProvider(
   apiType: ApiType,
