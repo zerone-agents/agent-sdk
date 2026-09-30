@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url'
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js'
 import { TODO_PRIORITIES, TODO_STATUSES, type TodoInfo } from '../types.js'
-import { defaultSessionStorage } from '../session-storage.js'
 
 export type { TodoInfo, TodoStatus, TodoPriority } from '../types.js'
 
@@ -58,20 +57,6 @@ export function formatTodosReminder(todos: TodoInfo[]): string {
     ...lines,
     '</system-reminder>',
   ].join('\n')
-}
-
-/**
- * @deprecated 仅操作默认文件存储（`~/.agents/sessions/<sid>/todos.json`）——
- * 不会使用 Agent 注入的自定义 storage。改用
- * `createSessionManager({ storage }).getTodos/clearTodos`（issue #128）。
- */
-export async function getTodos(sessionId: string): Promise<TodoInfo[]> {
-  return defaultSessionStorage.loadTodos(sessionId)
-}
-
-/** @deprecated 同上——改用 SessionManager（issue #128）。 */
-export async function clearTodos(sessionId: string): Promise<void> {
-  return defaultSessionStorage.saveTodos(sessionId, [])
 }
 
 /**
@@ -139,12 +124,12 @@ export const TodoWriteTool: ToolDefinition = {
       return { type: 'tool_result', tool_use_id: '', content: `Invalid sessionId: ${sessionId}. Must match /^[a-zA-Z0-9_-]+$/`, is_error: true }
     }
 
-    const storage = context.sessionStorage
-    if (!storage) {
-      return { type: 'tool_result', tool_use_id: '', content: 'TodoWrite requires a session storage context (missing sessionStorage).', is_error: true }
+    // ── v4 (issue #131 P3): WriteCoordinator is the only write entry ──
+    const coordinator = context.coordinator
+    if (!coordinator) {
+      return { type: 'tool_result', tool_use_id: '', content: 'TodoWrite requires a coordinator context (issue #131).', is_error: true }
     }
-
-    await storage.saveTodos(sessionId, todos)
+    await coordinator.execute(sessionId, { kind: 'save-todos', todos })
 
     const formatted = formatTodos(todos)
     const warning = validationError ? `\n\nNote: ${validationError}` : ''

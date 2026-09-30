@@ -65,8 +65,7 @@ describe('Memory tool through the real executor (R2-P1)', () => {
         canUseTool: async () => ({ behavior: 'allow' }),
         abortSignal: undefined,
         agentId: 'main',
-        // issue #128: engine config carries sessionStorage (unused by this fixture)
-        sessionStorage: { load: async () => null, save: async () => {}, loadTodos: async () => [], saveTodos: async () => {} },
+        // issue #131 P3: store is optional in QueryEngineConfig (unused by this fixture)
       },
       messages: [],
       sessionId: 's1',

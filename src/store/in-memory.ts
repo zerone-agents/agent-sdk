@@ -488,10 +488,69 @@ export class InMemorySessionStore implements SessionStore {
     this.receiptSeqs.set(`${prepared.sessionId}:${prepared.operationId}`, this.commitSeqCounter)
     return structuredClone(receipt)
   }
+
+  /** 全量持久化快照（FileSessionStore 落盘；issue #131 P3 T7）。 */
+  exportStoreSnapshot(): StoreSnapshot {
+    return {
+      sessions: [...this.sessions.entries()].map(([sid, row]) => [sid, {
+        state: structuredClone(row.data.state),
+        todos: structuredClone(row.data.todos),
+        ...(row.tombstone ? { tombstone: { deletedAt: row.tombstone.deletedAt } } : {}),
+      }]),
+      records: [...this.records.entries()],
+      receipts: [...this.receipts.entries()],
+      commitSeqCounter: this.commitSeqCounter,
+      receiptSeqs: [...this.receiptSeqs.entries()],
+      recyclingWatermarkSeq: this.recyclingWatermarkSeq,
+      currentAuth: this.currentAuth !== null ? structuredClone(this.currentAuth) : null,
+    }
+  }
+
+  /** 从快照重建内存状态（启动水合；records 恢复为各 row 共享的全局引用）。 */
+  hydrateStoreSnapshot(snap: StoreSnapshot): void {
+    this.records = new Map(snap.records.map(([rid, r]) => [rid, structuredClone(r)]))
+    this.sessions.clear()
+    for (const [sid, row] of snap.sessions) {
+      this.sessions.set(sid, {
+        data: {
+          state: structuredClone(row.state),
+          records: this.records,
+          todos: structuredClone(row.todos),
+        },
+        ...(row.tombstone ? { tombstone: { deletedAt: row.tombstone.deletedAt } } : {}),
+      })
+    }
+    this.receipts.clear()
+    for (const [key, receipt] of snap.receipts) {
+      this.receipts.set(key, structuredClone(receipt))
+    }
+    this.commitSeqCounter = snap.commitSeqCounter
+    this.receiptSeqs.clear()
+    for (const [key, seq] of snap.receiptSeqs) {
+      this.receiptSeqs.set(key, seq)
+    }
+    this.recyclingWatermarkSeq = snap.recyclingWatermarkSeq
+    if (this.fencingEnabled) {
+      // 评审 R6：null（过期）同样恢复——磁盘为权威；跳过会让构造器 initialAuth
+      // 复活已过期授权
+      this.currentAuth = snap.currentAuth !== null ? structuredClone(snap.currentAuth) : null
+    }
+  }
 }
 
 function sameOwnership(a: SessionOwnership, b: SessionOwnership): boolean {
   return a.rootSessionId === b.rootSessionId
     && (a.parentSessionId ?? null) === (b.parentSessionId ?? null)
     && (a.parentToolUseId ?? null) === (b.parentToolUseId ?? null)
+}
+
+/** 持久化快照格式（FileSessionStore 落盘；issue #131 P3 T7）。 */
+export interface StoreSnapshot {
+  sessions: Array<[string, { state: SessionState; todos: TodoInfo[]; tombstone?: { deletedAt: string } }]>
+  records: Array<[string, MessageRecord]>
+  receipts: Array<[string, OperationReceipt]>
+  commitSeqCounter: number
+  receiptSeqs: Array<[string, number]>
+  recyclingWatermarkSeq: number
+  currentAuth: AuthorizationContext | null
 }

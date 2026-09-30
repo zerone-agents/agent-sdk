@@ -64,7 +64,8 @@ import { executeTools as executeToolsFn } from './engine/tool-executor.js'
 import { formatTodosReminder, hasActiveTodos } from './tools/todowrite.js'
 import { createLogger, type Logger } from './utils/logger.js'
 import { adaptToDiagnosticsSink, type DiagnosticsSink } from './utils/diagnostics.js'
-import type { SessionStorage } from './session-storage.js'
+import type { SessionStore } from './store/session-store.js'
+import type { WriteCoordinator } from './store/coordinator.js'
 import type { TodoInfo } from './types.js'
 import { formatDurationMs, formatInputPreview, createTimer } from './utils/helpers.js'
 
@@ -156,8 +157,11 @@ export class QueryEngine {
   private hookRegistry?: HookRegistry
   private snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   private _compactBoundaryId?: string
+  /** 评审 R1/R12：压缩前消息快照列表（每次实际压缩点压入；query 结束由 Agent 依次消费）。 */
+  private readonly preCompactCaptures: NormalizedMessageParam[][] = []
   private logger: Logger
-  private sessionStorage: SessionStorage
+  private store: SessionStore | null
+  private coordinator: WriteCoordinator | null
   private diagSink: DiagnosticsSink
 
   constructor(config: QueryEngineConfig, initialUsage?: { lastInputTokens?: number; lastOutputTokens?: number }) {
@@ -174,7 +178,8 @@ export class QueryEngine {
     this.hookRegistry = config.hookRegistry
     this.snapshotEngine = config.snapshotEngine
     this.logger = config.logger ?? createLogger('engine', { level: config.logLevel })
-    this.sessionStorage = config.sessionStorage
+    this.store = config.store ?? null
+    this.coordinator = config.coordinator ?? null
     this.diagSink = adaptToDiagnosticsSink(this.logger)
   }
 
@@ -315,17 +320,17 @@ export class QueryEngine {
     // once at the start of each new user query, NOT inside the per-turn loop, so
     // a list the model marks completed mid-query survives for in-query visibility
     // and is only cleared when the NEXT query begins. See issue #32.
-    if (this.config.sessionId) {
+    if (this.store && this.config.sessionId) {
       let todos: TodoInfo[] | null = null
       try {
-        todos = await this.sessionStorage.loadTodos(this.config.sessionId)
+        todos = await this.store.loadTodos(this.config.sessionId)
       } catch (err) {
         // Read failure: skip expiry — never clear or overwrite on failure.
         this.todoErr(err, 'load')
       }
-      if (todos && todos.length > 0 && !hasActiveTodos(todos)) {
+      if (todos && todos.length > 0 && !hasActiveTodos(todos) && this.coordinator) {
         try {
-          await this.sessionStorage.saveTodos(this.config.sessionId, [])
+          await this.coordinator.execute(this.config.sessionId, { kind: 'save-todos', todos: [] })
         } catch (err) {
           this.todoErr(err, 'save')
         }
@@ -402,9 +407,9 @@ export class QueryEngine {
       // start of this query (see the cleanup block before the agentic loop), so
       // any non-empty list here is either active work or a list the model itself
       // produced mid-query — both are useful in-query visibility.
-      if (this.config.sessionId) {
+      if (this.store && this.config.sessionId) {
         try {
-          const todos = await this.sessionStorage.loadTodos(this.config.sessionId)
+          const todos = await this.store.loadTodos(this.config.sessionId)
           if (todos.length > 0) {
             const reminder = formatTodosReminder(todos)
             apiMessages = [
@@ -582,7 +587,11 @@ export class QueryEngine {
               this.messages as any[],
               this.compactState,
             )
-            this.messages = result.compactedMessages as NormalizedMessageParam[]
+            // R12/R20/R21：compactConversation 成功即真实压缩——全量压缩产物可仅为
+            // summary pair（长度不减亦须捕获，不能用长度下限漏掉）
+            const compacted = result.compactedMessages as NormalizedMessageParam[]
+            this.preCompactCaptures.push(this.messages)
+            this.messages = compacted
             this.compactState = result.state
             // All messages were summarized — nothing to revert to
             this._compactBoundaryId = undefined
@@ -852,6 +861,13 @@ export class QueryEngine {
       while (true) {
         const next = await gen.next()
         if (next.done) {
+          // 评审 R1/R12/R20：实际发生压缩 → 捕获压缩前原文（列表——同 query 多次
+          // 压缩不丢失）。压缩判据：消息减少，或首次压缩标志翻转（全量压缩产物
+          // 可为仅 summary pair——长度不减时同样捕获）
+          if (next.value.messages.length < this.messages.length
+            || (next.value.state.compacted && !this.compactState.compacted)) {
+            this.preCompactCaptures.push(this.messages)
+          }
           this.messages = next.value.messages
           this.compactState = next.value.state
           // Record compact boundary: first surviving message after summary
@@ -869,6 +885,11 @@ export class QueryEngine {
     } catch {
       // Leave messages unchanged on failure; skip PostCompact
     }
+  }
+
+  /** 消费全部压缩前快照（一次性——取后即清；无压缩返回空数组）。 */
+  consumePreCompactCaptures(): NormalizedMessageParam[][] {
+    return this.preCompactCaptures.splice(0, this.preCompactCaptures.length)
   }
 
   /**

@@ -5,6 +5,7 @@
  * argv[3] = sessionId (phase b only). HOME is set by the parent test.
  */
 import { Agent } from './agent.js'
+import { FileSessionStore } from './store/file-store.js'
 import { createMemoryService } from './memory/service.js'
 import { InMemoryMemoryStorage } from './memory/in-memory-storage.js'
 import type { LLMProvider } from './providers/types.js'
@@ -28,7 +29,7 @@ async function main(): Promise<void> {
     apiKey: 'test-key',
     memoryService,
     includePartialMessages: true,
-    persistSession: true,      // phase a MUST auto-save the session
+    store: new FileSessionStore({ dir: process.env.AGENT_SDK_STORE_DIR! }),  // v4 (issue #131 P3): cross-process persistence
     enableFileRevert: false,   // no git snapshot side effects
     mcpServers: {},
   }

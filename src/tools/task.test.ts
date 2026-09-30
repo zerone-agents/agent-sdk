@@ -10,7 +10,8 @@ import type {
   QueryEngineConfig,
 } from '../types.js'
 import { createEmptyServices } from './services.js'
-import { InMemorySessionStorage } from '../session-storage-fake.js'
+import { InMemorySessionStore } from '../store/in-memory.js'
+import { WriteCoordinator } from '../store/coordinator.js'
 
 // Mock QueryEngine to avoid real LLM calls — must be a constructor (used with `new`)
 vi.mock('../engine.js', () => ({
@@ -84,6 +85,8 @@ function makeRuntime(): RuntimeEnvironment {
 }
 
 function makeContext(overrides: Partial<SubagentContext> = {}): SubagentContext {
+  const store = overrides.store ?? new InMemorySessionStore()
+  const coordinator = overrides.coordinator ?? new WriteCoordinator({ store })
   return {
     cwd: '/tmp',
     agentId: 'general',
@@ -91,8 +94,9 @@ function makeContext(overrides: Partial<SubagentContext> = {}): SubagentContext 
     subAgents: TEST_AGENTS,
     services: createEmptyServices(),
     subprocessEnv: {},
-    // issue #128: Task requires a storage context — default in-memory in tests.
-    sessionStorage: new InMemorySessionStorage(),
+    // issue #131 P3: Task requires store + coordinator — derived consistently.
+    store,
+    coordinator,
     ...overrides,
   }
 }
@@ -507,16 +511,33 @@ describe('todo storage threading (issue #128)', () => {
     })
   })
 
-  it('call() threads ctx.sessionStorage into the child engine config', async () => {
-    const storage = new InMemorySessionStorage()
+  it('call() threads ctx.store into the child engine config', async () => {
+    const store = new InMemorySessionStore()
     const result = await TaskTool.call({
       prompt: 'test',
       description: 'test task',
       subagent_type: 'General',
       subagent_name: 'general',
-    }, makeContext({ sessionStorage: storage }))
+    }, makeContext({ store }))
     expect(result.is_error).toBeFalsy()
     const [config] = engineMock().mock.calls.at(-1)!
-    expect(config.sessionStorage).toBe(storage)
+    expect(config.store).toBe(store)
+  })
+
+  it('review R2: Task pre-registers the parent chain and wires child ownership', async () => {
+    const store = new InMemorySessionStore()
+    const coordinator = new WriteCoordinator({ store })
+    const result = await TaskTool.call({
+      prompt: 'test',
+      description: 'test task',
+      subagent_type: 'General',
+      subagent_name: 'general',
+    }, makeContext({ store, coordinator, agentId: 'main-9', ownership: { rootSessionId: 'main-9' } }))
+    expect(result.is_error).toBeFalsy()
+    // Parent pre-registered (idempotent) by Task — before its first checkpoint
+    expect(await store.loadSession('main-9')).not.toBeNull()
+    // Child pre-registered by spawn with parent=main-9 (§2.3)
+    const listed = await (store.listSessions?.({ parentSessionId: 'main-9' }) ?? Promise.resolve([]))
+    expect(listed).toHaveLength(1)
   })
 })

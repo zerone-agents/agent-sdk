@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'fs'
+import { mkdtempSync, readdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { ToolContext, ToolResult } from '../types.js'
 import { formatTodosReminder } from './todowrite.js'
 import { DefaultToolServices } from './default-services.js'
-import { FileSessionStorage } from '../session-storage.js'
-import { InMemorySessionStorage } from '../session-storage-fake.js'
+import { InMemorySessionStore } from '../store/in-memory.js'
+import { WriteCoordinator } from '../store/coordinator.js'
+
+const mockStore = new InMemorySessionStore()
+const mockCoordinator = new WriteCoordinator({ store: mockStore })
 
 const mockContext: ToolContext = {
   cwd: '/tmp/test',
@@ -14,23 +17,18 @@ const mockContext: ToolContext = {
   sessionId: 'test-session-001',
   services: new DefaultToolServices(),
   subprocessEnv: { ...process.env },
-  // issue #128: TodoWrite persists through the injected backend. The default
-  // FileSessionStorage keeps the file-based legacy assertions below on their
-  // original path (lazy $HOME).
-  sessionStorage: new FileSessionStorage(),
+  // issue #131 P3: TodoWrite persists through the v4 coordinator + store.
+  store: mockStore,
+  coordinator: mockCoordinator,
 }
 
 describe('TodoWriteTool', () => {
   let TodoWriteTool: typeof import('./todowrite.js').TodoWriteTool
-  let getTodos: typeof import('./todowrite.js').getTodos
-  let clearTodos: typeof import('./todowrite.js').clearTodos
 
   beforeEach(async () => {
     vi.resetModules()
     const mod = await import('./todowrite.js')
     TodoWriteTool = mod.TodoWriteTool
-    getTodos = mod.getTodos
-    clearTodos = mod.clearTodos
   })
 
   describe('schema and metadata', () => {
@@ -86,7 +84,7 @@ describe('TodoWriteTool', () => {
         ],
       }, mockContext)
 
-      const todos = await getTodos('test-session-001')
+      const todos = await mockStore.loadTodos('test-session-001')
       expect(todos).toHaveLength(1)
       expect(todos[0].content).toBe('New task')
     })
@@ -101,7 +99,7 @@ describe('TodoWriteTool', () => {
       const result = await TodoWriteTool.call({ todos: [] }, mockContext)
       expect(result.is_error).toBeFalsy()
 
-      const todos = await getTodos('test-session-001')
+      const todos = await mockStore.loadTodos('test-session-001')
       expect(todos).toHaveLength(0)
     })
   })
@@ -119,8 +117,8 @@ describe('TodoWriteTool', () => {
         todos: [{ content: 'Task B', status: 'in_progress', priority: 'low' }],
       }, ctxB)
 
-      const todosA = await getTodos('session-a')
-      const todosB = await getTodos('session-b')
+      const todosA = await mockStore.loadTodos('session-a')
+      const todosB = await mockStore.loadTodos('session-b')
 
       expect(todosA).toHaveLength(1)
       expect(todosA[0].content).toBe('Task A')
@@ -229,53 +227,33 @@ describe('TodoWriteTool', () => {
   })
 
   describe('persistence', () => {
-    it('survives module reload (reads from file)', async () => {
+    it('call() persists through the coordinator into the store', async () => {
       await TodoWriteTool.call({
         todos: [
           { content: 'Persistent task', status: 'pending', priority: 'high' },
         ],
       }, mockContext)
 
-      vi.resetModules()
-      const mod2 = await import('./todowrite.js')
-
-      const todos = await mod2.getTodos('test-session-001')
+      const todos = await mockStore.loadTodos('test-session-001')
       expect(todos).toHaveLength(1)
       expect(todos[0].content).toBe('Persistent task')
     })
   })
 
-  describe('public API', () => {
-    it('getTodos returns empty array for unknown session', async () => {
-      const todos = await getTodos('nonexistent-session')
-      expect(todos).toEqual([])
-    })
-
-    it('clearTodos removes all todos for a session', async () => {
-      await TodoWriteTool.call({
-        todos: [{ content: 'Task', status: 'pending', priority: 'high' }],
-      }, mockContext)
-
-      await clearTodos('test-session-001')
-
-      const todos = await getTodos('test-session-001')
-      expect(todos).toHaveLength(0)
-    })
-  })
-
-  describe('injected storage (issue #128)', () => {
-    it('call() saves through context.sessionStorage, no file writes', async () => {
+  describe('injected store (issue #131 P3)', () => {
+    it('call() saves through the injected store, no file writes', async () => {
       const home = mkdtempSync(join(tmpdir(), 'todos-home-'))
       const prev = process.env.HOME
       process.env.HOME = home
       try {
-        const storage = new InMemorySessionStorage()
-        const ctx: ToolContext = { ...mockContext, sessionStorage: storage }
+        const store = new InMemorySessionStore()
+        const coordinator = new WriteCoordinator({ store })
+        const ctx: ToolContext = { ...mockContext, store, coordinator }
         const res = await TodoWriteTool.call({
           todos: [{ content: 'a', status: 'pending', priority: 'high' }],
         }, ctx)
         expect(res.is_error).toBeFalsy()
-        expect(storage.todosStore.get('test-session-001')).toEqual([
+        expect(await store.loadTodos('test-session-001')).toEqual([
           { content: 'a', status: 'pending', priority: 'high' },
         ])
         expect(readdirSync(home)).toEqual([])   // nothing on disk
@@ -284,47 +262,11 @@ describe('TodoWriteTool', () => {
       }
     })
 
-    it('call() without sessionStorage → is_error result, not a crash', async () => {
-      const { sessionStorage: _drop, ...ctxNoStorage } = mockContext
-      const res = await TodoWriteTool.call({ todos: [] }, ctxNoStorage)
+    it('call() without coordinator → is_error result, not a crash', async () => {
+      const { coordinator: _drop, ...ctxNoCoordinator } = mockContext
+      const res = await TodoWriteTool.call({ todos: [] }, ctxNoCoordinator)
       expect(res.is_error).toBe(true)
-      expect(String(res.content)).toContain('sessionStorage')
-    })
-
-    it('legacy getTodos/clearTodos are file-backend wrappers (default storage)', async () => {
-      const home = mkdtempSync(join(tmpdir(), 'todos-home-'))
-      const prev = process.env.HOME
-      process.env.HOME = home
-      try {
-        expect(await getTodos('s1')).toEqual([])          // missing → []
-        await clearTodos('s1')                           // writes empty list
-        expect(await getTodos('s1')).toEqual([])
-        expect(readdirSync(join(home, '.agents', 'sessions', 's1'))).toEqual(['todos.json'])
-      } finally {
-        process.env.HOME = prev
-      }
-    })
-
-    it('legacy getTodos surfaces corruption (SessionDataInvalidError, not [])', async () => {
-      const home = mkdtempSync(join(tmpdir(), 'todos-home-'))
-      const prev = process.env.HOME
-      process.env.HOME = home
-      try {
-        mkdirSync(join(home, '.agents', 'sessions', 's1'), { recursive: true })
-        writeFileSync(join(home, '.agents', 'sessions', 's1', 'todos.json'), '!corrupt!')
-        // NB: message assertion, not toThrow(SessionDataInvalidError) — the
-        // file-level beforeEach calls vi.resetModules(), so this module's
-        // defaultSessionStorage is a fresh instance whose error class is not
-        // `instanceof` the statically imported one.
-        await expect(getTodos('s1')).rejects.toThrow(/Invalid session data for s1/)
-      } finally {
-        process.env.HOME = prev
-      }
-    })
-
-    it('legacy getTodos/clearTodos reject traversal sessionIds (storage boundary)', async () => {
-      await expect(getTodos('../evil')).rejects.toThrow(/sessionId/)
-      await expect(clearTodos('../evil')).rejects.toThrow(/sessionId/)
+      expect(String(res.content)).toContain('coordinator')
     })
   })
 })

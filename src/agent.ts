@@ -40,7 +40,12 @@ import { acquireMCPConnection } from './mcp/pool.js'
 import { isSdkServerConfig } from './sdk-mcp-server.js'
 import { resolveTransportKind } from './mcp/client.js'
 import { adaptToDiagnosticsSink, createDiagnosticsSink, sanitizeLogField, stableErrorType, type DiagnosticsSink } from './utils/diagnostics.js'
-import { defaultSessionStorage, loadSessionFrom, saveSessionTo, SessionNotFoundError, type SaveOptions, type SessionStorage } from './session-storage.js'
+import { WriteCoordinator } from './store/coordinator.js'
+import { CommittedMessageIndex } from './store/index-map.js'
+import { prepareOperation } from './store/prepare.js'
+import { planAndCommitCompact } from './store/compact-commit.js'
+import type { NewRecord, SessionOwnership, PreparedOperation, OperationReceipt } from './store/types.js'
+import { SessionConflictError, SessionNotFoundError, SessionCloseTimeoutError, type CheckpointCompletion } from './store/errors.js'
 import type { SessionMetadata } from './session.js'
 import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
@@ -131,9 +136,13 @@ interface SessionConfig {
   snapshotEngine?: import('./snapshot/index.js').SnapshotEngine
   enableFileRevert?: boolean
   snapshotTimeoutMs?: number
-  sessionStorage?: import('./session-storage.js').SessionStorage
-  sessionErrorMode?: 'best-effort' | 'strict'
   sessionCloseTimeoutMs?: number
+  /** v4 SessionStore (issue #131 P3) — persistence backend; without it the agent does not persist */
+  store?: import('./store/session-store.js').SessionStore
+  /** v4 WriteCoordinator (issue #131 P3) — defaults to one wrapping `store` */
+  coordinator?: import('./store/coordinator.js').WriteCoordinator
+  /** v4 ownership (issue #131 P3) — background agents must set rootSessionId explicitly */
+  ownership?: { rootSessionId: string }
 }
 
 /** Permission and access control */
@@ -227,14 +236,25 @@ export class Agent {
   private sink: DiagnosticsSink
   private lastInputTokens = 0
   private lastOutputTokens = 0
-  private storage: SessionStorage
-  private strict: boolean
   /** Optimistic-concurrency revision of the persisted session; null = not yet persisted (issue #4). */
   private sessionRevision: number | null = null
   /** Stable creation time: minted once at construction, overwritten on resume (issue #4). */
   private sessionCreatedAt: string
   /** Stable session tag: captured on resume, preserved by every checkpoint (issue #4 review). */
   private sessionTag?: string | null
+
+  // ── v4 SessionStore fields (issue #131 P3) ──
+  private v4store: import('./store/session-store.js').SessionStore | null = null
+  private v4coordinator: import('./store/coordinator.js').WriteCoordinator | null = null
+  private v4Index: import('./store/index-map.js').CommittedMessageIndex | null = null
+  private v4Revision = 0
+  /** R2：完整 ownership（root/parent/toolUseId）——自登记与子代理传播共用。 */
+  private v4Ownership: SessionOwnership = { rootSessionId: '' }
+  private rootSessionId = ''
+  private engineCompactRevision?: number
+  private v4Registered = false
+  /** R16：在途 checkpoint prepared——close 超时时作为恢复句柄暴露（query/retry 同一操作）。 */
+  private inFlightCheckpointPrepared?: PreparedOperation
 
   /** Per-agent skill registry: defaultRegistry (programmatic) as base + own filesystem overlay. */
   readonly skillRegistry = new SkillRegistry(defaultRegistry)
@@ -274,18 +294,17 @@ export class Agent {
         )
       }
     }
-    this.storage = this.cfg.sessionStorage ?? defaultSessionStorage
-    // issue #128: TodoWrite persists through this storage. TS enforces the todo
-    // primitives on custom implementations; this guards untyped (JS) consumers
-    // too — fail fast at construction, never silently fall back to files.
-    if (typeof this.storage.loadTodos !== 'function' || typeof this.storage.saveTodos !== 'function') {
-      throw new TypeError(
-        'SessionStorage must implement loadTodos and saveTodos (issue #128). ' +
-        'FileSessionStorage does; custom backends must add both methods for TodoWrite support.',
-      )
-    }
-    this.strict = this.cfg.sessionErrorMode === 'strict'
-      || (this.cfg.sessionErrorMode === undefined && this.cfg.sessionStorage !== undefined)
+    // ── v4 SessionStore wiring (issue #131 P3) ──
+    this.v4store = this.cfg.store ?? null
+    this.v4coordinator = this.cfg.coordinator
+      ?? (this.v4store ? new WriteCoordinator({ store: this.v4store }) : null)
+    this.v4Index = null  // built on first write or resume
+    this.v4Revision = 0
+    // R2：完整 ownership——主代理默认自 root；后台代理经 Task/spawn 预登记携带全链
+    this.v4Ownership = this.cfg.ownership ?? { rootSessionId: this.sid }
+    this.rootSessionId = this.v4Ownership.rootSessionId
+    this.engineCompactRevision = undefined
+
     this.sessionCreatedAt = new Date().toISOString()
 
     // Resolve API type
@@ -608,37 +627,37 @@ export class Agent {
 
     // Resume or continue session
     if (this.cfg.resume) {
-      const sessionData = await loadSessionFrom(this.storage, this.cfg.resume)
-      if (!sessionData && this.strict) {
-        // spec §7: strict resume must fail explicitly — a silent new session
-        // would leave the host's session mapping pointing at a dead ID.
-        throw new SessionNotFoundError(this.cfg.resume)
-      }
-      // best-effort default with a missing session: silent new session
-      // (pre-existing behavior).
-      if (sessionData) {
-        this.history = sessionData.messages
+      // ── v4 path (issue #131 P3) ──
+      if (this.v4store && this.v4coordinator) {
+        const state = await this.v4store.loadSession(this.cfg.resume)
+        if (!state) {
+          throw new SessionNotFoundError(this.cfg.resume)
+        }
         this.sid = this.cfg.resume
-        this.sessionCreatedAt = sessionData.metadata.createdAt
-        this.sessionRevision = sessionData.metadata.revision ?? 0
-        this.sessionTag = sessionData.metadata.tag
-        if (sessionData.metadata.lastInputTokens) {
-          this.lastInputTokens = sessionData.metadata.lastInputTokens
-        }
-        if (sessionData.metadata.lastOutputTokens) {
-          this.lastOutputTokens = sessionData.metadata.lastOutputTokens
-        }
+        this.history = await this.v4store.loadContext(this.sid, state.currentBranchId)
+        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId)
+        this.v4Revision = state.revision
+        this.sessionRevision = state.revision
+        this.v4Registered = true  // resume implies the session already exists (registered)
+        // Resume from a resolved setup — clear engine compact tracking
+        this.engineCompactRevision = undefined
         // issue #115: restore deferred activations into the session-owned
         // registry (unfiltered — availability is re-derived per turn by the
         // engine's activatedTools ∩ deferredTools intersection).
-        const activated = sessionData.metadata.activatedTools
+        const activated = state.metadata.activatedTools
         if (Array.isArray(activated)) {
           const registry = this.effectiveBaseServices().findTool
           for (const name of activated) {
             if (typeof name === 'string') registry.activatedTools.add(name)
           }
         }
+        return  // v4-only resume (v3 retired, issue #131 P3)
       }
+
+      // v3 retired (issue #131 P3): resume requires the v4 store — a silent
+      // fresh session would leave the host's session mapping pointing at a
+      // session that never resumes its history.
+      throw new TypeError('resume requires AgentOptions.store (v4 SessionStore, issue #131)')
     }
 
     // Auto-create SnapshotEngine if file revert is enabled (default: auto-detect git)
@@ -774,7 +793,9 @@ export class Agent {
       abortSignal: this.abortCtrl.signal,
       hookRegistry: this.hookRegistry,
       sessionId: this.sid,
-      sessionStorage: this.storage,
+      store: this.v4store ?? undefined,
+      coordinator: this.v4coordinator ?? undefined,
+      ownership: this.v4Ownership,
       contextWindow: opts.contextWindow,
       maxRequestBodyBytes: opts.maxRequestBodyBytes,
       maxSessionQueries: opts.maxSessionQueries,
@@ -837,6 +858,15 @@ export class Agent {
       this.lastOutputTokens = engineState.lastOutputTokens
 
       try {
+        // 评审 R1/R12：引擎全部自动压缩的原文快照 → 依次提交 §4.2 compact 操作
+        // （post = 下一快照 ?? 当前 history——不依长度猜测；兼容缺该方法的旧引擎 mock）
+        const captures = typeof engine.consumePreCompactCaptures === 'function'
+          ? engine.consumePreCompactCaptures()
+          : []
+        for (let idx = 0; idx < captures.length; idx++) {
+          const postState = captures[idx + 1] ?? this.history
+          await this.commitCompactOperation(captures[idx]!, postState)
+        }
         await this.persistCheckpoint()
       } catch (saveErr) {
         if (inFlightError) {
@@ -966,39 +996,124 @@ export class Agent {
     return [...this.history]
   }
 
-  /** Converged checkpoint metadata (issue #4): replaces the 4 former inline literals. */
-  private buildCheckpointMetadata(): Partial<SessionMetadata> {
-    return {
-      cwd: this.cfg.cwd || process.cwd(),
-      model: this.modelId,
-      provider: this.apiType,
-      createdAt: this.sessionCreatedAt,
-      tag: this.sessionTag,
-      lastInputTokens: this.lastInputTokens,
-      lastOutputTokens: this.lastOutputTokens,
-      activatedTools: this.activatedToolsSnapshot(),
+  /**
+   * v4 §4.2（评审 R1/R11/R12）：压缩原子提交——pending 原文 + summary 以**一个 compact
+   * 操作**落库（planCompact 构造；coordinator 提交）。pre/post 由压缩发生点显式提供
+   * （不依长度猜测）。covers 展开自旧 context（§2.2 单层——多轮压缩不把旧摘要装入新
+   * covers）；双头 summary 均为 summary 记录（synthetic summary-user 不进有效用户历史）。
+   */
+  private async commitCompactOperation(
+    pre: readonly NormalizedMessageParam[],
+    post: readonly NormalizedMessageParam[],
+  ): Promise<void> {
+    if (this.cfg.persistSession === false) return
+    if (!this.v4store || !this.v4coordinator) return
+    if (post.length < 2) return   // 真实产物下限 = summary pair（R20：空 kept 合法）
+    // 与 persistCheckpoint 相同的登记/索引前提
+    if (!this.v4Registered) {
+      await this.v4coordinator.execute(this.sid, {
+        kind: 'register',
+        ownership: this.v4Ownership,
+      })
+      this.v4Registered = true
     }
+    const state = await this.v4store.loadSession(this.sid)
+    if (!state) return
+    if (!this.v4Index) {
+      this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId ?? 'b1')
+    }
+    if (state.revision !== this.v4Revision) {
+      if (this.engineCompactRevision === state.revision) {
+        this.v4Revision = state.revision
+        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId ?? 'b1')
+      } else {
+        throw new SessionConflictError(this.sid, this.v4Revision, state.revision)
+      }
+    }
+    // R19/R20/R21：提交核心与子代理共用（store/compact-commit.ts——head[0] 为
+    // 摘要记录、空 kept 合法；post.length < 2 才跳过）
+    const result = await planAndCommitCompact(
+      { store: this.v4store, coordinator: this.v4coordinator },
+      this.sid, pre, post,
+      { expectedRevision: this.v4Revision },
+    )
+    if (result === undefined) return
+    this.v4Index?.apply(result.newRecords)
+    this.v4Revision = result.receipt.revision ?? this.v4Revision
+    this.engineCompactRevision = this.v4Revision   // own-compact 识别回执
+    this.sessionRevision = this.v4Revision
   }
 
   /**
-   * Persist the current history as a session checkpoint (issue #4).
-   * Best-effort mode: log + swallow (pre-existing semantics). Strict mode:
-   * CAS-guarded — save failures and conflicts propagate; query() masks
-   * behind any in-flight error.
+   * Persist the current history as a session checkpoint (v4, issue #131 P3):
+   * WriteCoordinator + CommittedMessageIndex incremental diff. Without a
+   * store the agent is ephemeral (no persistence). Conflicts propagate;
+   * query() masks behind any in-flight error.
    */
-  private async persistCheckpoint(): Promise<void> {
+  private async persistCheckpoint(attempt?: { prepared?: PreparedOperation }): Promise<OperationReceipt | undefined> {
     if (this.cfg.persistSession === false || this.history.length === 0) return
-    if (!this.strict) {
-      try {
-        await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata())
-      } catch (err) {
-        this.sink.error('[session] checkpoint failed', { errorType: stableErrorType(err) }, err)
+
+    // ── v4 path (issue #131 P3): WriteCoordinator + CommittedMessageIndex ──
+    if (this.v4store && this.v4coordinator) {
+      // Self-register before first write (spec §2.3)
+      if (!this.v4Registered) {
+        await this.v4coordinator.execute(this.sid, {
+          kind: 'register',
+          ownership: this.v4Ownership,
+        })
+        this.v4Registered = true
       }
-      return
+      // Build index on first use or after compact
+      if (!this.v4Index) {
+        const state = await this.v4store.loadSession(this.sid)
+        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state?.currentBranchId ?? 'b1')
+      }
+      // syncBeforeCheckpoint: detect external modifications → throw on conflict
+      const state = await this.v4store.loadSession(this.sid)
+      if (state && state.revision !== this.v4Revision) {
+        const isOwnCompact = this.engineCompactRevision === state.revision
+        if (isOwnCompact) {
+          this.v4Revision = state.revision
+          this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId)
+        } else {
+          // External modification: throw — do NOT auto-reload (would silently drop pending content)
+          throw new SessionConflictError(this.sid, this.v4Revision, state.revision)
+        }
+      }
+      // Incremental diff → only new records
+      const newRecords = this.v4Index.diff(this.history, (message) => ({
+        recordId: crypto.randomUUID(),
+        message,
+        actor: { kind: 'main' },
+      }))
+      if (newRecords.length === 0) return  // no change — skip
+      const branchId = state?.currentBranchId ?? 'b1'
+      // R16：Agent 侧 prepare——operationId 先于 dispatch 可知；close 超时可暴露
+      // prepared 供宿主 query/retry 恢复同一操作。经 coordinator.retry 派发
+      //（与 execute 相同的 dispatch 路径；auth 于 dispatch 注入、指纹不含 auth）。
+      const prepared = prepareOperation(this.sid, {
+        kind: 'checkpoint',
+        // §8.3：create-only 由 store 侧按转录存在性判定（checkCas hasTranscript）；
+        // 恒发数值 premise——register 建行 revision=0 匹配，导入 initialRevision=0
+        // 亦匹配（评审 #8：不得用数值 0 推断 create-only）
+        expectedRevision: this.v4Revision,
+        changeSet: {
+          kind: 'checkpoint', branchId, newRecords,
+          // issue #115: activations ride every checkpoint (resume restores them)
+          metadataPatch: { activatedTools: this.activatedToolsSnapshot() },
+        },
+      })
+      this.inFlightCheckpointPrepared = prepared
+      if (attempt !== undefined) attempt.prepared = prepared   // R26：句柄绑定本次尝试
+      const receipt = await this.v4coordinator.retry(this.sid, prepared).finally(() => {
+        this.inFlightCheckpointPrepared = undefined
+      })
+      this.v4Index.apply(newRecords)
+      this.v4Revision = receipt.revision ?? this.v4Revision
+      this.sessionRevision = this.v4Revision
+      return receipt
     }
-    const opts: SaveOptions = { expectedRevision: this.sessionRevision }
-    await saveSessionTo(this.storage, this.sid, this.history, this.buildCheckpointMetadata(), opts)
-    this.sessionRevision = (this.sessionRevision ?? 0) + 1
+    // v3 retired (issue #131 P3): no store → ephemeral agent (no persistence)
   }
 
   /**
@@ -1032,6 +1147,7 @@ export class Agent {
   async *compactStream(opts?: { protectedQueries?: number; toolProtectedQueries?: number }): AsyncGenerator<SDKCompactMessage> {
     await this.setupDone
     await this.executeHooks('PreCompact')
+    let pre: NormalizedMessageParam[] | undefined
     try {
       const state: AutoCompactState = {
         compacted: false,
@@ -1043,6 +1159,7 @@ export class Agent {
       // Direct `yield*` delegation: same event-forwarding and cancellation
       // semantics as compactSessionStream() (cancellation reaches the
       // provider generator's finally).
+      pre = this.history
       const result = yield* compactMessagesStream({
         provider: this.provider,
         model: this.modelId,
@@ -1059,6 +1176,10 @@ export class Agent {
       // Leave history unchanged on failure; skip PostCompact
     }
 
+    // 评审 R1/R12：§4.2 压缩原子提交（仅实际压缩时；post 显式传入——不猜测）
+    if (pre !== undefined && this.history.length < pre.length) {
+      await this.commitCompactOperation(pre, this.history)
+    }
     await this.persistCheckpoint()
   }
 
@@ -1229,15 +1350,25 @@ export class Agent {
     if (timeoutMs === 0) return
     if (this.cfg.persistSession === false || this.history.length === 0) return
 
-    let timedOut = false
+    // v4 §8.2（评审 R9）：close 等待写入完成——失败/超时向宿主暴露，不吞。
+    // checkpoint 失败原样传播（含 CoordinatorUnknownError——携带原 prepared 供
+    // query/retry 恢复）；超时抛 SessionCloseTimeoutError（写入可能仍在后台落盘：
+    // 先 query 回执再决定重试，不盲目重发）。
     let timerHandle: ReturnType<typeof setTimeout> | undefined
-    const timer = new Promise<void>((resolve) => {
-      timerHandle = setTimeout(() => { timedOut = true; resolve() }, timeoutMs)
-    })
-    // close() never propagates checkpoint failures (spec §9); persistCheckpoint
-    // already logs best-effort failures, strict failures log here.
-    const checkpoint = this.persistCheckpoint().catch((err) => {
-      this.sink.error('[session] close checkpoint failed', { errorType: stableErrorType(err) }, err)
+    // R22/R26：completion 句柄——追踪整个 checkpoint 生命周期（含「超时时尚未
+    // prepare、之后仍会 prepare+提交」的场景）。R26：恢复句柄绑定**本次**尝试的
+    // lifecycle 持有者——本次未 prepare 时绝不携带任何历史操作句柄（防串号。
+    const attempt: { prepared?: PreparedOperation } = {}
+    const checkpoint = this.persistCheckpoint(attempt)
+    const completion: Promise<CheckpointCompletion> = checkpoint.then(
+      (receipt) => ({ status: 'committed' as const, receipt, prepared: attempt.prepared }),
+      (error: unknown) => ({ status: 'failed' as const, error, prepared: attempt.prepared }),
+    )
+    const timer = new Promise<never>((_, reject) => {
+      timerHandle = setTimeout(
+        () => reject(new SessionCloseTimeoutError(this.sid, timeoutMs, this.inFlightCheckpointPrepared, completion)),
+        timeoutMs,
+      )
     })
     try {
       await Promise.race([checkpoint, timer])
@@ -1245,9 +1376,9 @@ export class Agent {
       // PR review P2: a ref'd timer that lost the race would keep the Node
       // process (and repeated close() calls) alive until it fired.
       clearTimeout(timerHandle)
-    }
-    if (timedOut) {
-      this.sink.error('[session] close checkpoint timed out', { timeoutMs })
+      // Timer won → the checkpoint may still reject later; never unhandled
+      //（completion 已挂 onRejected——此 catch 为二重保险）。
+      checkpoint.catch(() => {})
     }
   }
 }

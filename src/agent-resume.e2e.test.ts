@@ -13,20 +13,21 @@ const execFileAsync = promisify(execFile)
 const FIXTURE = new URL('./agent-resume.e2e.fixture.ts', import.meta.url).pathname
 const MEMORY_TXT = readFileSync(fileURLToPath(new URL('./tools/memory.txt', import.meta.url)), 'utf-8')
 
-async function runPhase(args: string[], home: string): Promise<string> {
+async function runPhase(args: string[], home: string, storeDir: string): Promise<string> {
   const { stdout } = await execFileAsync('npx', ['tsx', FIXTURE, ...args],
-    { timeout: 90_000, env: { ...process.env, HOME: home } })
+    { timeout: 90_000, env: { ...process.env, HOME: home, AGENT_SDK_STORE_DIR: storeDir } })
   return stdout
 }
 
 describe('deferred activation resume — cross-process (issue #115)', () => {
   it('activations survive a process restart with full descriptions', async () => {
     const home = mkdtempSync(join(tmpdir(), 'e2e115-'))
-    const outA = await runPhase(['a'], home)
+    const storeDir = mkdtempSync(join(tmpdir(), 'e2e115-store-'))
+    const outA = await runPhase(['a'], home, storeDir)
     const sid = outA.match(/SID=(\S+)/)?.[1]
     expect(sid).toBeTruthy()
 
-    const outB = await runPhase(['b', sid!], home)
+    const outB = await runPhase(['b', sid!], home, storeDir)
     const tools = JSON.parse(outB.match(/TOOLS=(.*)/)![1]) as any[]
     expect(tools.map(t => t.name).sort()).toEqual(['Memory', 'MemorySearch'])
     const mem = tools.find(t => t.name === 'Memory')

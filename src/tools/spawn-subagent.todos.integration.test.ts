@@ -9,8 +9,9 @@ import { existsSync, mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { AgentDefinition, RuntimeEnvironment } from '../types.js'
-import type { LLMProvider, StreamChunk } from '../providers/types.js'
-import { InMemorySessionStorage } from '../session-storage-fake.js'
+import type { LLMProvider, StreamChunk, CreateMessageResponse } from '../providers/types.js'
+import { InMemorySessionStore } from '../store/in-memory.js'
+import { WriteCoordinator } from '../store/coordinator.js'
 import { createEmptyServices } from './services.js'
 import { runSubagent } from './spawn-subagent.js'
 
@@ -65,8 +66,9 @@ describe('subagent todo storage behavior (issue #128 review P2)', () => {
     const prevHome = process.env.HOME
     process.env.HOME = home
     try {
-      const storage = new InMemorySessionStorage()
-      await storage.saveTodos('parent-session', [{ content: 'parent task', status: 'pending', priority: 'high' }])
+      const store = new InMemorySessionStore()
+      const coordinator = new WriteCoordinator({ store })
+      await coordinator.execute('parent-session', { kind: 'save-todos', todos: [{ content: 'parent task', status: 'pending', priority: 'high' }] })
 
       const run = await runSubagent({
         runtime: makeRuntime(todoProvider()),
@@ -78,21 +80,86 @@ describe('subagent todo storage behavior (issue #128 review P2)', () => {
         description: 'integration',
         toolUseId: 'tu_outer',
         taskIndex: 0,
-        sessionStorage: storage,
+        store,
+        coordinator,
       })
 
       expect(run.status).toBe('completed')
       expect(run.sessionId).not.toBe('')
-      // Behavior: the child's TodoWrite call persisted through the shared storage.
-      expect(storage.todosStore.get(run.sessionId)).toEqual([
+      // R13: child transcript actually persisted (register ≠ transcript)
+      const childState = await store.loadSession(run.sessionId)
+      expect(childState).not.toBeNull()
+      const childBranch = childState!.branches.find((b) => b.branchId === childState!.currentBranchId)
+      expect(childBranch?.records.length ?? 0).toBeGreaterThan(0)
+      // Behavior: the child's TodoWrite call persisted through the shared store.
+      expect(await store.loadTodos(run.sessionId)).toEqual([
         { content: 'child task', status: 'pending', priority: 'high' },
       ])
       // Isolation: the parent session's todos are untouched.
-      expect(await storage.loadTodos('parent-session')).toEqual([
+      expect(await store.loadTodos('parent-session')).toEqual([
         { content: 'parent task', status: 'pending', priority: 'high' },
       ])
       // No file backend involvement (restricted HOME stays clean).
       expect(existsSync(join(home, '.agents'))).toBe(false)
+    } finally {
+      process.env.HOME = prevHome
+    }
+  })
+})
+
+describe('subagent compact persistence (review R21)', () => {
+  it('prompt-too-long compaction persists ORIGINAL prompt + summary (kind:summary)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sub-compact-home-'))
+    const prevHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      const store = new InMemorySessionStore()
+      const coordinator = new WriteCoordinator({ store })
+      let streams = 0
+      const provider: LLMProvider = {
+        apiType: 'anthropic-messages',
+        async createMessage(): Promise<CreateMessageResponse> {
+          // compactConversation's summary request
+          return {
+            content: [{ type: 'text', text: 'SUMMARY OF ORIGINAL PROMPT' }],
+          } as unknown as CreateMessageResponse
+        },
+        async *createMessageStream(): AsyncGenerator<StreamChunk> {
+          streams++
+          if (streams === 1) {
+            throw { status: 400, error: { error: { message: 'prompt is too long' } } }
+          }
+          yield { type: 'text', index: 0, delta: 'child done' }
+          yield { type: 'done', index: -1 }
+        },
+      }
+      const run = await runSubagent({
+        runtime: makeRuntime(provider),
+        subAgents: AGENTS,
+        agentName: 'worker',
+        fallbackAgentId: 'worker',
+        mode: 'General',
+        prompt: 'ORIGINAL SUBAGENT PROMPT TEXT',
+        description: 'compact integration',
+        toolUseId: 'tu_compact',
+        taskIndex: 0,
+        store,
+        coordinator,
+      })
+      expect(run.status).toBe('completed')
+      // §4.2：原文经 compact 原子落库（此前只剩 synthetic pair + 回复，原文永久丢失）
+      const state = await store.loadSession(run.sessionId)
+      expect(state).not.toBeNull()
+      const branch = state!.branches.find((b) => b.branchId === state!.currentBranchId)!
+      const records = await store.loadRecords(run.sessionId, branch.records)
+      const live = records.filter((r) => r !== null)
+      const texts = live.map((r) => JSON.stringify(r.message))
+      expect(texts.some((t) => t.includes('ORIGINAL SUBAGENT PROMPT TEXT'))).toBe(true)
+      // summary 记录为 kind:'summary'（此前被记成普通 message）
+      expect(live.some((r) => r.kind === 'summary')).toBe(true)
+      // context 含摘要正文（真实产物 head[0]）
+      const ctx = await store.loadContext(run.sessionId, branch.branchId)
+      expect(JSON.stringify(ctx)).toContain('SUMMARY OF ORIGINAL PROMPT')
     } finally {
       process.env.HOME = prevHome
     }

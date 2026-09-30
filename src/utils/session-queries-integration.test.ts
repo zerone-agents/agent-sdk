@@ -9,7 +9,7 @@ import type {
 import type { QueryEngineConfig, CanUseToolFn } from '../types.js'
 import { SkillRegistry } from '../skills/index.js'
 import { createEmptyServices } from '../tools/services.js'
-import { InMemorySessionStorage } from '../session-storage-fake.js'
+import { InMemorySessionStore } from '../store/in-memory.js'
 
 /**
  * Integration test: verifies that the `maxSessionQueries` engine wiring works
@@ -103,9 +103,9 @@ function buildConfig(
     includePartialMessages: false,
     agentId: 'test-agent',
     maxSessionQueries: 2,
-    // issue #128: engine config requires sessionStorage; the todo paths are
+    // issue #131 P3: engine store is optional; the todo paths are
     // not exercised by this fixture (in-memory keeps it side-effect free).
-    sessionStorage: new InMemorySessionStorage(),
+    store: new InMemorySessionStore(),
     ...overrides,
   }
 }

@@ -1,5 +1,5 @@
 import type { ToolDefinition, ToolContext, ToolResult, SubagentContext } from '../types.js'
-import { runSubagent } from './spawn-subagent.js'
+import { runSubagent, prepareChildOwnership } from './spawn-subagent.js'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -121,16 +121,19 @@ export const MultiTaskTool: ToolDefinition = {
       }
     }
 
-    // issue #128 (review P2): explicit failure, never a silent file fallback.
-    const sessionStorage = context.sessionStorage
-    if (!sessionStorage) {
+    // issue #131 P3: explicit failure, never a silent fallback.
+    const { store, coordinator } = context
+    if (!store || !coordinator) {
       return {
         type: 'tool_result',
         tool_use_id: toolUseId,
-        content: 'Error: MultiTask requires a session storage context (missing sessionStorage).',
+        content: 'Error: MultiTask requires store + coordinator context (issue #131).',
         is_error: true,
       }
     }
+    // R2/R18：父链预登记（幂等）+ 子 ownership 构造——集中 helper（防协议分叉；本组
+    // 全部子任务共享 parent/toolUseId——兄弟关系，root 不变）
+    const childOwnership = await prepareChildOwnership(context, toolUseId, coordinator)
 
     const executions = tasks.map(async (task, index): Promise<SubtaskResult> => {
       const baseResult = { index, description: task.description }
@@ -146,7 +149,9 @@ export const MultiTaskTool: ToolDefinition = {
         taskIndex: index,
         abortSignal: context.abortSignal,
         diagnostics: context.diagnostics, // #78: child inherits diagnostics
-        sessionStorage, // #128 (review P2): narrowed above — no silent fallback
+        store, // issue #131 P3: narrowed above — no silent fallback
+        coordinator,
+        ownership: childOwnership, // R2：spawn 预登记子会话（级联删除可达）
         emitEvent: ctx.emitEvent ? (event) => ctx.emitEvent?.(event) : undefined,
       })
       return {

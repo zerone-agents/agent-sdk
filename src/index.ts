@@ -213,18 +213,10 @@ export type {
 // --------------------------------------------------------------------------
 
 export {
-  saveSession,
+  /** @deprecated v3 legacy reader——仅供导入工具；新代码用 SessionStore（./store）。 */
   loadSession,
-  listSessions,
-  forkSession,
-  getSessionMessages,
-  getSessionInfo,
-  renameSession,
-  tagSession,
-  appendToSession,
-  deleteSession,
 } from './session.js'
-export type { SessionMetadata, SessionData, ForkSource, ForkOptions } from './session.js'
+export type { SessionMetadata, SessionData } from './session.js'
 
 // --------------------------------------------------------------------------
 // Snapshot Engine
@@ -239,18 +231,14 @@ export { Semaphore } from './snapshot/semaphore.js'
 // Session Revert
 // --------------------------------------------------------------------------
 
-export { revertSession } from './session-revert.js'
-export type { RevertSessionOptions, RevertResult } from './session-revert.js'
+export { SessionConflictError, SessionNotFoundError, SessionDataInvalidError } from './store/errors.js'
 
 // --------------------------------------------------------------------------
 // Session Storage (issue #4)
 // --------------------------------------------------------------------------
 
-export { FileSessionStorage, defaultSessionStorage } from './session-storage.js'
-export type { SessionStorage, SaveOptions } from './session-storage.js'
-export { SessionConflictError, SessionNotFoundError, SessionDataInvalidError } from './session-storage.js'
-export { createSessionManager } from './session-manager.js'
-export type { SessionManager } from './session-manager.js'
+// v3 session storage retired (issue #131 P3) — persistence goes through
+// `@zerone-agent/agent-sdk/store` (SessionStore + WriteCoordinator).
 
 // --------------------------------------------------------------------------
 // Engine Snapshot
@@ -314,8 +302,8 @@ export type { AutoCompactState } from './utils/compact.js'
 export { compactMessagesStream, compactMessages } from './compact-messages.js'
 export type { CompactMessagesOptions, CompactMessagesResult } from './compact-messages.js'
 
-export { compactSessionStream, compactSession } from './compact-session.js'
-export type { CompactSessionOptions, CompactSessionResult } from './compact-session.js'
+// v3 compact-by-sessionId retired (issue #131 P3) — resume an Agent on a
+// SessionStore and call `agent.compactStream()` instead.
 
 // --------------------------------------------------------------------------
 // Request Body Size Management
