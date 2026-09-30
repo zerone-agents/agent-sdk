@@ -261,6 +261,60 @@ describe('executeSingleTool', () => {
     expect(result.content).not.toContain('- ghost')
   })
 
+  it('string input to a tool with object schema reports malformed JSON plus the expected shape (issue #139)', async () => {
+    const hooksExecute = vi.fn()
+    const ctx = makeCtx({ hooks: { execute: hooksExecute } as any })
+    // Raw string input is what BOTH provider parse sites fall back to when the
+    // model's tool-call arguments get truncated mid-JSON (or are malformed).
+    const raw = '{"tasks": [{"description": "' + 'x'.repeat(600)
+    const block = makeBlock({ id: 't1', name: 'test', input: raw })
+    const tool = makeTool({
+      name: 'test',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          tasks: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 10,
+            description: 'List of independent subtasks to run in parallel',
+          },
+        },
+        required: ['tasks'],
+      },
+    })
+
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
+
+    expect(result.is_error).toBe(true)
+    // Existing headline + bounded echo are preserved (pinned at L147)
+    expect(result.content).toContain('not valid JSON')
+    expect(result.content).toContain(raw.slice(0, 500))
+    expect(result.content).not.toContain(raw)
+    // NEW (issue #139): same Expected shape guidance as the missing-field path
+    expect(result.content).toContain('Expected shape:')
+    expect(result.content).toContain('- tasks: array (1-10 items) — List of independent subtasks to run in parallel')
+    // The tool must NOT be executed with a string input
+    expect(tool.call).not.toHaveBeenCalled()
+    // PostToolUseFailure hook fires, consistent with the missing-field path
+    expect(hooksExecute).toHaveBeenCalledWith('PostToolUseFailure', expect.objectContaining({ toolName: 'test' }))
+  })
+
+  it('string input is rejected even for tools without an object schema (existing behavior, documented)', async () => {
+    const ctx = makeCtx()
+    const block = makeBlock({ id: 't1', name: 'test', input: 'raw string input' })
+    // makeTool's default schema has EMPTY properties — the blanket rejection is intentional
+    const tool = makeTool({ name: 'test' })
+
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('not valid JSON')
+    // No Expected shape section when there is no schema to describe
+    expect(result.content).not.toContain('Expected shape:')
+    expect(tool.call).not.toHaveBeenCalled()
+  })
+
   it('returns tool result on success', async () => {
     const ctx = makeCtx()
     const block = makeBlock({ id: 't1', name: 'test', input: { path: '/tmp/x' } })
