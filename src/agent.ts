@@ -255,8 +255,6 @@ export class Agent {
   private v4Registered = false
   /** R16：在途 checkpoint prepared——close 超时时作为恢复句柄暴露（query/retry 同一操作）。 */
   private inFlightCheckpointPrepared?: PreparedOperation
-  /** R22：最近一次 checkpoint 的 prepared——completion 句柄在超时兑现后引用。 */
-  private lastCheckpointPrepared?: PreparedOperation
 
   /** Per-agent skill registry: defaultRegistry (programmatic) as base + own filesystem overlay. */
   readonly skillRegistry = new SkillRegistry(defaultRegistry)
@@ -1052,7 +1050,7 @@ export class Agent {
    * store the agent is ephemeral (no persistence). Conflicts propagate;
    * query() masks behind any in-flight error.
    */
-  private async persistCheckpoint(): Promise<OperationReceipt | undefined> {
+  private async persistCheckpoint(attempt?: { prepared?: PreparedOperation }): Promise<OperationReceipt | undefined> {
     if (this.cfg.persistSession === false || this.history.length === 0) return
 
     // ── v4 path (issue #131 P3): WriteCoordinator + CommittedMessageIndex ──
@@ -1106,7 +1104,7 @@ export class Agent {
         },
       })
       this.inFlightCheckpointPrepared = prepared
-      this.lastCheckpointPrepared = prepared   // R22：completion 句柄引用最后使用的 prepared
+      if (attempt !== undefined) attempt.prepared = prepared   // R26：句柄绑定本次尝试
       const receipt = await this.v4coordinator.retry(this.sid, prepared).finally(() => {
         this.inFlightCheckpointPrepared = undefined
       })
@@ -1357,12 +1355,14 @@ export class Agent {
     // query/retry 恢复）；超时抛 SessionCloseTimeoutError（写入可能仍在后台落盘：
     // 先 query 回执再决定重试，不盲目重发）。
     let timerHandle: ReturnType<typeof setTimeout> | undefined
-    // R22：completion 句柄——追踪整个 checkpoint 生命周期（含「超时时尚未 prepare、
-    // 之后仍会 prepare+提交」的场景；宿主 await 句柄兑现结果再 query/retry）。
-    const checkpoint = this.persistCheckpoint()
+    // R22/R26：completion 句柄——追踪整个 checkpoint 生命周期（含「超时时尚未
+    // prepare、之后仍会 prepare+提交」的场景）。R26：恢复句柄绑定**本次**尝试的
+    // lifecycle 持有者——本次未 prepare 时绝不携带任何历史操作句柄（防串号。
+    const attempt: { prepared?: PreparedOperation } = {}
+    const checkpoint = this.persistCheckpoint(attempt)
     const completion: Promise<CheckpointCompletion> = checkpoint.then(
-      (receipt) => ({ status: 'committed' as const, receipt, prepared: this.lastCheckpointPrepared }),
-      (error: unknown) => ({ status: 'failed' as const, error, prepared: this.lastCheckpointPrepared }),
+      (receipt) => ({ status: 'committed' as const, receipt, prepared: attempt.prepared }),
+      (error: unknown) => ({ status: 'failed' as const, error, prepared: attempt.prepared }),
     )
     const timer = new Promise<never>((_, reject) => {
       timerHandle = setTimeout(

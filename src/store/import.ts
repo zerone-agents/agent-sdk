@@ -29,6 +29,50 @@ function isUnknownOutcome(err: unknown): boolean {
   return err instanceof Error && err.name === 'CoordinatorUnknownError'
 }
 
+/**
+ * 提交结果分类（R27 judgement）：统一 retry 后的 imported / conflict / unknown /
+ * rejected 归类——首次导入与恢复导入共用，防协议分叉。
+ */
+async function executePreparedImport(
+  coordinator: WriteCoordinator,
+  sessionId: string,
+  prepared: PreparedOperation,
+  counts?: { existingRevision?: number; messageCount?: number; todoCount?: number },
+): Promise<ImportReport> {
+  try {
+    const receipt = await coordinator.retry(sessionId, prepared)
+    return {
+      status: 'imported',
+      sessionId,
+      operationId: receipt.operationId,
+      revision: receipt.revision ?? 0,
+      messageCount: counts?.messageCount ?? 0,
+      todoCount: counts?.todoCount ?? 0,
+    }
+  } catch (err) {
+    if (err instanceof SessionConflictError) {
+      // create-only 冲突 = 目标被并发创建——按契约 already-exists-unknown
+      return {
+        status: 'already-exists-unknown',
+        sessionId,
+        existingRevision: counts?.existingRevision ?? -1,
+        prepared,
+        reason: `create-only conflict (target created concurrently): ${String(err)}`,
+      }
+    }
+    if (isUnknownOutcome(err)) {
+      return {
+        status: 'already-exists-unknown',
+        sessionId,
+        existingRevision: counts?.existingRevision ?? -1,
+        prepared: (err as { prepared?: PreparedOperation }).prepared ?? prepared,
+        reason: `outcome unknown: ${String(err)}`,
+      }
+    }
+    return { status: 'not-imported', sessionId, reason: `rejected: ${String(err)}` }
+  }
+}
+
 export type ImportReport =
   | {
     status: 'imported'
@@ -124,39 +168,8 @@ export async function importLegacySession(
       }
     }
     // not-committed → 用**原 prepared**重试（同 operationId，不重新生成——spec §5）
-    try {
-      const receipt = await coordinator.retry(sessionId, init.resume)
-      return {
-        status: 'imported',
-        sessionId,
-        operationId: receipt.operationId,
-        revision: receipt.revision ?? 0,
-        messageCount: 0,
-        todoCount: 0,
-      }
-    } catch (err) {
-      if (err instanceof SessionConflictError) {
-        // R23②：create-only 冲突 = 其他操作已创建目标——按契约 already-exists-unknown
-        return {
-          status: 'already-exists-unknown',
-          sessionId,
-          existingRevision: -1,
-          prepared: init.resume,
-          reason: `retry hit a create-only conflict (target created concurrently): ${String(err)}`,
-        }
-      }
-      if (isUnknownOutcome(err)) {
-        const prepared = (err as { prepared?: PreparedOperation }).prepared ?? init.resume
-        return {
-          status: 'already-exists-unknown',
-          sessionId,
-          existingRevision: -1,
-          prepared,
-          reason: `retry outcome unknown: ${String(err)}`,
-        }
-      }
-      return { status: 'not-imported', sessionId, reason: `retry rejected: ${String(err)}` }
-    }
+    // R27：分类与首次导入共用
+    return executePreparedImport(coordinator, sessionId, init.resume)
   }
 
   // ── skip 判定按**转录存在性**（§8.3）：register-only 不跳过 ──
@@ -229,38 +242,12 @@ export async function importLegacySession(
       ...(todos !== null && todos.length > 0 ? { todos } : {}),
     },
   })
-  try {
-    const receipt = await coordinator.retry(sessionId, prepared)
-    return {
-      status: 'imported',
-      sessionId,
-      operationId: receipt.operationId,
-      revision: receipt.revision ?? 0,
-      messageCount: newRecords.length,
-      todoCount: todos?.length ?? 0,
-    }
-  } catch (err) {
-    if (err instanceof SessionConflictError) {
-      // R23：首次 create-only 冲突 = 目标被并发创建——按契约 already-exists-unknown
-      return {
-        status: 'already-exists-unknown',
-        sessionId,
-        existingRevision: existing?.revision ?? -1,
-        prepared,
-        reason: `create-only conflict (target created concurrently): ${String(err)}`,
-      }
-    }
-    if (isUnknownOutcome(err)) {
-      return {
-        status: 'already-exists-unknown',
-        sessionId,
-        existingRevision: existing?.revision ?? -1,
-        prepared: (err as { prepared?: PreparedOperation }).prepared ?? prepared,
-        reason: `import outcome unknown: ${String(err)}`,
-      }
-    }
-    return { status: 'not-imported', sessionId, reason: `import rejected: ${String(err)}` }
-  }
+  // R27：提交 + 分类与恢复导入共用（防协议分叉）
+  return executePreparedImport(coordinator, sessionId, prepared, {
+    existingRevision: existing?.revision ?? -1,
+    messageCount: newRecords.length,
+    todoCount: todos?.length ?? 0,
+  })
 }
 
 export interface ImportArchiveReport {

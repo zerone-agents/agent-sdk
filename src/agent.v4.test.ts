@@ -388,6 +388,47 @@ describe('Agent on v4 SessionStore (issue #131, P3 T3)', () => {
     expect(q).not.toBeNull()
   })
 
+  it('review R26: completion binds THIS checkpoint lifecycle — no stale prepared from a prior success', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    const agent = new Agent(base({ store, coordinator: coord, sessionCloseTimeoutMs: 50 }))
+    const i = internals(agent)
+    // 1. Checkpoint A succeeds (message a committed)
+    i.history = [msg('a', 'alpha')]
+    await i.persistCheckpoint()
+    // 2. Add pending b; gate loadSession so close B times out pre-prepare
+    const originalLoad = store.loadSession.bind(store)
+    let release!: () => void
+    const gate = new Promise<void>((res) => { release = res })
+    let gated = false
+    ;(store as unknown as { loadSession: unknown }).loadSession = async (sid: string) => {
+      if (!gated) {
+        gated = true
+        await gate
+        throw new Error('EIO: disk read failed after the gate')
+      }
+      return originalLoad(sid)
+    }
+    i.history = [...i.history, msg('b', 'beta')]
+    let caught: SessionCloseTimeoutError | undefined
+    try {
+      await agent.close()
+    } catch (e) {
+      caught = e as SessionCloseTimeoutError
+    }
+    expect(caught).toBeInstanceOf(SessionCloseTimeoutError)
+    expect(caught!.prepared).toBeUndefined()
+    // 3. Release: the gated read throws → B never prepares/commits
+    release()
+    const done = await caught!.completion!
+    expect(done.status).toBe('failed')
+    // 4. NO stale handle: A's prepared must NOT ride this completion (评审反例：串号)
+    expect(done.prepared).toBeUndefined()
+    // a is safe (revision 1); b was never committed
+    const state = await store.loadSession(i.sid)
+    expect(state!.revision).toBe(1)
+  })
+
   it('review R11: multi-round compact covers expand to ORIGINALS (no old-summary in new covers)', async () => {
     const store = new InMemorySessionStore()
     const coord = new WriteCoordinator({ store })
