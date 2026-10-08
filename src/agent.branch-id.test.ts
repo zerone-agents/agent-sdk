@@ -4,10 +4,14 @@
  * （如 App SQLite）拒绝 `branchId required`。验收 6 项 + InMemory 契约防御。
  */
 import { describe, expect, it } from 'vitest'
-import { Agent } from './agent.js'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Agent, createAgent } from './agent.js'
 import { InMemorySessionStore } from './store/in-memory.js'
 import { WriteCoordinator } from './store/coordinator.js'
 import { prepareOperation } from './store/prepare.js'
+import { fingerprintOperation } from './store/fingerprint.js'
 import { SessionDataInvalidError } from './store/errors.js'
 import type { NewRecord, PreparedOperation } from './store/types.js'
 import type { AgentOptions } from './types.js'
@@ -33,6 +37,23 @@ const rec = (rid: string, mid: string, text: string): NewRecord => ({
   message: { id: mid, role: 'user', content: text },
   actor: { kind: 'main' },
 })
+
+/** App-SQLite-like strict store（issue #145）：拒绝空实体分支 id 的 commit（含 fork 嵌套 source）。 */
+class StrictBranchStore extends InMemorySessionStore {
+  override async commit(...args: Parameters<InMemorySessionStore['commit']>): ReturnType<InMemorySessionStore['commit']> {
+    const payload = args[1] as unknown as { payload?: { branchId?: unknown; source?: { branchId?: unknown } } }
+    const p = payload.payload
+    if (p !== undefined && typeof p === 'object') {
+      if ('branchId' in p && p.branchId === '') {
+        throw new SessionDataInvalidError(args[0], 'branchId required')
+      }
+      if (p.source !== undefined && typeof p.source === 'object' && p.source.branchId === '') {
+        throw new SessionDataInvalidError(args[0], 'source.branchId required')
+      }
+    }
+    return super.commit(...args)
+  }
+}
 
 describe('issue #145: empty branchId on first checkpoint (register-only state)', () => {
   it('acceptance 1: first checkpoint creates a NON-EMPTY branch (repro: was {"currentBranchId":"","branches":[""]})', async () => {
@@ -135,17 +156,7 @@ describe('issue #145: empty branchId on first checkpoint (register-only state)',
   })
 
   it('acceptance 6: STRICT adapter (rejects empty branchId) + real agent flow succeeds', async () => {
-    /** App-SQLite-like strict store: rejects empty entity branch ids at commit. */
-    const strict = new class extends InMemorySessionStore {
-      override async commit(...args: Parameters<InMemorySessionStore['commit']>): ReturnType<InMemorySessionStore['commit']> {
-        const payload = args[1] as unknown as { payload?: { branchId?: unknown } }
-        if (payload.payload !== undefined && typeof payload.payload === 'object'
-          && 'branchId' in payload.payload && payload.payload.branchId === '') {
-          throw new SessionDataInvalidError(args[0], 'branchId required')
-        }
-        return super.commit(...args)
-      }
-    }()
+    const strict = new StrictBranchStore()
     const coord = new WriteCoordinator({ store: strict })
     const agent = new Agent(base({ store: strict, coordinator: coord }))
     const i = internals(agent)
@@ -185,5 +196,100 @@ describe('issue #145: empty-branchId contract defense (no lenient reference impl
         },
       }))
     }).rejects.toThrow(SessionDataInvalidError)
+  })
+
+  it('review P2: fork with empty source.branchId rejected at prepare AND commit; zero residue', async () => {
+    const store = new InMemorySessionStore()
+    const coord = new WriteCoordinator({ store })
+    // Seed a legal source session (revision=1, branch b1)
+    await coord.execute('source', {
+      kind: 'checkpoint', expectedRevision: null,
+      changeSet: { kind: 'checkpoint', branchId: 'b1', newRecords: [rec('r1', 'm1', 'x')], metadataPatch: {} },
+    })
+    // Layer 1: prepare rejects (fail-fast)
+    await expect(async () => {
+      prepareOperation('target', {
+        kind: 'fork', expectedRevision: null,
+        changeSet: {
+          kind: 'fork', source: { sessionId: 'source', branchId: '' },
+          sourceRevision: 1, newSessionId: 'target',
+          records: [], effective: [], context: { segments: [] },
+          metadata: {}, ownership: { rootSessionId: 'target' },
+        },
+      })
+    }).rejects.toThrow(SessionDataInvalidError)
+    // Layer 2: bypass prepare with a correct fingerprint → commit rejects; 零残留
+    const payload = {
+      kind: 'fork' as const, source: { sessionId: 'source', branchId: '' },
+      sourceRevision: 1, newSessionId: 'target',
+      records: [], effective: [], context: { segments: [] },
+      metadata: {}, ownership: { rootSessionId: 'target' },
+    }
+    const hostile = {
+      operationId: 'op-fork-empty-branch',
+      sessionId: 'target', kind: 'fork', payload, expectedRevision: null,
+      fingerprint: fingerprintOperation('target', 'fork', payload, null),
+      actor: { kind: 'sdk' }, createdAt: new Date().toISOString(),
+    } as unknown as PreparedOperation
+    await expect(store.commit('target', hostile)).rejects.toThrow(SessionDataInvalidError)
+    expect(await store.loadSession('target')).toBeNull()                     // 目标零残留
+    expect(await store.queryOperation('target', 'op-fork-empty-branch')).toMatchObject({ status: 'not-committed' })
+  })
+})
+
+describe('issue #145 review P2: PUBLIC flow regression (prompt → close → resume)', () => {
+  it('real query round-trip on a strict store: non-empty branch, user+assistant persisted, resume carries context', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sdk-pubflow-'))
+    const originalFetch = globalThis.fetch
+    const requestBodies: string[] = []
+    // Deterministic openai-completions SSE stub（issue #145 复现脚本的形状）
+    globalThis.fetch = (async (_input: unknown, init?: { body?: string }) => {
+      if (typeof init?.body === 'string') requestBodies.push(init.body)
+      return new Response([
+        'data: ' + JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: 'answer' }, finish_reason: null }] }),
+        'data: ' + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+        'data: [DONE]',
+      ].join('\n\n') + '\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    }) as typeof fetch
+    try {
+      const strict = new StrictBranchStore()
+      const coord = new WriteCoordinator({ store: strict })
+      const opts = (extra: Partial<AgentOptions> = {}): AgentOptions => ({
+        model: 'test-model', apiKey: 'test',
+        apiType: 'openai-completions',
+        baseURL: 'https://sdk-test.invalid/v1',
+        store: strict, coordinator: coord,
+        settingSources: [],
+        includePartialMessages: true,   // 走流式 createMessageStream（SSE stub 的解析路径）
+        enableFileRevert: false,
+        persistSession: true,
+        cwd,
+        mcpServers: {},
+        ...extra,
+      })
+      // Round 1: PUBLIC prompt → close
+      const agent1 = createAgent(opts({ sessionId: 'pub-flow' }))
+      await agent1.prompt('first question')
+      await agent1.close()
+      const state = await strict.loadSession('pub-flow')
+      expect(state?.currentBranchId).not.toBe('')
+      // Real roles persisted: first-round user + assistant
+      const ctx1 = await strict.loadContext('pub-flow', state!.currentBranchId)
+      const roles = ctx1.map((m) => (m as { role?: string }).role)
+      expect(roles).toContain('user')
+      expect(roles).toContain('assistant')
+      expect(ctx1.some((m) => JSON.stringify(m).includes('first question'))).toBe(true)
+      // Round 2: NEW agent resumes → second prompt; the request carries the first round
+      const agent2 = createAgent(opts({ resume: 'pub-flow' }))
+      await agent2.prompt('second question')
+      const lastBody = requestBodies[requestBodies.length - 1] ?? ''
+      expect(lastBody).toContain('first question')
+      // Branch stability: single branch, unchanged id（resume 不产生重复分支）
+      const state2 = await strict.loadSession('pub-flow')
+      expect(state2!.branches.map((b) => b.branchId)).toEqual([state!.currentBranchId])
+    } finally {
+      globalThis.fetch = originalFetch
+      rmSync(cwd, { recursive: true, force: true })
+    }
   })
 })
