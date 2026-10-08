@@ -1848,3 +1848,72 @@ describe('compact capture for store commits (review R12)', () => {
     expect(captures[0]!.some((m) => (m as { id?: string }).id === 'q4')).toBe(true)
   })
 })
+
+describe('tool input format errors end-to-end (issue #144)', () => {
+  const tasksTool: ToolDefinition = {
+    name: 'MultiTask',
+    description: 'probe tool',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { tasks: { type: 'array', items: { type: 'object' } } },
+      required: ['tasks'],
+    },
+    call: vi.fn().mockResolvedValue({ type: 'tool_result' as const, tool_use_id: '', content: 'EXECUTED-OK' }),
+  } as ToolDefinition
+
+  /** Fake provider: first call yields one tool_use chunk whose input is the given raw string. */
+  function providerWithRawToolInput(rawInput: string): LLMProvider {
+    let call = 0
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage(): Promise<any> { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        call++
+        if (call === 1) {
+          yield { type: 'tool_use', index: 0, id: 'tu_1', name: 'MultiTask', input: rawInput } as StreamChunk
+        }
+        yield { type: 'done', index: -1, stopReason: call === 1 ? 'tool_use' : 'end_turn' } as StreamChunk
+      },
+    }
+  }
+
+  function findToolResult(msgs: SDKMessage[]): { output: string; is_error?: boolean } {
+    const m = msgs.find((x) => x.type === 'tool_result') as any
+    if (!m) throw new Error('no tool_result message emitted')
+    return m.result
+  }
+
+  function findAssistantToolInput(msgs: SDKMessage[]): unknown {
+    const m = msgs.find((x) => x.type === 'assistant') as any
+    const block = m?.message?.content?.find((b: any) => b.type === 'tool_use')
+    if (!block) throw new Error('no assistant tool_use block emitted')
+    return block.input
+  }
+
+  it('malformed JSON string input → format error to the LLM, transcript keeps API-valid {}', async () => {
+    const raw = '{"tasks":[{"prompt":"Check "data flow" claims"}]}'
+    const msgs = await run(new QueryEngine(makeConfig(providerWithRawToolInput(raw), [tasksTool])))
+
+    const result = findToolResult(msgs)
+    expect(result.is_error).toBe(true)
+    expect(result.output).toContain('Invalid input format for "MultiTask"')
+    expect(result.output).toContain('malformed JSON')
+    expect(result.output).not.toContain('Missing required fields')
+    // Transcript must stay API-valid (tool_use input must be an object)
+    expect(findAssistantToolInput(msgs)).toEqual({})
+    expect((tasksTool.call as any).mock?.calls?.length ?? 0).toBe(0)
+  })
+
+  it('double-encoded valid JSON string → recovered, executed, transcript carries the recovered object', async () => {
+    const inner = { tasks: [{ description: 'Review', subagent_type: 'Explore', prompt: 'Read the code' }] }
+    const raw = JSON.stringify(JSON.stringify(inner))
+    const tool = { ...tasksTool, call: vi.fn().mockResolvedValue({ type: 'tool_result' as const, tool_use_id: '', content: 'EXECUTED-OK' }) } as ToolDefinition
+    const msgs = await run(new QueryEngine(makeConfig(providerWithRawToolInput(raw), [tool])))
+
+    const result = findToolResult(msgs)
+    expect(result.is_error).not.toBe(true)
+    expect(result.output).toContain('EXECUTED-OK')
+    expect((tool.call as any).mock.calls[0][0]).toEqual(inner)
+    expect(findAssistantToolInput(msgs)).toEqual(inner)
+  })
+})

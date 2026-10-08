@@ -31,6 +31,7 @@ import type { HookRegistry } from '../hooks.js'
 import type { Logger } from '../utils/logger.js'
 import { adaptToDiagnosticsSink, stableErrorType } from '../utils/diagnostics.js'
 import { ellipsize, formatInputPreview, redactSensitiveFields } from '../utils/helpers.js'
+import { normalizeToolInput, describeJsonValue, type ToolInputFormatError } from '../utils/tool-input.js'
 
 /**
  * #137: render a compact expected-shape hint per missing field, derived from
@@ -119,6 +120,13 @@ export interface ToolExecutionContext {
   sessionId: string
   hooks?: HookRegistry
   logger: Logger
+  /**
+   * #144: format errors recorded by the engine's pre-execution input
+   * normalization (engine path), keyed by tool_use id. The transcript block
+   * already carries `{}` for API validity — the executor must report THIS
+   * error instead of a misleading missing-required-fields validation error.
+   */
+  toolInputErrors?: Map<string, ToolInputFormatError>
 }
 
 // Superset context handed to every tool call: base ToolContext + SkillContext + SubagentContext.
@@ -127,6 +135,68 @@ type EngineToolContext = ToolContext & SkillContext & SubagentContext
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/** #144: fire PostToolUseFailure for input-format failures, consistent with the validation-failure path. */
+async function fireInputFailureHook(ctx: ToolExecutionContext, block: ToolUseBlock): Promise<void> {
+  if (!ctx.hooks) return
+  try {
+    await ctx.hooks.execute('PostToolUseFailure', {
+      event: 'PostToolUseFailure',
+      toolName: block.name,
+      toolInput: block.input,
+      toolUseId: block.id,
+      error: 'invalid tool input format',
+    })
+  } catch {
+    // Hook errors are non-fatal
+  }
+}
+
+/** Best-effort short preview of a non-string input value. */
+function safePreview(v: unknown): string {
+  try {
+    return JSON.stringify(v) ?? String(v)
+  } catch {
+    return String(v)
+  }
+}
+
+/**
+ * #144: LLM-visible format error. Wording is tailored to the failure kind
+ * (malformed JSON / valid JSON string wrapping malformed inner JSON / value
+ * is not an object); raw excerpts are bounded; the expected shape is reused
+ * from #137 so the model can fix the call in one retry. Applies to ALL tools.
+ */
+function buildInputFormatError(name: string, info: ToolInputFormatError, tool?: ToolDefinition): string {
+  const lines = [`Invalid input format for "${name}".`]
+  if (info.kind === 'invalid-json') {
+    lines.push('Expected a JSON object, but received malformed JSON.')
+  } else if (info.kind === 'malformed-inner') {
+    lines.push('Expected a JSON object, but received a JSON-encoded string containing malformed JSON.')
+  } else {
+    lines.push(`Expected a JSON object, but received ${info.received ?? 'a non-object value'}.`)
+  }
+  if (info.offset !== undefined) lines.push(`Parse error near offset ${info.offset}.`)
+  lines.push('', 'Raw input (first 500 chars):', info.raw.slice(0, 500))
+  if (tool?.inputSchema?.properties) {
+    const shapeHints = renderExpectedShape(
+      tool.inputSchema.required ?? Object.keys(tool.inputSchema.properties),
+      tool.inputSchema.properties,
+    )
+    if (shapeHints.length > 0) lines.push('', 'Expected shape:', ...shapeHints)
+  }
+  if (info.kind === 'malformed-inner') {
+    lines.push(
+      '',
+      'Pass the arguments object directly, without wrapping the entire object in quotes.',
+      'Escape double quotes inside string values.',
+    )
+  } else if (info.kind === 'invalid-json') {
+    lines.push('', 'Pass the arguments as a single JSON object.')
+  }
+  lines.push('', 'Please correct the input and try again.')
+  return lines.join('\n')
+}
 
 /** Format a ToolResult into the SDKToolResultMessage['result'] shape. */
 function formatResult(
@@ -456,46 +526,51 @@ export async function executeSingleTool(
     }
   }
 
-  // Validate input: must be an object (not a raw string from failed JSON parse)
-  if (typeof block.input === 'string') {
-    // #139: fire PostToolUseFailure consistently with the missing-field path.
-    if (ctx.hooks) {
-      try {
-        await ctx.hooks.execute('PostToolUseFailure', {
-          event: 'PostToolUseFailure',
-          toolName: block.name,
-          toolInput: block.input,
-          toolUseId: block.id,
-          error: 'input is not valid JSON',
-        })
-      } catch {
-        // Hook errors are non-fatal
-      }
-    }
-    const lines = [
-      `Tool call "${block.name}" failed — input is not valid JSON.`,
-      '',
-      'Raw input (first 500 chars):',
-      String(block.input).slice(0, 500),
-    ]
-    // #139: reuse the #137 expected-shape rendering so the model can fix the
-    // call in ONE retry instead of resending the same oversized arguments.
-    if (tool.inputSchema?.properties) {
-      const shapeHints = renderExpectedShape(
-        tool.inputSchema.required ?? Object.keys(tool.inputSchema.properties),
-        tool.inputSchema.properties,
-      )
-      if (shapeHints.length > 0) lines.push('', 'Expected shape:', ...shapeHints)
-    }
-    lines.push(
-      '',
-      'This usually happens when maxTokens is too low and the response was truncated.',
-      'Please try again with shorter content, or break the task into smaller steps.',
-    )
+  // Validate input format BEFORE schema-required-field validation (issue #144).
+  // 1) Engine path: the pre-execution normalization recorded a format error for
+  //    this tool_use id (the transcript block was left as {} for API validity).
+  const recordedFormatError = ctx.toolInputErrors?.get(block.id)
+  if (recordedFormatError) {
+    await fireInputFailureHook(ctx, block)
     return {
       type: 'tool_result',
       tool_use_id: block.id,
-      content: lines.join('\n'),
+      content: buildInputFormatError(block.name, recordedFormatError, tool),
+      is_error: true,
+      tool_name: block.name,
+    }
+  }
+
+  // 2) Direct string input (non-engine callers): attempt bounded recovery —
+  //    a valid double-encoded JSON object is decoded once more and executed.
+  if (typeof block.input === 'string') {
+    const norm = normalizeToolInput(block.input)
+    if (norm.ok) {
+      block.input = norm.value
+    } else {
+      await fireInputFailureHook(ctx, block)
+      return {
+        type: 'tool_result',
+        tool_use_id: block.id,
+        content: buildInputFormatError(block.name, { ...norm, raw: block.input }, tool),
+        is_error: true,
+        tool_name: block.name,
+      }
+    }
+  }
+
+  // 3) Non-string values that are still not plain objects (array/null/scalars):
+  //    expected-object error, never a misleading missing-fields error.
+  if (block.input !== undefined && (block.input === null || typeof block.input !== 'object' || Array.isArray(block.input))) {
+    await fireInputFailureHook(ctx, block)
+    return {
+      type: 'tool_result',
+      tool_use_id: block.id,
+      content: buildInputFormatError(
+        block.name,
+        { kind: 'not-an-object', raw: safePreview(block.input), received: describeJsonValue(block.input) },
+        tool,
+      ),
       is_error: true,
       tool_name: block.name,
     }

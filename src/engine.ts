@@ -56,6 +56,7 @@ import {
 } from './utils/retry.js'
 import type { RetryEvent } from './utils/retry.js'
 import { normalizeMessagesForAPI } from './utils/messages.js'
+import { normalizeToolInput, type ToolInputFormatError } from './utils/tool-input.js'
 import type { HookRegistry, HookInput, HookOutput } from './hooks.js'
 import { buildSystemPrompt } from './engine/prompt-builder.js'
 import { buildResponseFromChunks } from './engine/stream-parser.js'
@@ -688,23 +689,39 @@ export class QueryEngine {
       // Reset max_output recovery counter on successful tool use
       maxOutputRecoveryAttempts = 0
 
-      // Sanitize assistant message: ensure tool_use input is an object (not raw string)
-      // so the API accepts it on subsequent turns. Must happen BEFORE executeTools so
-      // the transcript is consistent even if generator is force-returned during yield.
+      // Sanitize assistant message: tool_use input must be an object (not raw
+      // string) so the API accepts it on subsequent turns. Must happen BEFORE
+      // executeTools so the transcript is consistent even if the generator is
+      // force-returned during yield.
       //
       // Contract: at this point in the flow, the last message in this.messages is
       // the assistant message we just decoded from the stream (no user/tool_result
       // message has been pushed yet — that happens inside executeTools below).
-      // If Task 3 or later inserts any intermediate message between stream
-      // completion and this sanitize, the `length - 1` index will silently point
-      // at the wrong message. The `role === 'assistant'` guard below is the
-      // runtime assertion of this contract — if it fails, sanitize is a no-op
-      // rather than corrupting an unrelated message.
+      // The `role === 'assistant'` guard is the runtime assertion of this contract.
+      //
+      // #144: instead of blanket-replacing strings with {} (which made required-
+      // field validation report a misleading "Input was: {}"), normalize first:
+      // a VALID double-encoded JSON object is recovered (bounded: one extra
+      // parse) and used for both execution and the transcript; unrecoverable
+      // strings keep the transcript API-valid ({}) while the REAL format error
+      // is reported to the LLM via toolInputErrors on the execution context.
+      const toolInputErrors = new Map<string, ToolInputFormatError>()
       const assistantMsgPreExec = this.messages[this.messages.length - 1]
       if (assistantMsgPreExec?.role === 'assistant' && Array.isArray(assistantMsgPreExec.content)) {
         for (const block of assistantMsgPreExec.content as any[]) {
           if (block.type === 'tool_use' && typeof block.input === 'string') {
-            block.input = {}
+            const norm = normalizeToolInput(block.input)
+            if (norm.ok) {
+              block.input = norm.value
+            } else {
+              toolInputErrors.set(block.id, {
+                kind: norm.kind,
+                raw: block.input,
+                offset: norm.offset,
+                received: norm.received,
+              })
+              block.input = {}
+            }
           }
         }
       }
@@ -727,6 +744,7 @@ export class QueryEngine {
         sessionId: this.sessionId,
         hooks: this.hookRegistry,
         logger: this.logger.child({ component: 'tool-executor' }),
+        toolInputErrors, // #144: format errors recorded during the pre-execution normalize
       }
       for await (const event of executeToolsFn(toolCtx, toolUseBlocks)) {
         if (this.config.abortSignal?.aborted) break
