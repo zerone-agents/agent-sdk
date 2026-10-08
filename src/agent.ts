@@ -648,8 +648,12 @@ export class Agent {
           throw new SessionNotFoundError(this.cfg.resume)
         }
         this.sid = this.cfg.resume
-        this.history = await this.v4store.loadContext(this.sid, state.currentBranchId)
-        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId)
+        // issue #145：register-only/todos-only（branches=[]）resume → 空历史起步——
+        // currentBranchId 为空串（非实体分支），不得对其查询上下文
+        this.history = state.branches.length > 0
+          ? await this.v4store.loadContext(this.sid, state.currentBranchId)
+          : []
+        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId || 'b1')
         this.v4Revision = state.revision
         this.sessionRevision = state.revision
         this.v4Registered = true  // resume implies the session already exists (registered)
@@ -1035,12 +1039,12 @@ export class Agent {
     const state = await this.v4store.loadSession(this.sid)
     if (!state) return
     if (!this.v4Index) {
-      this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId ?? 'b1')
+      this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId || 'b1')
     }
     if (state.revision !== this.v4Revision) {
       if (this.engineCompactRevision === state.revision) {
         this.v4Revision = state.revision
-        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId ?? 'b1')
+        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state.currentBranchId || 'b1')
       } else {
         throw new SessionConflictError(this.sid, this.v4Revision, state.revision)
       }
@@ -1081,7 +1085,7 @@ export class Agent {
       // Build index on first use or after compact
       if (!this.v4Index) {
         const state = await this.v4store.loadSession(this.sid)
-        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state?.currentBranchId ?? 'b1')
+        this.v4Index = await CommittedMessageIndex.rebuild(this.v4store, this.sid, state?.currentBranchId || 'b1')
       }
       // syncBeforeCheckpoint: detect external modifications → throw on conflict
       const state = await this.v4store.loadSession(this.sid)
@@ -1102,7 +1106,7 @@ export class Agent {
         actor: { kind: 'main' },
       }))
       if (newRecords.length === 0) return  // no change — skip
-      const branchId = state?.currentBranchId ?? 'b1'
+      const branchId = state?.currentBranchId || 'b1'
       // R16：Agent 侧 prepare——operationId 先于 dispatch 可知；close 超时可暴露
       // prepared 供宿主 query/retry 恢复同一操作。经 coordinator.retry 派发
       //（与 execute 相同的 dispatch 路径；auth 于 dispatch 注入、指纹不含 auth）。

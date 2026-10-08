@@ -120,6 +120,32 @@ async function p1Suite(store: SessionStore): Promise<void> {
     assert.equal((await store.loadHistory(s, 'b1')).records.length, 1)
   })
 
+  await step('issue #145: empty entity branchId rejected at prepare AND commit (defense in depth)', async () => {
+    const s = sid()
+    // prepare 阶段 fail-fast（SDK 侧，全 adapter 一致）
+    await assert.rejects(async () => {
+      prepareOperation(s, {
+        kind: 'checkpoint', expectedRevision: null,
+        changeSet: { kind: 'checkpoint', branchId: '', newRecords: [rec('mE')], metadataPatch: {} },
+      })
+    }, /branchId/)
+    // commit 阶段防御：绕过 prepare 校验、指纹一致的损坏/恶意 prepared 也必须拒绝
+    const payload = {
+      kind: 'checkpoint' as const, branchId: '', newRecords: [rec('mE2')], metadataPatch: {},
+    }
+    const hostile = {
+      operationId: 'op-empty-branch-defense',
+      sessionId: s,
+      kind: 'checkpoint',
+      payload,
+      expectedRevision: null,
+      fingerprint: fingerprintOperation(s, 'checkpoint', payload, null),
+      actor: { kind: 'sdk' },
+      createdAt: new Date().toISOString(),
+    } as unknown as PreparedOperation
+    await assert.rejects(() => store.commit(s, hostile), /branchId/)
+  })
+
   await step('compact: originals+summary in ONE create-only commit; effective/context split', async () => {
     const s = sid()
     const a = rec('mA', 'first')
