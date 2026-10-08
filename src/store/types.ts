@@ -211,6 +211,20 @@ export function assertIntentShape(sessionId: string, intent: OperationIntent): v
         `intent.kind "${kind}" does not match changeSet.kind "${String(payloadKind)}"`,
       )
     }
+    // issue #145 防御：实体分支 ID 必须非空字符串——register-only 状态的
+    // currentBranchId 是空串（非实体分支），宽松参考实现不得把空 ID 写入转录
+    const cs = (intent as { changeSet?: Record<string, unknown> }).changeSet
+    for (const field of ['branchId', 'fromBranchId', 'toBranchId', 'newBranchId']) {
+      if (cs !== undefined && field in cs && cs[field] === '') {
+        throw new SessionDataInvalidError(sessionId, `${kind}: ${field} must be a non-empty string`)
+      }
+    }
+    // 复审 P2：fork 的目标实体分支经嵌套 source.branchId 引用——顶层枚举漏掉
+    //（applyChangeSet 用该值创建目标分支，空串同样产出空 ID 实体）
+    const src = cs !== undefined ? (cs.source as { branchId?: unknown } | undefined) : undefined
+    if (src !== undefined && src.branchId === '') {
+      throw new SessionDataInvalidError(sessionId, `${kind}: source.branchId must be a non-empty string`)
+    }
   }
   const hasPremise = 'expectedRevision' in intent && (intent as { expectedRevision?: unknown }).expectedRevision !== undefined
   if (TRANSCRIPT_KINDS.has(kind)) {
