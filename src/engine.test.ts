@@ -1916,4 +1916,32 @@ describe('tool input format errors end-to-end (issue #144)', () => {
     expect((tool.call as any).mock.calls[0][0]).toEqual(inner)
     expect(findAssistantToolInput(msgs)).toEqual(inner)
   })
+
+  it('triple-encoded JSON exceeds the bounded recovery budget and is rejected (real chain, P2 review)', async () => {
+    // The accumulator already parses once; entry-point normalization may parse
+    // at most once more. Triple-encoded input must NOT be accepted end-to-end.
+    const raw = JSON.stringify(JSON.stringify(JSON.stringify({ tasks: [{ description: 'x' }] })))
+    const tool = { ...tasksTool, call: vi.fn().mockResolvedValue({ type: 'tool_result' as const, tool_use_id: '', content: 'EXECUTED-OK' }) } as ToolDefinition
+    const msgs = await run(new QueryEngine(makeConfig(providerWithRawToolInput(raw), [tool])))
+
+    const result = findToolResult(msgs)
+    expect(result.is_error).toBe(true)
+    expect(result.output).toContain('Invalid input format for "MultiTask"')
+    expect(result.output).not.toContain('Missing required fields')
+    expect((tool.call as any).mock.calls.length).toBe(0)
+  })
+
+  it('double-encoded args with malformed inner JSON → malformed-inner guidance (real chain, observed case)', async () => {
+    // The issue's observed combination: outer JSON-string layer decodes fine,
+    // the decoded content has unescaped quotes. Classification must happen at
+    // the entry point so the dedicated guidance survives.
+    const raw = JSON.stringify('{"tasks":[{"prompt":"Check "data flow" claims"}]}')
+    const msgs = await run(new QueryEngine(makeConfig(providerWithRawToolInput(raw), [tasksTool])))
+
+    const result = findToolResult(msgs)
+    expect(result.is_error).toBe(true)
+    expect(result.output).toContain('JSON-encoded string containing malformed JSON')
+    expect(result.output).toContain('without wrapping the entire object in quotes')
+    expect(result.output).not.toContain('Missing required fields')
+  })
 })

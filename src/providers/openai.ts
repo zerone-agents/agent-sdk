@@ -131,6 +131,7 @@ interface OpenAIChatResponse {
 // --------------------------------------------------------------------------
 
 import { createDiagnosticsSink, type DiagnosticsSink } from '../utils/diagnostics.js'
+import { normalizeToolInput } from '../utils/tool-input.js'
 
 export class OpenAIProvider implements LLMProvider {
   readonly apiType = 'openai-completions' as const
@@ -704,13 +705,19 @@ export class OpenAIProvider implements LLMProvider {
     }
 
     // Add tool calls
+    // #144: non-streaming parse entry point — same bounded normalization as
+    // the stream accumulator; unrecoverable arguments keep the transcript
+    // API-valid ({}) and are recorded for the executor to report.
+    const toolInputErrors: NonNullable<CreateMessageResponse['toolInputErrors']> = []
     if (choice.message.tool_calls) {
       for (const tc of choice.message.tool_calls) {
+        const norm = normalizeToolInput(tc.function.arguments)
         let input: any
-        try {
-          input = JSON.parse(tc.function.arguments)
-        } catch {
-          input = tc.function.arguments
+        if (norm.ok) {
+          input = norm.value
+        } else {
+          input = {}
+          toolInputErrors.push({ id: tc.id, kind: norm.kind, raw: tc.function.arguments, offset: norm.offset, received: norm.received })
         }
 
         content.push({

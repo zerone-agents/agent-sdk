@@ -56,7 +56,7 @@ import {
 } from './utils/retry.js'
 import type { RetryEvent } from './utils/retry.js'
 import { normalizeMessagesForAPI } from './utils/messages.js'
-import { normalizeToolInput, type ToolInputFormatError } from './utils/tool-input.js'
+import type { ToolInputFormatError } from './utils/tool-input.js'
 import type { HookRegistry, HookInput, HookOutput } from './hooks.js'
 import { buildSystemPrompt } from './engine/prompt-builder.js'
 import { buildResponseFromChunks } from './engine/stream-parser.js'
@@ -689,39 +689,24 @@ export class QueryEngine {
       // Reset max_output recovery counter on successful tool use
       maxOutputRecoveryAttempts = 0
 
-      // Sanitize assistant message: tool_use input must be an object (not raw
-      // string) so the API accepts it on subsequent turns. Must happen BEFORE
-      // executeTools so the transcript is consistent even if the generator is
-      // force-returned during yield.
+      // #144: entry points (stream accumulator / non-streaming provider parse)
+      // already normalized argument strings — bounded to ONE extra parse for
+      // double-encoded objects — and recorded unrecoverable ones on
+      // response.toolInputErrors. This sanitize is now purely defensive: any
+      // string that still reaches here is replaced with {} solely so the API
+      // accepts the transcript on subsequent turns.
       //
       // Contract: at this point in the flow, the last message in this.messages is
       // the assistant message we just decoded from the stream (no user/tool_result
       // message has been pushed yet — that happens inside executeTools below).
       // The `role === 'assistant'` guard is the runtime assertion of this contract.
-      //
-      // #144: instead of blanket-replacing strings with {} (which made required-
-      // field validation report a misleading "Input was: {}"), normalize first:
-      // a VALID double-encoded JSON object is recovered (bounded: one extra
-      // parse) and used for both execution and the transcript; unrecoverable
-      // strings keep the transcript API-valid ({}) while the REAL format error
-      // is reported to the LLM via toolInputErrors on the execution context.
       const toolInputErrors = new Map<string, ToolInputFormatError>()
+      for (const e of response.toolInputErrors ?? []) toolInputErrors.set(e.id, e)
       const assistantMsgPreExec = this.messages[this.messages.length - 1]
       if (assistantMsgPreExec?.role === 'assistant' && Array.isArray(assistantMsgPreExec.content)) {
         for (const block of assistantMsgPreExec.content as any[]) {
           if (block.type === 'tool_use' && typeof block.input === 'string') {
-            const norm = normalizeToolInput(block.input)
-            if (norm.ok) {
-              block.input = norm.value
-            } else {
-              toolInputErrors.set(block.id, {
-                kind: norm.kind,
-                raw: block.input,
-                offset: norm.offset,
-                received: norm.received,
-              })
-              block.input = {}
-            }
+            block.input = {}
           }
         }
       }

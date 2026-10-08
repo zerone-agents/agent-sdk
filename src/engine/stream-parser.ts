@@ -9,6 +9,7 @@ import type {
   NormalizedResponseBlock,
   StreamChunk,
 } from '../providers/types.js'
+import { normalizeToolInput } from '../utils/tool-input.js'
 
 /**
  * Accumulates stream chunks into a structured response.
@@ -74,17 +75,27 @@ export class StreamAccumulator {
     // Process accumulated tool_use entries: parse input JSON and append to content.
     // Skip tool calls whose input was never received (e.g. stream aborted after
     // content_block_start but before input_json_delta).
+    //
+    // #144: this is the ENTRY POINT for streamed argument strings — normalize
+    // here (bounded: at most one extra parse for double-encoded objects, so the
+    // whole chain stays within the agreed budget). Unrecoverable inputs keep
+    // the transcript API-valid ({}) and are recorded on the response for the
+    // executor to report as format errors.
+    const toolInputErrors: NonNullable<CreateMessageResponse['toolInputErrors']> = []
     for (const [index, toolUse] of this.toolUses) {
       if (toolUse.name && toolUse.input) {
+        const id = toolUse.id || `tool_${index}`
+        const norm = normalizeToolInput(toolUse.input)
         let input: any
-        try {
-          input = JSON.parse(toolUse.input)
-        } catch {
-          input = toolUse.input
+        if (norm.ok) {
+          input = norm.value
+        } else {
+          input = {}
+          toolInputErrors.push({ id, kind: norm.kind, raw: toolUse.input, offset: norm.offset, received: norm.received })
         }
         this.content.push({
           type: 'tool_use',
-          id: toolUse.id || `tool_${index}`,
+          id,
           name: toolUse.name,
           input,
         })
@@ -98,6 +109,7 @@ export class StreamAccumulator {
       content: this.content,
       stopReason: hasToolUse ? 'tool_use' : 'end_turn',
       usage: { input_tokens: 0, output_tokens: 0, totalInputTokens: 0 },
+      ...(toolInputErrors.length > 0 ? { toolInputErrors } : {}),
     }
   }
 

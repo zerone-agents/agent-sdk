@@ -85,6 +85,13 @@ export interface CreateMessageResponse {
   }
   rawUsage?: any
   warnings?: string[]
+  /**
+   * #144: tool-call argument format errors recorded at the parse entry point
+   * (unrecoverable inputs are left as {} on the block so the transcript stays
+   * API-valid). The engine forwards these to the tool executor, which reports
+   * them instead of a misleading missing-required-fields error.
+   */
+  toolInputErrors?: Array<import('../utils/tool-input.js').ToolInputFormatError & { id: string }>
 }
 
 export type NormalizedResponseBlock =

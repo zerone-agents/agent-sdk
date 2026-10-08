@@ -225,13 +225,16 @@ describe('StreamAccumulator', () => {
       expect(tool.input).toEqual({ path: '/tmp/x' })
     })
 
-    it('falls back to raw input on malformed JSON', () => {
+    it('records a format error and keeps the transcript API-valid ({}) on malformed JSON (issue #144)', () => {
       const acc = new StreamAccumulator()
       acc.addChunk(toolUseChunk(0, 't1', 'read_file', 'not-json'))
 
       const response = acc.buildResponse()
       const tool = response.content[0] as any
-      expect(tool.input).toBe('not-json')
+      // Transcript stays API-valid; the raw string is preserved on the error record
+      expect(tool.input).toEqual({})
+      expect(response.toolInputErrors).toHaveLength(1)
+      expect(response.toolInputErrors![0]).toMatchObject({ id: 't1', kind: 'invalid-json', raw: 'not-json' })
     })
 
     it('returns zero usage (caller assigns usage separately)', () => {
