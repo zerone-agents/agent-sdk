@@ -747,6 +747,8 @@ export class OpenAIProvider implements LLMProvider {
         cache_read_input_tokens: (data.usage as any)?.prompt_tokens_details?.cached_tokens || undefined,
       },
       rawUsage: data.usage,
+      // #144: format errors recorded at this non-streaming parse entry point
+      ...(toolInputErrors.length > 0 ? { toolInputErrors } : {}),
     }
   }
 

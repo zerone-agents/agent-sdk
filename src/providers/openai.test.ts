@@ -166,4 +166,49 @@ describe('OpenAIProvider maxTokens serialization (issue #142)', () => {
       expect('max_completion_tokens' in call.body).toBe(false)
     }
   })
+
+  /** Non-streaming chat response carrying one tool call with the given arguments string. */
+  function toolCallsResponse(args: string, id = 'call_1') {
+    return {
+      id: 'chatcmpl-t',
+      model: 'auto',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id, type: 'function', function: { name: 'MultiTask', arguments: args } }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }
+  }
+
+  it('non-streaming: malformed tool arguments are recorded on toolInputErrors and the block stays API-valid (issue #144, P2 review)', async () => {
+    stubFetch([{ status: 200, json: toolCallsResponse('{"tasks":[{"prompt":"Check "data"}]}') }])
+    const provider = new OpenAIProvider({ apiKey: 'k' })
+
+    const resp = await provider.createMessage(makeParams())
+
+    const block = resp.content.find((b) => b.type === 'tool_use') as any
+    expect(block.input).toEqual({})
+    expect(resp.toolInputErrors).toHaveLength(1)
+    expect(resp.toolInputErrors![0]).toMatchObject({ id: 'call_1', kind: 'invalid-json' })
+  })
+
+  it('non-streaming: valid double-encoded arguments recover; malformed inner classifies as malformed-inner', async () => {
+    stubFetch([{ status: 200, json: toolCallsResponse(JSON.stringify(JSON.stringify({ tasks: [{ description: 'x' }] }))) }])
+    const provider = new OpenAIProvider({ apiKey: 'k' })
+    const recovered = await provider.createMessage(makeParams())
+    const recoveredBlock = recovered.content.find((b) => b.type === 'tool_use') as any
+    expect(recoveredBlock.input).toEqual({ tasks: [{ description: 'x' }] })
+    expect(recovered.toolInputErrors ?? []).toHaveLength(0)
+
+    stubFetch([{ status: 200, json: toolCallsResponse(JSON.stringify('{"tasks":[{"prompt":"Check "data"}]}')) }])
+    const malformedInner = await provider.createMessage(makeParams())
+    const errBlock = malformedInner.content.find((b) => b.type === 'tool_use') as any
+    expect(errBlock.input).toEqual({})
+    expect(malformedInner.toolInputErrors![0]).toMatchObject({ kind: 'malformed-inner' })
+  })
 })
