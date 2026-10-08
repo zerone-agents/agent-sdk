@@ -136,7 +136,7 @@ describe('executeSingleTool', () => {
     expect(result.tool_name).toBe('nonexistent')
   })
 
-  it('returns is_error=true when input is a string (invalid JSON)', async () => {
+  it('returns a format error (not missing-fields) when input is a string of malformed JSON (issue #144)', async () => {
     const ctx = makeCtx()
     const block = makeBlock({ id: 't1', name: 'test', input: 'not-json' })
     const tool = makeTool({ name: 'test' })
@@ -144,7 +144,8 @@ describe('executeSingleTool', () => {
     const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBe(true)
-    expect(result.content).toContain('not valid JSON')
+    expect(result.content).toContain('Invalid input format for "test"')
+    expect(result.content).toContain('malformed JSON')
   })
 
   it('returns is_error=true when tool is disabled', async () => {
@@ -287,8 +288,10 @@ describe('executeSingleTool', () => {
     const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBe(true)
-    // Existing headline + bounded echo are preserved (pinned at L147)
-    expect(result.content).toContain('not valid JSON')
+    // #144: format-error headline replaces the old truncation-flavored wording;
+    // bounded echo stays pinned below
+    expect(result.content).toContain('Invalid input format for "test"')
+    expect(result.content).toContain('malformed JSON')
     expect(result.content).toContain(raw.slice(0, 500))
     expect(result.content).not.toContain(raw)
     // NEW (issue #139): same Expected shape guidance as the missing-field path
@@ -309,7 +312,7 @@ describe('executeSingleTool', () => {
     const result = await executeSingleTool(ctx, block, tool, makeExecContext())
 
     expect(result.is_error).toBe(true)
-    expect(result.content).toContain('not valid JSON')
+    expect(result.content).toContain('Invalid input format for "test"')
     // No Expected shape section when there is no schema to describe
     expect(result.content).not.toContain('Expected shape:')
     expect(tool.call).not.toHaveBeenCalled()
@@ -761,5 +764,101 @@ describe('tool-result transcript message (issue #54)', () => {
     expect(msg.role).toBe('user')
     expect(msg.id).toBeTruthy()
     expect(Date.parse(msg.timestamp!)).not.toBeNaN()
+  })
+})
+
+describe('tool input format errors (issue #144)', () => {
+  const tasksSchema = {
+    type: 'object' as const,
+    properties: { tasks: { type: 'array', items: { type: 'object' } } },
+    required: ['tasks'],
+  }
+
+  it('recovers a valid double-encoded JSON string and executes with the parsed object', async () => {
+    const ctx = makeCtx()
+    const inner = { tasks: [{ description: 'Review', prompt: 'Read the code' }] }
+    const block = makeBlock({ id: 't1', name: 'test', input: JSON.stringify(JSON.stringify(inner)) })
+    const callMock = vi.fn().mockResolvedValue({ type: 'tool_result' as const, tool_use_id: '', content: 'ok' })
+    const tool = makeTool({ name: 'test', inputSchema: tasksSchema, call: callMock })
+
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
+
+    expect(result.is_error).not.toBe(true)
+    expect(callMock).toHaveBeenCalled()
+    expect(callMock.mock.calls[0][0]).toEqual(inner)
+  })
+
+  it('malformed inner JSON inside a JSON-encoded string gets kind-specific guidance, never missing-fields', async () => {
+    const ctx = makeCtx()
+    const block = makeBlock({ id: 't1', name: 'test', input: JSON.stringify('{"tasks":[{"prompt":"Check "data flow""}]}') })
+    const tool = makeTool({ name: 'test', inputSchema: tasksSchema })
+
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('Invalid input format for "test"')
+    expect(result.content).toContain('JSON-encoded string containing malformed JSON')
+    expect(result.content).toContain('without wrapping the entire object in quotes')
+    expect(result.content).not.toContain('Missing required fields')
+    expect(tool.call).not.toHaveBeenCalled()
+  })
+
+  it('array input gets an expected-object format error, not missing-fields', async () => {
+    const ctx = makeCtx()
+    const block = makeBlock({ id: 't1', name: 'test', input: [1, 2] as any })
+    const tool = makeTool({ name: 'test', inputSchema: tasksSchema })
+
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('Invalid input format for "test"')
+    expect(result.content).toContain('but received an array')
+    expect(result.content).not.toContain('Missing required fields')
+    expect(tool.call).not.toHaveBeenCalled()
+  })
+
+  it('null input gets an expected-object format error, not missing-fields', async () => {
+    const ctx = makeCtx()
+    const block = makeBlock({ id: 't1', name: 'test', input: null as any })
+    const tool = makeTool({ name: 'test', inputSchema: tasksSchema })
+
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('but received null')
+    expect(result.content).not.toContain('Missing required fields')
+  })
+
+  it('engine-recorded format error (ctx.toolInputErrors) takes precedence over required-field validation', async () => {
+    const hooksExecute = vi.fn()
+    const ctx = makeCtx({
+      hooks: { execute: hooksExecute } as any,
+      toolInputErrors: new Map([
+        ['t1', { kind: 'malformed-inner' as const, raw: '"{\\"tasks\\": [{\\"prompt\\": \\"x\\" y]}"' }],
+      ]),
+    } as any)
+    // Engine path: sanitize already replaced the unrecoverable string with {}
+    const block = makeBlock({ id: 't1', name: 'test', input: {} })
+    const tool = makeTool({ name: 'test', inputSchema: tasksSchema })
+
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('Invalid input format for "test"')
+    expect(result.content).toContain('JSON-encoded string containing malformed JSON')
+    expect(result.content).not.toContain('Missing required fields')
+    expect(tool.call).not.toHaveBeenCalled()
+    expect(hooksExecute).toHaveBeenCalledWith('PostToolUseFailure', expect.objectContaining({ toolName: 'test' }))
+  })
+
+  it('a genuine {} object still reports missing required fields (preservation)', async () => {
+    const ctx = makeCtx()
+    const block = makeBlock({ id: 't1', name: 'test', input: {} })
+    const tool = makeTool({ name: 'test', inputSchema: tasksSchema })
+
+    const result = await executeSingleTool(ctx, block, tool, makeExecContext())
+
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('Missing required fields: tasks')
   })
 })

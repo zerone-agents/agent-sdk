@@ -56,6 +56,7 @@ import {
 } from './utils/retry.js'
 import type { RetryEvent } from './utils/retry.js'
 import { normalizeMessagesForAPI } from './utils/messages.js'
+import type { ToolInputFormatError } from './utils/tool-input.js'
 import type { HookRegistry, HookInput, HookOutput } from './hooks.js'
 import { buildSystemPrompt } from './engine/prompt-builder.js'
 import { buildResponseFromChunks } from './engine/stream-parser.js'
@@ -688,18 +689,19 @@ export class QueryEngine {
       // Reset max_output recovery counter on successful tool use
       maxOutputRecoveryAttempts = 0
 
-      // Sanitize assistant message: ensure tool_use input is an object (not raw string)
-      // so the API accepts it on subsequent turns. Must happen BEFORE executeTools so
-      // the transcript is consistent even if generator is force-returned during yield.
+      // #144: entry points (stream accumulator / non-streaming provider parse)
+      // already normalized argument strings — bounded to ONE extra parse for
+      // double-encoded objects — and recorded unrecoverable ones on
+      // response.toolInputErrors. This sanitize is now purely defensive: any
+      // string that still reaches here is replaced with {} solely so the API
+      // accepts the transcript on subsequent turns.
       //
       // Contract: at this point in the flow, the last message in this.messages is
       // the assistant message we just decoded from the stream (no user/tool_result
       // message has been pushed yet — that happens inside executeTools below).
-      // If Task 3 or later inserts any intermediate message between stream
-      // completion and this sanitize, the `length - 1` index will silently point
-      // at the wrong message. The `role === 'assistant'` guard below is the
-      // runtime assertion of this contract — if it fails, sanitize is a no-op
-      // rather than corrupting an unrelated message.
+      // The `role === 'assistant'` guard is the runtime assertion of this contract.
+      const toolInputErrors = new Map<string, ToolInputFormatError>()
+      for (const e of response.toolInputErrors ?? []) toolInputErrors.set(e.id, e)
       const assistantMsgPreExec = this.messages[this.messages.length - 1]
       if (assistantMsgPreExec?.role === 'assistant' && Array.isArray(assistantMsgPreExec.content)) {
         for (const block of assistantMsgPreExec.content as any[]) {
@@ -727,6 +729,7 @@ export class QueryEngine {
         sessionId: this.sessionId,
         hooks: this.hookRegistry,
         logger: this.logger.child({ component: 'tool-executor' }),
+        toolInputErrors, // #144: format errors recorded during the pre-execution normalize
       }
       for await (const event of executeToolsFn(toolCtx, toolUseBlocks)) {
         if (this.config.abortSignal?.aborted) break
