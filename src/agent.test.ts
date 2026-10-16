@@ -1434,3 +1434,52 @@ describe('legacyMaxTokens threading to the OpenAI provider (issue #142 review)',
     expect('max_completion_tokens' in bodies[0]).toBe(false)
   })
 })
+
+// #149 R2-N1: the non-streaming prompt() surface used to rebuild a 2-field
+// usage object, discarding the result event's authoritative total — hosts
+// could only reconstruct the total by adding values (the exact anti-pattern
+// the issue reports).
+describe('QueryResult usage passthrough (#149)', () => {
+  it('T9: prompt() exposes total_input_tokens and keeps the fallback shape', async () => {
+    const agent = new Agent(makeBaseOptions())
+    ;(agent as any).provider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          stopReason: 'end_turn',
+          usage: {
+            input_tokens: 15_000, output_tokens: 100, totalInputTokens: 550_000,
+            cache_read_input_tokens: 535_000, cache_creation_input_tokens: 0,
+          },
+        } as any
+      },
+    }
+
+    const result = await agent.prompt('hello')
+
+    expect(result.usage.total_input_tokens).toBe(550_000)
+    expect(result.usage.input_tokens).toBe(15_000)
+    // result-side surfaces never carry the deprecated alias (#149 I1)
+    expect((result.usage as any).totalInputTokens).toBeUndefined()
+  })
+
+  it('T9b: result event without usage falls back to the 2-field shape (never {})', async () => {
+    const agent = new Agent(makeBaseOptions())
+    ;(agent as any).provider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        // Contract violation: usage absent — the guard must keep the ?? fallback live.
+        return { content: [{ type: 'text', text: 'ok' }], stopReason: 'end_turn' } as any
+      },
+    }
+
+    const result = await agent.prompt('hello')
+
+    expect(result.usage.input_tokens).toBe(0)
+    expect(result.usage.output_tokens).toBe(0)
+    // {} (truthy spread product) would have short-circuited the fallback and
+    // violated the required QueryResult.usage declaration.
+    expect(Object.keys(result.usage).length).toBe(2)
+  })
+})
