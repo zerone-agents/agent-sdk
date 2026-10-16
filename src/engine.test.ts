@@ -1945,3 +1945,116 @@ describe('tool input format errors end-to-end (issue #144)', () => {
     expect(result.output).not.toContain('Missing required fields')
   })
 })
+
+// #149: the four host-reachable usage surfaces must agree on one normalized
+// contract — snake `total_input_tokens` authoritative (cache counted once) —
+// with the camel `totalInputTokens` kept as a deprecated alias on the
+// intermediate-event surface only.
+describe('usage contract normalization (#149)', () => {
+  /** Provider yielding a seam usage with cache split (Anthropic shape). */
+  function seamProvider(usage: Record<string, unknown>, rawUsage?: unknown): LLMProvider {
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          stopReason: 'end_turn',
+          usage,
+          ...(rawUsage !== undefined ? { rawUsage } : {}),
+        } as any
+      },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        yield { type: 'usage', usage, ...(rawUsage !== undefined ? { rawUsage } : {}) } as any
+        yield { type: 'done', index: -1 } as StreamChunk
+      },
+    }
+  }
+
+  const SEAM_USAGE = {
+    input_tokens: 15_000,
+    output_tokens: 100,
+    totalInputTokens: 550_000,          // 15k + cache_read 535k + cache_creation 0
+    cache_read_input_tokens: 535_000,
+    cache_creation_input_tokens: 0,
+  }
+
+  it('T3a: assistant event and result event agree on total_input_tokens', async () => {
+    const engine = new QueryEngine(makeConfig(seamProvider(SEAM_USAGE)))
+    const events: any[] = []
+    for await (const ev of engine.submitMessage('hi')) events.push(ev)
+
+    const assistant = events.find((e) => e.type === 'assistant')
+    const result = events.find((e) => e.type === 'result')
+    expect(assistant.usage.total_input_tokens).toBe(550_000)
+    expect(result.usage.total_input_tokens).toBe(550_000)
+  })
+
+  it('T3b: camel alias equals total_input_tokens on the event surface', async () => {
+    const engine = new QueryEngine(makeConfig(seamProvider(SEAM_USAGE)))
+    for await (const ev of engine.submitMessage('hi')) {
+      if (ev.type === 'assistant' && ev.usage) {
+        expect(ev.usage.totalInputTokens).toBe(ev.usage.total_input_tokens)
+      }
+    }
+  })
+
+  it('T4: streaming assistant usage exposes readable snake fields (type-lie fix)', async () => {
+    const engine = new QueryEngine(makeConfig(seamProvider(SEAM_USAGE)))
+    for await (const ev of engine.submitMessage('hi')) {
+      if (ev.type === 'assistant' && ev.usage) {
+        // Before #149 the streaming path carried a camel-only seam object at
+        // runtime while declaring TokenUsage — snake reads returned undefined.
+        expect(ev.usage.input_tokens).toBe(15_000)
+        expect(ev.usage.total_input_tokens).toBe(550_000)
+        expect(ev.usage.cache_read_input_tokens).toBe(535_000)
+      }
+    }
+  })
+
+  it('T5: zero-valued usage stays zeros, not missing fields', async () => {
+    const engine = new QueryEngine(makeConfig(seamProvider({
+      input_tokens: 0, output_tokens: 0, totalInputTokens: 0,
+    })))
+    for await (const ev of engine.submitMessage('hi')) {
+      if (ev.type === 'assistant' && ev.usage) {
+        expect(ev.usage.total_input_tokens).toBe(0)
+        expect(ev.usage.cache_read_input_tokens).toBeUndefined()
+      }
+    }
+  })
+
+  it('T6: event usage is a SUPERSET of the runtime seam object (rawUsage kept)', async () => {
+    const raw = { provider: 'raw-payload' }
+    const engine = new QueryEngine(makeConfig(seamProvider(SEAM_USAGE, raw)))
+    for await (const ev of engine.submitMessage('hi')) {
+      if (ev.type === 'assistant') {
+        const u = ev.usage as any
+        // Projection-style implementations silently drop the undeclared
+        // runtime key — that would be a breaking change dressed as additive.
+        expect(u.rawUsage).toBe(raw)
+        expect(u.total_input_tokens).toBe(550_000)
+        expect(u.totalInputTokens).toBe(550_000)
+      }
+    }
+  })
+
+  it('T7: a contract-violating provider (usage undefined) does not throw', async () => {
+    const provider: LLMProvider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        return { content: [{ type: 'text', text: 'ok' }], stopReason: 'end_turn' } as any
+      },
+    }
+    // includePartialMessages: false forces the NON-streaming path (engine.ts:445)
+    // — only there can a contract-violating provider surface a response with
+    // usage missing (the streaming path always defaults to an all-zero usage
+    // via buildResponseFromChunks).
+    const engine = new QueryEngine(makeConfig(provider, [], { includePartialMessages: false }))
+    const events: any[] = []
+    for await (const ev of engine.submitMessage('hi')) events.push(ev)
+    const assistant = events.find((e) => e.type === 'assistant')
+    expect(assistant).toBeDefined()
+    // undefined in → undefined out (never a throw, never a truthy empty object)
+    expect(assistant.usage === undefined || assistant.usage.total_input_tokens === undefined).toBe(true)
+  })
+})

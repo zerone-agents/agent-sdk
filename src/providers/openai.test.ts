@@ -212,3 +212,30 @@ describe('OpenAIProvider maxTokens serialization (issue #142)', () => {
     expect(malformedInner.toolInputErrors![0]).toMatchObject({ kind: 'malformed-inner' })
   })
 })
+
+// #149 T1: OpenAI `prompt_tokens` already includes cached tokens — the seam
+// total must count cache exactly once (equivalence with the Anthropic shape).
+describe('usage normalization equivalence (#149)', () => {
+  it('seam totalInputTokens equals prompt_tokens (cache counted once)', async () => {
+    const calls = stubFetch([{
+      status: 200,
+      json: {
+        id: 'chatcmpl-test', model: 'auto',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 550_000, completion_tokens: 100, total_tokens: 550_100,
+          // #149 review: pin the cached→cache_read mapping (openai.ts:330/:747)
+          prompt_tokens_details: { cached_tokens: 535_000 },
+        },
+      },
+    }])
+    const provider = new OpenAIProvider({ apiKey: 'k' })
+
+    const res = await provider.createMessage(makeParams())
+
+    expect(calls).toHaveLength(1)
+    expect(res.usage.totalInputTokens).toBe(550_000)
+    expect(res.usage.input_tokens).toBe(550_000) // OpenAI input INCLUDES cached
+    expect(res.usage.cache_read_input_tokens).toBe(535_000)
+  })
+})
