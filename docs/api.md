@@ -458,3 +458,32 @@ export interface DiagnosticsSink extends Logger {
 ### Diagnostics behavior change (release-flagged)
 
 Sites that previously printed underlying error text now emit a sanitized skeleton + `fields.errorType` (raw error on `cause`, or on the existing throw/return error channel): hook failures (`[Hook] <event> hook failed`), filesystem skills load/reload failures, SnapshotEngine timeout warnings, `executeSingleTool` errors. All other diagnostic output is byte-identical.
+
+## Token usage contract (#149)
+
+Normalized token usage is exposed on four host-reachable surfaces — the assistant
+event's `usage`, the result event's `usage`, non-streaming `Agent.prompt()`'s
+`QueryResult.usage`, and `QueryEngine.getUsage()` — sharing one contract:
+
+| Field | Meaning |
+|-------|---------|
+| `input_tokens` | This LLM request's input. **Provider-specific**: the OpenAI shape **includes** cached input; the Anthropic shape **excludes** it (cache lives in the `cache_*` fields). Never sum across providers. |
+| `output_tokens` | This LLM request's output. |
+| `cache_creation_input_tokens?` | Cache-write tokens; absent = provider does not report that dimension (≠ zero writes). |
+| `cache_read_input_tokens?` | Cache-read hits; absent/zero semantics as above. |
+| `total_input_tokens` | **Authoritative input total: cache included, counted exactly once** (Anthropic = input + cache_read + cache_creation; OpenAI = `prompt_tokens`, which already includes cached). Read this instead of adding fields. |
+| `totalInputTokens?` | **@deprecated alias of `total_input_tokens`** (identical value). Present only on the intermediate-event runtime objects; result-side surfaces never carry it. Kept for the entire v4.x line; removal only in a v5.0.0 major with a flagged changelog entry. |
+
+**Why not to add fields yourself.** With OpenAI-shaped usage of 550k input
+(including 535k cached) the naive `input + cache` reconstruction reports
+1,085,100 — double-counting cache. `total_input_tokens` is 550k on every surface.
+
+**Semantics.**
+- **Per-request**: every surface describes a single LLM request (`total_input_tokens`'s
+  "total" means total *input* including cache — never a cross-request cumulative). On the
+  result surface, a request that reported no usage carries the previous value forward.
+- **Missing vs zero**: `cache_*` absent ≠ zero; an absent `usage` object on a result event
+  (early error paths such as a hook-blocked prompt, before any usage-bearing request) is
+  the only case where `total_input_tokens` is absent — documented, not the norm.
+- **Migration**: new code reads `total_input_tokens` only. `totalInputTokens` exists solely
+  so hosts reading the intermediate event's camel field keep working unchanged.
