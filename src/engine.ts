@@ -153,7 +153,7 @@ function applyImageStripPlan(
  * the contract and a silent undefined must never become a throw.
  *
  * NB: this is the ONLY write point of the deprecated `totalInputTokens` alias
- * (`engine.ts:650` event yield) — the alias is written unconditionally with the
+ * (the assistant-event yield in `submitMessage`) — the alias is written unconditionally with the
  * same value as the snake field; the "absent = not reported" doc rule applies
  * to the `cache_*` dimensions, not to this alias. Contract: see
  * `TokenUsage.totalInputTokens` in types.ts.
