@@ -1952,7 +1952,7 @@ describe('tool input format errors end-to-end (issue #144)', () => {
 // intermediate-event surface only.
 describe('usage contract normalization (#149)', () => {
   /** Provider yielding a seam usage with cache split (Anthropic shape). */
-  function seamProvider(usage: Record<string, unknown>): LLMProvider {
+  function seamProvider(usage: Record<string, unknown>, rawUsage?: unknown): LLMProvider {
     return {
       apiType: 'anthropic-messages',
       async createMessage() {
@@ -1960,10 +1960,11 @@ describe('usage contract normalization (#149)', () => {
           content: [{ type: 'text', text: 'ok' }],
           stopReason: 'end_turn',
           usage,
+          ...(rawUsage !== undefined ? { rawUsage } : {}),
         } as any
       },
       async *createMessageStream(): AsyncGenerator<StreamChunk> {
-        yield { type: 'usage', usage } as any
+        yield { type: 'usage', usage, ...(rawUsage !== undefined ? { rawUsage } : {}) } as any
         yield { type: 'done', index: -1 } as StreamChunk
       },
     }
@@ -2024,22 +2025,7 @@ describe('usage contract normalization (#149)', () => {
 
   it('T6: event usage is a SUPERSET of the runtime seam object (rawUsage kept)', async () => {
     const raw = { provider: 'raw-payload' }
-    const provider: LLMProvider = {
-      apiType: 'anthropic-messages',
-      async createMessage() {
-        return {
-          content: [{ type: 'text', text: 'ok' }],
-          stopReason: 'end_turn',
-          usage: SEAM_USAGE,
-          rawUsage: raw,
-        } as any
-      },
-      async *createMessageStream(): AsyncGenerator<StreamChunk> {
-        yield { type: 'usage', usage: SEAM_USAGE, rawUsage: raw } as any
-        yield { type: 'done', index: -1 } as StreamChunk
-      },
-    }
-    const engine = new QueryEngine(makeConfig(provider))
+    const engine = new QueryEngine(makeConfig(seamProvider(SEAM_USAGE, raw)))
     for await (const ev of engine.submitMessage('hi')) {
       if (ev.type === 'assistant') {
         const u = ev.usage as any

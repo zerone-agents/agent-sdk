@@ -482,8 +482,13 @@ event's `usage`, the result event's `usage`, non-streaming `Agent.prompt()`'s
 - **Per-request**: every surface describes a single LLM request (`total_input_tokens`'s
   "total" means total *input* including cache — never a cross-request cumulative). On the
   result surface, a request that reported no usage carries the previous value forward.
-- **Missing vs zero**: `cache_*` absent ≠ zero; an absent `usage` object on a result event
-  (early error paths such as a hook-blocked prompt, before any usage-bearing request) is
-  the only case where `total_input_tokens` is absent — documented, not the norm.
+- **Missing vs zero**: `cache_*` absent ≠ zero. `total_input_tokens` can be absent in
+  exactly three documented cases: ① a provider that never reports a `cache_*` dimension
+  (the cache fields stay absent, the total is still present); ② a result event on the
+  early error paths (hook-blocked prompt, first-request failure) whose usage object is
+  still the engine's initial two-field `{input_tokens, output_tokens}` — **present but
+  without the total**; ③ a contract-violating provider whose assistant event carries no
+  `usage` object at all. None of these is the norm: after any usage-bearing request the
+  total is always present (possibly `0`).
 - **Migration**: new code reads `total_input_tokens` only. `totalInputTokens` exists solely
   so hosts reading the intermediate event's camel field keep working unchanged.

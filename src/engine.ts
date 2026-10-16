@@ -151,6 +151,12 @@ function applyImageStripPlan(
  * `rawUsage`) and makes the snake authoritative field + camel deprecated alias
  * always equal. Fully undefined-tolerant: external JS providers may violate
  * the contract and a silent undefined must never become a throw.
+ *
+ * NB: this is the ONLY write point of the deprecated `totalInputTokens` alias
+ * (`engine.ts:650` event yield) — the alias is written unconditionally with the
+ * same value as the snake field; the "absent = not reported" doc rule applies
+ * to the `cache_*` dimensions, not to this alias. Contract: see
+ * `TokenUsage.totalInputTokens` in types.ts.
  */
 function toEventUsage(
   u: CreateMessageResponse['usage'] | undefined,
