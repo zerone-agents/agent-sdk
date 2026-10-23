@@ -52,7 +52,6 @@ import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
 import { createHookRegistry, type HookRegistry, type HookEvent, type HookInput, type HookOutput } from './hooks.js'
 import { loadSkillsFromFilesystem, SkillRegistry, defaultRegistry, registerSkill as registryRegisterSkill, unregisterSkill as registryUnregisterSkill } from './skills/index.js'
-import { filterSkillsByAllowlist } from './skills/registry.js'
 import type { SkillDefinition } from './skills/types.js'
 import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
@@ -781,8 +780,9 @@ export class Agent {
     const rootCaps: AgentCapabilities = {
       connectionTools: [...this.toolPool, ...(caps?.connectionTools ?? [])],
       customTools: [...(opts.customTools ?? []), ...(caps?.customTools ?? [])],
-      skills: caps?.skills
-        ?? filterSkillsByAllowlist(this.skillRegistry.getUserInvocable(), mergedDefinition.availableSkills),
+      skills: caps?.skills,   // #151: fallback now lives in resolveAgent — an
+                              // unset capability resolves to the session-registry
+                              // + allowlist view there (value-equivalent move)
       allowedTools: overrides?.allowedTools ?? caps?.allowedTools,
       disallowedTools: overrides?.disallowedTools ?? caps?.disallowedTools,
     }

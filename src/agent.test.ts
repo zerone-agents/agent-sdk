@@ -1502,3 +1502,75 @@ describe('QueryResult usage passthrough (#149)', () => {
     expect(result.usage).toEqual(eventUsage)
   })
 })
+
+// #151 e2e: capabilities.skills explicitly provided at construction → the
+// Skill tool must actually load them through the real execution surface
+// (tool-executor consumes resolved.skillRegistry). Before the fix the visible
+// list advertised them while the registry was empty ("Available skills: none").
+describe('explicit capabilities.skills end-to-end (#151)', () => {
+  function makeSkill(name: string) {
+    return { name, description: `synthetic ${name}`, getPrompt: async () => [{ type: 'text', text: `SYNTHETIC ${name}` }] } as any
+  }
+
+  /** Two-phase streaming provider: first call yields a Skill tool_use, second ends with text. */
+  function skillInvokingProvider(skillName: string): LLMProvider {
+    let call = 0
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        call++
+        if (call === 1) {
+          yield { type: 'tool_use', index: 1, id: `tu_${skillName}_${call}`, name: 'Skill', input: JSON.stringify({ skill: skillName }) } as any
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' } as any
+        }
+        yield { type: 'done', index: -1 } as any
+      },
+    }
+  }
+
+  async function drainSkillResult(agent: Agent, skillName: string): Promise<string> {
+    ;(agent as unknown as { provider: LLMProvider }).provider = skillInvokingProvider(skillName)
+    let content = ''
+    for await (const ev of agent.query('invoke it')) {
+      if (ev.type === 'tool_result') content = (ev as any).result?.output ?? content
+    }
+    return content
+  }
+
+  it('T7: Skill tool loads an explicitly-provided skill through the real surface', async () => {
+    const agent = new Agent(makeBaseOptions({
+      includePartialMessages: true,   // streaming path — the two-phase provider implements createMessageStream only
+      agent: { description: 'd', prompt: '', capabilities: { skills: [makeSkill('alpha')] } },
+    }))
+    await (agent as any).setupDone
+
+    const content = await drainSkillResult(agent, 'alpha')
+
+    expect(content).toContain('SYNTHETIC alpha')          // loaded — not "Available skills: none"
+    expect(content).not.toContain('Unknown skill')
+  })
+
+  it('T7b: skill set changes take effect per query — no stale definitions', async () => {
+    const opts = makeBaseOptions({
+      includePartialMessages: true,   // streaming path — see T7
+      agent: { description: 'd', prompt: '', capabilities: { skills: [makeSkill('alpha')] } },
+    })
+    const agent = new Agent(opts)
+    await (agent as any).setupDone
+
+    expect(await drainSkillResult(agent, 'alpha')).toContain('SYNTHETIC alpha')
+
+    // Host mutates the definition's capabilities between queries (resolveAgent
+    // re-reads opts.agent every query — agent.ts root definition path).
+    opts.agent!.capabilities!.skills = [makeSkill('beta')]
+
+    const stale = await drainSkillResult(agent, 'alpha')
+    expect(stale).toContain('Unknown skill "alpha"')      // old definition gone
+    expect(stale).not.toContain('SYNTHETIC alpha')
+
+    const fresh = await drainSkillResult(agent, 'beta')
+    expect(fresh).toContain('SYNTHETIC beta')             // new definition live
+  })
+})

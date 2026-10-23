@@ -263,8 +263,12 @@ customTools     = [...AgentOptions.customTools, ...capabilities.customTools]
 ```
 
 A same-name capability entry overrides its top-level twin (later-wins dedup).
-`capabilities.skills` replaces the registry view; an unset capability field
-falls back to the top-level behavior — never the other way around.
+`capabilities.skills` replaces the registry view **and the execution registry**
+(an explicit set — including `[]` — rebuilds the Skill tool's registry from it,
+spawn-symmetric; `[]` means no skills, never an inherited session registry);
+an unset capability field falls back to the top-level behavior — the session
+registry + allowlist view, where the registry may be a superset of the visible
+list — never the other way around.
 
 **Resolution order** (issue #72 — the Explore filter is a dynamic safety policy
 on the final pool, not a static deny-list):

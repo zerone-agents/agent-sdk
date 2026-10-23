@@ -22,13 +22,17 @@ import type {
 } from './types.js'
 import { getAllBaseTools, assembleToolPool, applyAllowedTools, applyDisallowedTools } from './tools/index.js'
 import { MemoryTool, MemorySearchTool } from './tools/memory.js'
-import { SkillRegistry } from './skills/registry.js'
+import { SkillRegistry, filterSkillsByAllowlist } from './skills/registry.js'
 import { createDiagnosticsSink, type DiagnosticsSink } from './utils/diagnostics.js'
 
 export interface ResolveAgentOptions {
   /** Spawn pipeline: removes Task/MultiTask; Explore applies the read-only safety policy. */
   spawn?: { mode: 'General' | 'Explore' }
-  /** Root path: the Agent session's registry. Spawn builds a fresh one from capabilities.skills. */
+  /**
+   * Root path: the Agent session's registry, used ONLY when `capabilities.skills`
+   * is unset (registry-as-superset allowed). Explicit skills — and every spawn —
+   * build a fresh registry from the effective set instead (#151).
+   */
   skillRegistry?: SkillRegistry
   /** Diagnostics sink (#78); defaults to the console-backed sink. */
   diagnostics?: DiagnosticsSink
@@ -94,12 +98,34 @@ export function resolveAgent(
   // Agent-owned skill set; dropped when the Skill tool is filtered out so
   // every downstream consumer (system prompt, init event, tool-executor
   // context, subagent resolution) stays consistent.
-  let skills = capabilities.skills ?? []
+  let skills = capabilities.skills
+  // Single discrimination axis for "explicit vs unset" (#151 review): the
+  // fallback condition and the registry fork below must agree on it.
+  const explicitSkills = capabilities.skills !== undefined
+  if (skills === undefined) {
+    // #151: explicit skills mean the agent owns its set (registry rebuilt
+    // below, spawn-symmetric). Undefined keeps the session-registry +
+    // allowlist view on the ROOT path; on the SPAWN path it is STRUCTURALLY
+    // empty — no fallback, no inheritance (#72 isolation, the
+    // spawn-subagent.ts contract). This must be code, not convention:
+    // ResolveAgentOptions places no mutual exclusion between `spawn` and
+    // `skillRegistry`, so a `spawn + skillRegistry` call is fully type-legal.
+    skills = opts.spawn
+      ? []
+      : filterSkillsByAllowlist(
+          (opts.skillRegistry ?? new SkillRegistry()).getUserInvocable(),
+          definition.availableSkills,
+        )
+  }
   if (!tools.some((t) => t.name === 'Skill')) {
     skills = []
   }
 
-  const skillRegistry = opts.spawn
+  // #151: an EXPLICIT capabilities.skills (including []) means the agent owns
+  // its skill set — the execution registry is rebuilt from it (spawn-symmetric),
+  // never falling back to the session registry. Only the unset path keeps
+  // opts.skillRegistry (superset allowed).
+  const skillRegistry = (opts.spawn || explicitSkills)
     ? SkillRegistry.fromDefinitions(skills)
     : (opts.skillRegistry ?? new SkillRegistry())
 
