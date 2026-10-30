@@ -15,7 +15,7 @@ Agent SDK ships with 20+ tools covering file I/O, search, command execution, web
 | **Task**                                  | Spawn a subagent for delegated work                      |
 | **MultiTask**                              | Parallel multi-subagent dispatch             |
 | **Skill**                                  | Invoke registered skills                     |
-| **AskUserQuestion**                        | Ask the user for input                       |
+| **AskUserQuestion**                        | Ask the user for input (not available to spawned SubAgents — they report uncertainty to the parent instead, #154) |
 | **FindTool**                               | Discover lazy-loaded tools                   |
 | **CronCreate/Delete/List**                 | Scheduled task management                    |
 | **Config**                                 | Dynamic configuration                        |

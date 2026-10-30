@@ -7,6 +7,7 @@ import type {
   QueryEngineConfig,
 } from '../types.js'
 import { createEmptyServices } from './services.js'
+import { AskUserQuestionTool } from './ask-user.js'
 import { InMemorySessionStore } from '../store/in-memory.js'
 import { WriteCoordinator } from '../store/coordinator.js'
 
@@ -345,6 +346,31 @@ describe('MultiTaskTool', () => {
       const toolNames = config.resolved.tools.map((t: any) => t.name)
       expect(toolNames).not.toContain('Task')
       expect(toolNames).not.toContain('MultiTask')
+    })
+
+    it('excludes the real AskUserQuestionTool from spawned child pools (#154)', async () => {
+      await MultiTaskTool.call({
+        tasks: [
+          {
+            description: 'General task',
+            prompt: 'Do something',
+            subagent_type: 'General',
+          },
+        ],
+      }, makeContext({
+        subAgents: {
+          ...TEST_AGENTS,
+          general: {
+            description: 'General agent',
+            prompt: 'You are a general assistant.',
+            capabilities: { customTools: [AskUserQuestionTool] },
+          },
+        },
+      }))
+
+      const config = vi.mocked(QueryEngine).mock.calls[0][0] as any
+      const names = [...config.resolved.tools, ...config.resolved.deferredTools].map((t: any) => t.name)
+      expect(names).not.toContain('AskUserQuestion')
     })
   })
 

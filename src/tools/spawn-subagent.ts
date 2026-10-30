@@ -9,6 +9,9 @@
  *   interrupting a Task phase.
  * - Task and MultiTask are removed by the resolveAgentCapabilities spawn
  *   pipeline: nesting (delegation depth > 1) is forbidden by design.
+ * - AskUserQuestion is removed there too (#154): spawned children complete
+ *   their assignment independently and report uncertainty back to the parent
+ *   instead of interrupting delegated work with a question to the user.
  */
 
 import type {
@@ -32,6 +35,13 @@ export type SpawnSubagentMode = 'Explore' | 'General'
 
 const EXPLORE_RESTRICTION_PROMPT = `
 You are running in Explore mode. You can only read files, search code, and run non-mutating shell commands. Do NOT modify, create, or delete any files. Do NOT write or edit code. Focus on exploration and information gathering only.`
+
+// #154: AskUserQuestion is excluded from every spawned pool, so the base
+// prompt's generic "use AskUserQuestion when stuck" guidance would be phantom
+// for children. Appended for ALL spawn modes: children report uncertainty
+// back to the parent instead of burning a turn on a tool they do not have.
+const SPAWN_NO_QUESTIONS_PROMPT = `
+You are a spawned subagent and CANNOT ask the user questions: the AskUserQuestion tool is not available to you. If the assignment is ambiguous or information is missing, make a reasonable assumption and state it — along with what you would have asked — in your final report to the parent agent.`
 
 const FALLBACK_PROMPT = 'You are a helpful assistant. Complete the given task using the available tools.'
 
@@ -78,13 +88,14 @@ export interface SubagentRun {
   maxTurns: number
 }
 
-/** System prompt for a spawned subagent; Explore mode appends the restriction notice. */
+/** System prompt for a spawned subagent; every mode appends the no-questions notice (#154), Explore also the restriction notice. */
 export function buildSubagentSystemPrompt(
   definition: AgentDefinition,
   mode: SpawnSubagentMode,
 ): string {
   const base = resolvePrompt(definition.prompt) ?? FALLBACK_PROMPT
-  return mode === 'Explore' ? base + '\n' + EXPLORE_RESTRICTION_PROMPT : base
+  const withNoQuestions = base + '\n' + SPAWN_NO_QUESTIONS_PROMPT
+  return mode === 'Explore' ? withNoQuestions + '\n' + EXPLORE_RESTRICTION_PROMPT : withNoQuestions
 }
 
 /**

@@ -10,6 +10,7 @@ import type {
   QueryEngineConfig,
 } from '../types.js'
 import { createEmptyServices } from './services.js'
+import { AskUserQuestionTool } from './ask-user.js'
 import { InMemorySessionStore } from '../store/in-memory.js'
 import { WriteCoordinator } from '../store/coordinator.js'
 
@@ -337,6 +338,29 @@ describe('TaskTool', () => {
 
       const config = vi.mocked(QueryEngine).mock.calls[0][0] as any
       expect(config.resolved.tools.map((t: any) => t.name)).not.toContain('Task')
+    })
+
+    it('excludes the real AskUserQuestionTool from the spawned child pool (#154)', async () => {
+      await TaskTool.call({
+        prompt: 'test',
+        description: 'general',
+        subagent_type: 'General',
+        subagent_name: 'ask-child',
+      }, makeContext({
+        subAgents: {
+          ...TEST_AGENTS,
+          'ask-child': {
+            description: 'Child that must not ask the user',
+            prompt: 'Work independently.',
+            capabilities: { customTools: [AskUserQuestionTool] },
+          },
+        },
+        agentId: 'ask-child',
+      }))
+
+      const config = vi.mocked(QueryEngine).mock.calls[0][0] as any
+      const names = [...config.resolved.tools, ...config.resolved.deferredTools].map((t: any) => t.name)
+      expect(names).not.toContain('AskUserQuestion')
     })
   })
 
