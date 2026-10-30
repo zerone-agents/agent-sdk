@@ -304,3 +304,37 @@ describe('resolveAgent diagnostics (#78)', () => {
     expect(e!.level).toBe('warn')
   })
 })
+
+describe('resolveAgent spawn pipeline: AskUserQuestion (issue #154)', () => {
+  // The shared MOCK_TOOLS above does not carry AskUserQuestion (its real
+  // mounting is host-service-dependent). Inject it as a custom tool: custom
+  // tools bypass the allow-list and participate in ALL downstream filtering
+  // like any built-in (see resolve-agent.ts #64/#61 contract), so these pins
+  // exercise the name-based spawn filter itself, including the deferred
+  // (FindTool catalog) path.
+  const askTool = {
+    name: 'AskUserQuestion',
+    isReadOnly: () => true,
+    deferred: true,
+    shortDescription: 'Ask the user a question',
+    call: vi.fn(),
+  } as any
+
+  it('General spawn removes AskUserQuestion from the eager pool AND the FindTool catalog', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [askTool] }, DEF, { spawn: { mode: 'General' } })
+    const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
+    expect(names).not.toContain('AskUserQuestion')
+  })
+
+  it('Explore spawn removes AskUserQuestion from pool and catalog too', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [askTool] }, DEF, { spawn: { mode: 'Explore' } })
+    const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
+    expect(names).not.toContain('AskUserQuestion')
+  })
+
+  it('parent agent keeps AskUserQuestion (control case: deferred-discoverable)', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [askTool] }, DEF)
+    const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
+    expect(names).toContain('AskUserQuestion')
+  })
+})

@@ -66,8 +66,16 @@ export function resolveAgent(
   // Spawn pipeline (issue #72): nesting ban, then Explore dynamic safety
   // policy on the FINAL pool — deferred tools included, so write tools stay
   // undiscoverable (absent from the FindTool catalog) in Explore mode.
+  //
+  // #154: spawned children never ask the user — AskUserQuestion is removed by
+  // name (regardless of source: built-in mounting or customTools) so it can
+  // surface neither in the eager pool nor in deferred/FindTool discovery.
+  // Children report uncertainty back to the parent instead of interrupting
+  // delegated work. The parent agent's own AskUserQuestion is untouched.
   if (opts.spawn) {
-    pool = pool.filter((t) => t.name !== 'Task' && t.name !== 'MultiTask')
+    pool = pool.filter(
+      (t) => t.name !== 'Task' && t.name !== 'MultiTask' && t.name !== 'AskUserQuestion',
+    )
   }
   if (opts.spawn?.mode === 'Explore') {
     pool = pool.filter((t) => isReadOnlyTool(t) || t.name === 'Bash')

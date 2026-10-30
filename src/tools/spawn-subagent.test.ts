@@ -395,3 +395,47 @@ describe('subagent todo storage wiring (issue #128)', () => {
     expect(await store.loadSession(childSid)).toBeNull()
   })
 })
+
+describe('spawned children cannot ask the user (issue #154)', () => {
+  function captureEngine() {
+    ;(QueryEngine as any).mockImplementation(function (this: any, config: any) {
+      capturedConfig = config
+      this.submitMessage = async function* () {
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
+      }
+    })
+  }
+
+  // Injected via capabilities: custom tools bypass allow-lists and go through
+  // ALL downstream filtering, so this exercises the spawn exclusion itself.
+  const askFixture = {
+    name: 'AskUserQuestion',
+    isReadOnly: () => true,
+    deferred: true,
+    shortDescription: 'Ask the user a question',
+    call: vi.fn(),
+  } as any
+
+  const PLAIN_AGENTS: Record<string, AgentDefinition> = {
+    worker: {
+      description: 'Does the work',
+      prompt: 'Work independently.',
+      capabilities: { customTools: [askFixture] },
+    },
+  }
+
+  // Task and MultiTask share runSubagent, so these pins cover both spawn paths.
+  it('General spawn: AskUserQuestion absent from pool AND FindTool catalog', async () => {
+    captureEngine()
+    await runSubagent(baseOpts({ agentName: 'worker', subAgents: PLAIN_AGENTS }))
+    const names = [...capturedConfig.resolved.tools, ...capturedConfig.resolved.deferredTools].map((t: any) => t.name)
+    expect(names).not.toContain('AskUserQuestion')
+  })
+
+  it('Explore spawn: same exclusion', async () => {
+    captureEngine()
+    await runSubagent(baseOpts({ agentName: 'worker', subAgents: PLAIN_AGENTS, mode: 'Explore' }))
+    const names = [...capturedConfig.resolved.tools, ...capturedConfig.resolved.deferredTools].map((t: any) => t.name)
+    expect(names).not.toContain('AskUserQuestion')
+  })
+})

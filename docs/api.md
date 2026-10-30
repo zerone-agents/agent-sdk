@@ -272,7 +272,7 @@ on the final pool, not a static deny-list):
 ```text
 built-in tools + caps.customTools + caps.connectionTools
   → allow-list (built-ins only) → deny-list (full merged pool)
-  → [spawn] remove Task/MultiTask        ← delegation depth is fixed at 1
+  → [spawn] remove Task/MultiTask/AskUserQuestion ← delegation depth fixed at 1; children never ask the user (#154)
   → [spawn·Explore] isReadOnly || Bash   ← write tools stay undiscoverable
   → lazy split (FindTool catalog)
 ```

@@ -9,6 +9,9 @@
  *   interrupting a Task phase.
  * - Task and MultiTask are removed by the resolveAgentCapabilities spawn
  *   pipeline: nesting (delegation depth > 1) is forbidden by design.
+ * - AskUserQuestion is removed there too (#154): spawned children complete
+ *   their assignment independently and report uncertainty back to the parent
+ *   instead of interrupting delegated work with a question to the user.
  */
 
 import type {
