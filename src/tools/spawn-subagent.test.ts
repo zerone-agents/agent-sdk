@@ -49,7 +49,9 @@ const { QueryEngine } = await import('../engine.js')
 const {
   runSubagent,
   DEFAULT_SUBAGENT_MAX_TURNS,
+  buildSubagentSystemPrompt,
 } = await import('./spawn-subagent.js')
+import { AskUserQuestionTool } from './ask-user.js'
 
 const runtime = {
   provider: {} as any,
@@ -406,36 +408,44 @@ describe('spawned children cannot ask the user (issue #154)', () => {
     })
   }
 
-  // Injected via capabilities: custom tools bypass allow-lists and go through
-  // ALL downstream filtering, so this exercises the spawn exclusion itself.
-  const askFixture = {
-    name: 'AskUserQuestion',
-    isReadOnly: () => true,
-    deferred: true,
-    shortDescription: 'Ask the user a question',
-    call: vi.fn(),
-  } as any
+  /** Eager pool + deferred catalog names of the captured child config. */
+  function childNames(): string[] {
+    return [...capturedConfig.resolved.tools, ...capturedConfig.resolved.deferredTools].map((t: any) => t.name)
+  }
 
+  // The REAL built-in definition (imported past the getAllBaseTools mock): if
+  // the tool is renamed, these pins fail loudly instead of the name-based
+  // spawn filter silently missing it.
   const PLAIN_AGENTS: Record<string, AgentDefinition> = {
     worker: {
       description: 'Does the work',
       prompt: 'Work independently.',
-      capabilities: { customTools: [askFixture] },
+      capabilities: { customTools: [AskUserQuestionTool] },
     },
   }
 
   // Task and MultiTask share runSubagent, so these pins cover both spawn paths.
-  it('General spawn: AskUserQuestion absent from pool AND FindTool catalog', async () => {
+  it('General spawn: real AskUserQuestionTool absent from pool AND FindTool catalog', async () => {
     captureEngine()
     await runSubagent(baseOpts({ agentName: 'worker', subAgents: PLAIN_AGENTS }))
-    const names = [...capturedConfig.resolved.tools, ...capturedConfig.resolved.deferredTools].map((t: any) => t.name)
-    expect(names).not.toContain('AskUserQuestion')
+    expect(childNames()).not.toContain('AskUserQuestion')
   })
 
   it('Explore spawn: same exclusion', async () => {
     captureEngine()
     await runSubagent(baseOpts({ agentName: 'worker', subAgents: PLAIN_AGENTS, mode: 'Explore' }))
-    const names = [...capturedConfig.resolved.tools, ...capturedConfig.resolved.deferredTools].map((t: any) => t.name)
-    expect(names).not.toContain('AskUserQuestion')
+    expect(childNames()).not.toContain('AskUserQuestion')
+  })
+
+  it('spawn guidance: General-mode prompt tells the child to report uncertainty instead of asking (no phantom AskUserQuestion guidance)', () => {
+    const prompt = buildSubagentSystemPrompt({ description: 'd', prompt: 'Work.' }, 'General')
+    expect(prompt).toContain('CANNOT ask the user questions')
+    expect(prompt).toContain('final report to the parent agent')
+  })
+
+  it('spawn guidance: Explore-mode prompt carries BOTH the restriction and the no-questions notice', () => {
+    const prompt = buildSubagentSystemPrompt({ description: 'd', prompt: 'Work.' }, 'Explore')
+    expect(prompt).toContain('Explore mode')
+    expect(prompt).toContain('CANNOT ask the user questions')
   })
 })

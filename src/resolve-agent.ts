@@ -9,7 +9,7 @@
  * Pipeline order (issue #72):
  *   built-ins + caps.customTools + caps.connectionTools
  *     → allow-list (built-ins only, #64) → deny-list (full pool)
- *     → [spawn] remove Task/MultiTask
+ *     → [spawn] remove Task/MultiTask/AskUserQuestion
  *     → [spawn·Explore] isReadOnly || Bash (deferred tools included)
  *     → lazy split (FindTool catalog)
  */
@@ -26,7 +26,7 @@ import { SkillRegistry } from './skills/registry.js'
 import { createDiagnosticsSink, type DiagnosticsSink } from './utils/diagnostics.js'
 
 export interface ResolveAgentOptions {
-  /** Spawn pipeline: removes Task/MultiTask; Explore applies the read-only safety policy. */
+  /** Spawn pipeline: removes Task/MultiTask/AskUserQuestion; Explore applies the read-only safety policy. */
   spawn?: { mode: 'General' | 'Explore' }
   /** Root path: the Agent session's registry. Spawn builds a fresh one from capabilities.skills. */
   skillRegistry?: SkillRegistry

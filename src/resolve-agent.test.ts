@@ -20,6 +20,7 @@ vi.mock('./tools/index.js', async (importOriginal) => {
 })
 
 import { resolveAgent } from './resolve-agent.js'
+import { AskUserQuestionTool } from './tools/ask-user.js'
 import { resolvePrompt } from './prompts/system-prompts.js'
 import { SkillRegistry, filterSkillsByAllowlist } from './skills/registry.js'
 import type { AgentCapabilities, RuntimeEnvironment } from './types.js'
@@ -307,33 +308,30 @@ describe('resolveAgent diagnostics (#78)', () => {
 
 describe('resolveAgent spawn pipeline: AskUserQuestion (issue #154)', () => {
   // The shared MOCK_TOOLS above does not carry AskUserQuestion (its real
-  // mounting is host-service-dependent). Inject it as a custom tool: custom
-  // tools bypass the allow-list and participate in ALL downstream filtering
-  // like any built-in (see resolve-agent.ts #64/#61 contract), so these pins
-  // exercise the name-based spawn filter itself, including the deferred
-  // (FindTool catalog) path.
-  const askTool = {
-    name: 'AskUserQuestion',
-    isReadOnly: () => true,
-    deferred: true,
-    shortDescription: 'Ask the user a question',
-    call: vi.fn(),
-  } as any
+  // mounting is host-service-dependent), so these pins inject the REAL
+  // built-in definition (imported past the tools/index mock). Custom tools
+  // bypass allow-lists and participate in ALL downstream filtering, so the
+  // pins exercise the name-based spawn filter itself — including the deferred
+  // (FindTool catalog) path — and fail loudly if the real tool is renamed.
+  it('the filter literal tracks the real built-in name', () => {
+    expect(AskUserQuestionTool.name).toBe('AskUserQuestion')
+    expect(AskUserQuestionTool.deferred).toBe(true)
+  })
 
-  it('General spawn removes AskUserQuestion from the eager pool AND the FindTool catalog', () => {
-    const r = resolveAgent(makeRuntime(), { customTools: [askTool] }, DEF, { spawn: { mode: 'General' } })
+  it('General spawn removes the real AskUserQuestionTool from the eager pool AND the FindTool catalog', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [AskUserQuestionTool] }, DEF, { spawn: { mode: 'General' } })
     const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
     expect(names).not.toContain('AskUserQuestion')
   })
 
-  it('Explore spawn removes AskUserQuestion from pool and catalog too', () => {
-    const r = resolveAgent(makeRuntime(), { customTools: [askTool] }, DEF, { spawn: { mode: 'Explore' } })
+  it('Explore spawn removes it from pool and catalog too', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [AskUserQuestionTool] }, DEF, { spawn: { mode: 'Explore' } })
     const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
     expect(names).not.toContain('AskUserQuestion')
   })
 
-  it('parent agent keeps AskUserQuestion (control case: deferred-discoverable)', () => {
-    const r = resolveAgent(makeRuntime(), { customTools: [askTool] }, DEF)
+  it('parent agent keeps the real AskUserQuestionTool (control case: deferred-discoverable)', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [AskUserQuestionTool] }, DEF)
     const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
     expect(names).toContain('AskUserQuestion')
   })
