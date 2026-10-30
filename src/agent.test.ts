@@ -1434,3 +1434,143 @@ describe('legacyMaxTokens threading to the OpenAI provider (issue #142 review)',
     expect('max_completion_tokens' in bodies[0]).toBe(false)
   })
 })
+
+// #149 R2-N1: the non-streaming prompt() surface used to rebuild a 2-field
+// usage object, discarding the result event's authoritative total — hosts
+// could only reconstruct the total by adding values (the exact anti-pattern
+// the issue reports).
+describe('QueryResult usage passthrough (#149)', () => {
+  it('T9: prompt() exposes total_input_tokens and keeps the fallback shape', async () => {
+    const agent = new Agent(makeBaseOptions())
+    ;(agent as any).provider = {
+      apiType: 'anthropic-messages',
+      async createMessage() {
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          stopReason: 'end_turn',
+          usage: {
+            input_tokens: 15_000, output_tokens: 100, totalInputTokens: 550_000,
+            cache_read_input_tokens: 535_000, cache_creation_input_tokens: 0,
+          },
+        } as any
+      },
+    }
+
+    const result = await agent.prompt('hello')
+
+    expect(result.usage.total_input_tokens).toBe(550_000)
+    expect(result.usage.input_tokens).toBe(15_000)
+    // result-side surfaces never carry the deprecated alias (#149 I1)
+    expect((result.usage as any).totalInputTokens).toBeUndefined()
+  })
+
+  it('T9b: result event WITHOUT a usage key falls back to the 2-field shape (never {})', async () => {
+    const agent = new Agent(makeBaseOptions())
+    // Stub the query stream directly: a provider-level omission can NOT reach
+    // the guard's falsy branch — the engine's result events always spread the
+    // (defined) totalUsage object, so `ev.usage` is undefined only when the
+    // result event itself carries no usage key. Adversarial check: removing
+    // the G1 guard (`ev.usage ? { ...ev.usage } : undefined`) must turn this
+    // test RED — the current provider-stub form did not (proven by experiment).
+    ;(agent as any).query = async function* () {
+      yield { type: 'result', subtype: 'success', num_turns: 1 }
+    }
+
+    const result = await agent.prompt('hello')
+
+    expect(result.usage.input_tokens).toBe(0)
+    expect(result.usage.output_tokens).toBe(0)
+    // {} (a truthy spread product) would have short-circuited the ?? fallback
+    // and violated the required QueryResult.usage declaration.
+    expect(Object.keys(result.usage).length).toBe(2)
+  })
+
+  it('T9c: passthrough is a decoupled copy, not the event object reference', async () => {
+    const agent = new Agent(makeBaseOptions())
+    const eventUsage = {
+      input_tokens: 15_000, output_tokens: 100, total_input_tokens: 550_000,
+      cache_read_input_tokens: 535_000, cache_creation_input_tokens: 0,
+    }
+    ;(agent as any).query = async function* () {
+      yield { type: 'result', subtype: 'success', num_turns: 1, usage: eventUsage }
+    }
+
+    const result = await agent.prompt('hello')
+
+    // R3-F4: spread decoupling — mutating one must not affect the other.
+    expect(result.usage).not.toBe(eventUsage)
+    expect(result.usage).toEqual(eventUsage)
+  })
+})
+
+// #151 e2e: capabilities.skills explicitly provided at construction → the
+// Skill tool must actually load them through the real execution surface
+// (tool-executor consumes resolved.skillRegistry). Before the fix the visible
+// list advertised them while the registry was empty ("Available skills: none").
+describe('explicit capabilities.skills end-to-end (#151)', () => {
+  function makeSkill(name: string) {
+    return { name, description: `synthetic ${name}`, getPrompt: async () => [{ type: 'text', text: `SYNTHETIC ${name}` }] } as any
+  }
+
+  /** Two-phase streaming provider: first call yields a Skill tool_use, second ends with text. */
+  function skillInvokingProvider(skillName: string): LLMProvider {
+    let call = 0
+    return {
+      apiType: 'anthropic-messages',
+      async createMessage() { throw new Error('not used') },
+      async *createMessageStream(): AsyncGenerator<StreamChunk> {
+        call++
+        if (call === 1) {
+          yield { type: 'tool_use', index: 1, id: `tu_${skillName}_${call}`, name: 'Skill', input: JSON.stringify({ skill: skillName }) } as any
+        } else {
+          yield { type: 'text', index: 0, delta: 'done' } as any
+        }
+        yield { type: 'done', index: -1 } as any
+      },
+    }
+  }
+
+  async function drainSkillResult(agent: Agent, skillName: string): Promise<string> {
+    ;(agent as unknown as { provider: LLMProvider }).provider = skillInvokingProvider(skillName)
+    let content = ''
+    for await (const ev of agent.query('invoke it')) {
+      if (ev.type === 'tool_result') content = (ev as any).result?.output ?? content
+    }
+    return content
+  }
+
+  it('T7: Skill tool loads an explicitly-provided skill through the real surface', async () => {
+    const agent = new Agent(makeBaseOptions({
+      includePartialMessages: true,   // streaming path — the two-phase provider implements createMessageStream only
+      agent: { description: 'd', prompt: '', capabilities: { skills: [makeSkill('alpha')] } },
+    }))
+    await (agent as any).setupDone
+
+    const content = await drainSkillResult(agent, 'alpha')
+
+    expect(content).toContain('SYNTHETIC alpha')          // loaded — not "Available skills: none"
+    expect(content).not.toContain('Unknown skill')
+  })
+
+  it('T7b: skill set changes take effect per query — no stale definitions', async () => {
+    const opts = makeBaseOptions({
+      includePartialMessages: true,   // streaming path — see T7
+      agent: { description: 'd', prompt: '', capabilities: { skills: [makeSkill('alpha')] } },
+    })
+    const agent = new Agent(opts)
+    await (agent as any).setupDone
+
+    expect(await drainSkillResult(agent, 'alpha')).toContain('SYNTHETIC alpha')
+
+    // Host mutates the definition's capabilities between queries (resolveAgent
+    // re-reads opts.agent every query — agent.ts root definition path).
+    opts.agent!.capabilities!.skills = [makeSkill('beta')]
+
+    const stale = await drainSkillResult(agent, 'alpha')
+    expect(stale).toContain('Unknown skill "alpha"')      // old definition gone
+    expect(stale).not.toContain('SYNTHETIC alpha')
+
+    const fresh = await drainSkillResult(agent, 'beta')
+    expect(fresh).toContain('SYNTHETIC beta')             // new definition live
+  })
+})

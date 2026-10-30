@@ -295,12 +295,34 @@ export interface SDKSubagentMessage {
 // Token Usage
 // --------------------------------------------------------------------------
 
+/**
+ * 归一化 token 用量（#149 权威契约）。注意：中间事件的运行时对象还可能携带
+ * 未在声明内的 `rawUsage` 键（provider 原始负载）——归一函数必须以扩展 spread
+ * 保留它；消费方不应依赖其存在。
+ */
 export interface TokenUsage {
+  /** 该次 LLM 请求的输入 token。跨 provider 语义差异：OpenAI 形态含 cached
+   *  input；Anthropic 形态不含（cache 走 cache_* 独立字段）。需要「含 cache
+   *  的输入总量」一律读 total_input_tokens，勿自行相加。 */
   input_tokens: number
+  /** 该次 LLM 请求的输出 token。 */
   output_tokens: number
+  /** cache 写入 token；缺失 = 该 provider 不上报该维度，0 = 真零写入。 */
   cache_creation_input_tokens?: number
+  /** cache 读取命中 token；缺失/0 语义同上。 */
   cache_read_input_tokens?: number
+  /** 权威输入总量：含 cache 且恰好计入一次（Anthropic = input + cache_read +
+   *  cache_creation；OpenAI = prompt_tokens 本身含 cached）。per-request：描述
+   *  单次 LLM 请求；最终 result 面若某请求未上报 usage，沿用上一次记录值
+   *  （engine 守卫内赋值，非累计）。经 engine 归一的 assistant 事件恒有值
+   *  （可为 0）；可选性为历史数据、未上报形态与早期错误路径初始两字段的兼容
+   *  留口。 */
   total_input_tokens?: number
+  /** @deprecated 用 total_input_tokens；恒与其同值。**仅中间事件面（流式与非
+   *  流式）的运行时对象携带**（过渡别名，既有运行时输出的显式化）；最终 result
+   *  面从不输出此字段。移除窗口：保留至整个 v4.x，移除仅可能发生在 v5.0.0
+   *  major 且须在其 changelog 显著标注。 */
+  totalInputTokens?: number
 }
 
 // --------------------------------------------------------------------------

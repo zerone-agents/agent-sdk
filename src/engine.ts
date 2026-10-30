@@ -145,6 +145,30 @@ function applyImageStripPlan(
   }
 }
 
+/**
+ * #149: normalize the provider-seam usage into the event TokenUsage form.
+ * Extended spread: keeps every existing runtime key (including the undeclared
+ * `rawUsage`) and makes the snake authoritative field + camel deprecated alias
+ * always equal. Fully undefined-tolerant: external JS providers may violate
+ * the contract and a silent undefined must never become a throw.
+ *
+ * NB: this is the ONLY write point of the deprecated `totalInputTokens` alias
+ * (the assistant-event yield in `submitMessage`) — the alias is written unconditionally with the
+ * same value as the snake field; the "absent = not reported" doc rule applies
+ * to the `cache_*` dimensions, not to this alias. Contract: see
+ * `TokenUsage.totalInputTokens` in types.ts.
+ */
+function toEventUsage(
+  u: CreateMessageResponse['usage'] | undefined,
+): TokenUsage | undefined {
+  if (u === undefined) return undefined
+  return {
+    ...u,
+    total_input_tokens: u.totalInputTokens,
+    totalInputTokens: u.totalInputTokens,
+  }
+}
+
 export class QueryEngine {
   private config: QueryEngineConfig
   private provider: LLMProvider
@@ -647,7 +671,7 @@ export class QueryEngine {
           role: 'assistant',
           content: response.content as any,
         },
-        usage: response.usage,
+        usage: toEventUsage(response.usage),
       }
 
       // Handle max_output_tokens recovery

@@ -32,6 +32,7 @@ import type {
   PermissionMode,
   McpServerConfig,
   AgentInput,
+  TokenUsage,
 } from './types.js'
 import { QueryEngine } from './engine.js'
 import { resolveAgent } from './resolve-agent.js'
@@ -51,7 +52,6 @@ import { SnapshotEngine } from './snapshot/index.js'
 import { isGitAvailable } from './snapshot/git-detector.js'
 import { createHookRegistry, type HookRegistry, type HookEvent, type HookInput, type HookOutput } from './hooks.js'
 import { loadSkillsFromFilesystem, SkillRegistry, defaultRegistry, registerSkill as registryRegisterSkill, unregisterSkill as registryUnregisterSkill } from './skills/index.js'
-import { filterSkillsByAllowlist } from './skills/registry.js'
 import type { SkillDefinition } from './skills/types.js'
 import { createProvider, type LLMProvider, type ApiType } from './providers/index.js'
 import type { NormalizedMessageParam } from './providers/types.js'
@@ -780,8 +780,9 @@ export class Agent {
     const rootCaps: AgentCapabilities = {
       connectionTools: [...this.toolPool, ...(caps?.connectionTools ?? [])],
       customTools: [...(opts.customTools ?? []), ...(caps?.customTools ?? [])],
-      skills: caps?.skills
-        ?? filterSkillsByAllowlist(this.skillRegistry.getUserInvocable(), mergedDefinition.availableSkills),
+      skills: caps?.skills,   // #151: fallback now lives in resolveAgent — an
+                              // unset capability resolves to the session-registry
+                              // + allowlist view there (value-equivalent move)
       allowedTools: overrides?.allowedTools ?? caps?.allowedTools,
       disallowedTools: overrides?.disallowedTools ?? caps?.disallowedTools,
     }
@@ -916,6 +917,7 @@ export class Agent {
       text: '',
       turns: 0,
       tokens: { in: 0, out: 0 },
+      usage: undefined as TokenUsage | undefined,
       is_error: false,
       error_type: undefined as string | undefined,
       errors: undefined as string[] | undefined,
@@ -935,6 +937,10 @@ export class Agent {
           collected.turns = ev.num_turns ?? 0
           collected.tokens.in = ev.usage?.input_tokens ?? 0
           collected.tokens.out = ev.usage?.output_tokens ?? 0
+          // #149: pass the result event's normalized five-field usage through
+          // (spread decouples the reference; the guard keeps the ?? fallback
+          // below live — {...undefined} would be a truthy empty object).
+          collected.usage = ev.usage ? { ...ev.usage } : undefined
           // Issue #28: never present an engine error result as a successful
           // QueryResult. The engine signals failure via is_error:true (hook
           // block) and/or an 'error*' subtype (stream error, max turns/budget).
@@ -953,7 +959,7 @@ export class Agent {
 
     return {
       text: collected.text,
-      usage: { input_tokens: collected.tokens.in, output_tokens: collected.tokens.out },
+      usage: collected.usage ?? { input_tokens: collected.tokens.in, output_tokens: collected.tokens.out },
       num_turns: collected.turns,
       duration_ms: Math.round(performance.now() - t0),
       messages: [...this.messageLog],

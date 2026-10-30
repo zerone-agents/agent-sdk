@@ -263,10 +263,11 @@ describe('resolveAgent spawn pipeline (issue #72)', () => {
     expect(empty.skills).toEqual([])
   })
 
-  it('root uses opts.skillRegistry and caps.skills verbatim', () => {
+  it('root with explicit [] builds an empty registry, not opts.skillRegistry (#151)', () => {
     const reg = new SkillRegistry()
     const r = resolveAgent(makeRuntime(), { skills: [] }, DEF, { skillRegistry: reg })
-    expect(r.skillRegistry).toBe(reg)
+    expect(r.skillRegistry).not.toBe(reg)
+    expect(r.skillRegistry.getUserInvocable()).toEqual([])
   })
 
   it('uses runtime.toolServices as resolved.services', () => {
@@ -334,5 +335,71 @@ describe('resolveAgent spawn pipeline: AskUserQuestion (issue #154)', () => {
     const r = resolveAgent(makeRuntime(), { customTools: [AskUserQuestionTool] }, DEF)
     const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
     expect(names).toContain('AskUserQuestion')
+  })
+})
+
+// #151: an explicit capabilities.skills means the agent OWNS its skill set —
+// the execution registry must be rebuilt from it (spawn-symmetric), never
+// silently falling back to the session registry. Only the unset path keeps
+// opts.skillRegistry (registry-as-superset allowed).
+describe('explicit skills registry consistency (#151)', () => {
+  const SKILL_A = { name: 'skill-a', description: 'a', getPrompt: async () => [] } as any
+  const SKILL_B = { name: 'skill-b', description: 'b', getPrompt: async () => [] } as any
+
+  it('T1: explicit skills rebuild the execution registry (issue repro)', () => {
+    const sessionReg = new SkillRegistry()          // empty — the runtime pre-materializes scenario
+    const r = resolveAgent(makeRuntime(), { skills: [SKILL_A] }, DEF, { skillRegistry: sessionReg })
+    expect(r.skills.map((s: any) => s.name)).toEqual(['skill-a'])
+    expect(r.skillRegistry.get('skill-a')).toBeDefined()
+    expect(r.skillRegistry).not.toBe(sessionReg)   // rebuilt, not the session registry
+  })
+
+  it('T2: explicit empty array means NO skills — never inherits opts.skillRegistry', () => {
+    const sessionReg = new SkillRegistry()
+    sessionReg.register(SKILL_B)
+    const r = resolveAgent(makeRuntime(), { skills: [] }, DEF, { skillRegistry: sessionReg })
+    expect(r.skills).toEqual([])
+    expect(r.skillRegistry.getUserInvocable()).toEqual([])
+    expect(r.skillRegistry).not.toBe(sessionReg)
+  })
+
+  it('T3: unset skills keep the registry view + allowlist (superset semantics preserved)', () => {
+    const sessionReg = new SkillRegistry()
+    sessionReg.register(SKILL_A)
+    sessionReg.register(SKILL_B)
+    const def = { ...DEF, availableSkills: ['skill-a'] }
+    const r = resolveAgent(makeRuntime(), {}, def, { skillRegistry: sessionReg })
+    // view = registry ∩ allowlist (project-sourced would pass too — none here)
+    expect(r.skills.map((s: any) => s.name)).toEqual(['skill-a'])
+    expect(r.skillRegistry).toBe(sessionReg)       // superset semantics: registry untouched
+  })
+
+  it('T4: unset skills without opts.skillRegistry — empty view, no throw', () => {
+    const r = resolveAgent(makeRuntime(), {}, DEF)
+    expect(r.skills).toEqual([])
+    expect(r.skillRegistry.getUserInvocable()).toEqual([])
+  })
+
+  it('T5: spawn never inherits — even with a type-legal spawn+skillRegistry call (W1 pin)', () => {
+    const sessionReg = new SkillRegistry()
+    sessionReg.register(SKILL_B)
+    const r = resolveAgent(makeRuntime(), {}, DEF, { spawn: { mode: 'General' }, skillRegistry: sessionReg })
+    expect(r.skills).toEqual([])                   // structural, not convention
+    expect(r.skillRegistry.getUserInvocable()).toEqual([])
+    expect(r.skillRegistry).not.toBe(sessionReg)
+  })
+
+  it('T6: unknown skill name fails with the REAL available list (via SkillTool)', async () => {
+    const { SkillTool } = await import('./tools/skill.js')
+    const r = resolveAgent(makeRuntime(), { skills: [SKILL_A] }, DEF, { skillRegistry: new SkillRegistry() })
+    const ctx = {
+      toolUseId: 'tu_t6',
+      resolvedSkills: r.skills,
+      skillRegistry: r.skillRegistry,
+    } as any
+    const result: any = await SkillTool.call({ skill: 'nope' }, ctx)
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('Unknown skill "nope"')
+    expect(result.content).toContain('skill-a')    // the real registry contents, not "none"
   })
 })
