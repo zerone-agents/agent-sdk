@@ -262,16 +262,67 @@ describe('resolveAgent spawn pipeline (issue #72)', () => {
     expect(empty.skills).toEqual([])
   })
 
-  it('root uses opts.skillRegistry and caps.skills verbatim', () => {
-    const reg = new SkillRegistry()
-    const r = resolveAgent(makeRuntime(), { skills: [] }, DEF, { skillRegistry: reg })
-    expect(r.skillRegistry).toBe(reg)
-  })
-
   it('uses runtime.toolServices as resolved.services', () => {
     const rt = makeRuntime()
     const r = resolveAgent(rt, {}, DEF)
     expect(r.services).toBe(rt.toolServices)
+  })
+})
+
+describe('resolveAgent root skill registry contract (issue #227)', () => {
+  // issue #227：caps.skills 未提供（undefined）→ 保留既有 session registry
+  // 语义（原样透传）；显式提供（含空数组）则见下方新契约测试。
+  it('root falls back to opts.skillRegistry verbatim when caps.skills is undefined', () => {
+    const reg = new SkillRegistry()
+    reg.register({ name: 'user-skill', description: 'd', getPrompt: async () => [] } as any)
+    const r = resolveAgent(makeRuntime(), {}, DEF, { skillRegistry: reg })
+    expect(r.skillRegistry).toBe(reg)
+    expect(r.skillRegistry.get('user-skill')).toBeDefined()
+  })
+
+  // ── issue #227：根路径执行注册表契约 ──────────────────────────────────────
+  //
+  // bug：Hub/Runtime 预加载的 caps.skills 只进入可见清单（resolved.skills），
+  // 根路径执行注册表取 opts.skillRegistry ?? new SkillRegistry()（空表）——
+  // Skill 工具执行时 "Unknown skill ... Available skills: none"。
+
+  it('root with explicit skills builds the execution registry from caps.skills', () => {
+    const skill = { name: 'skill-a', description: 'd', getPrompt: async () => [{ type: 'text', text: 'A' }] } as any
+    const r = resolveAgent(makeRuntime(), { skills: [skill] }, DEF)
+    expect(r.skills.map(s => s.name)).toEqual(['skill-a'])
+    expect(r.skillRegistry.get('skill-a')).toBeDefined()
+  })
+
+  it('root visible list and execution lookup stay consistent', () => {
+    const skill = { name: 'skill-a', description: 'd', getPrompt: async () => [] } as any
+    const r = resolveAgent(makeRuntime(), { skills: [skill] }, DEF)
+    expect(r.skills.map(s => s.name)).toEqual(
+      r.skillRegistry.getUserInvocable().map(s => s.name),
+    )
+  })
+
+  it('explicit empty skills yields an empty registry — session skills not inherited', () => {
+    const reg = new SkillRegistry()
+    reg.register({ name: 'other-agent-skill', description: 'd', getPrompt: async () => [] } as any)
+    const r = resolveAgent(makeRuntime(), { skills: [] }, DEF, { skillRegistry: reg })
+    expect(r.skills).toEqual([])
+    expect(r.skillRegistry.get('other-agent-skill')).toBeUndefined()
+  })
+
+  it('explicit skills do not leak session registry skills into the root agent', () => {
+    const reg = new SkillRegistry()
+    reg.register({ name: 'session-skill', description: 'd', getPrompt: async () => [] } as any)
+    const skill = { name: 'skill-a', description: 'd', getPrompt: async () => [] } as any
+    const r = resolveAgent(makeRuntime(), { skills: [skill] }, DEF, { skillRegistry: reg })
+    expect(r.skillRegistry.get('skill-a')).toBeDefined()
+    expect(r.skillRegistry.get('session-skill')).toBeUndefined()
+  })
+
+  it('Skill tool filtered out drops the registry contents too', () => {
+    const skill = { name: 'skill-a', description: 'd', getPrompt: async () => [] } as any
+    const r = resolveAgent(makeRuntime(), { skills: [skill], disallowedTools: ['Skill'] }, DEF)
+    expect(r.skills).toEqual([])
+    expect(r.skillRegistry.get('skill-a')).toBeUndefined()
   })
 })
 

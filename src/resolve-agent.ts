@@ -99,9 +99,21 @@ export function resolveAgent(
     skills = []
   }
 
-  const skillRegistry = opts.spawn
-    ? SkillRegistry.fromDefinitions(skills)
-    : (opts.skillRegistry ?? new SkillRegistry())
+  // Skill registry selection (issue #227):
+  //   - spawn pipeline: fresh registry from caps.skills (subagents are
+  //     self-contained; no session skills leak in).
+  //   - root with EXPLICIT capabilities.skills (including empty — the
+  //     runtime-preloaded definitions are the effective skill set, e.g. the
+  //     Hub sync path): the execution registry must match that set, otherwise
+  //     the Skill tool resolves names against an empty registry while the
+  //     prompt lists the skills ("Available skills: none", agent-hub #227).
+  //   - root with NO capabilities.skills: caller did not define a skill set —
+  //     keep the session registry verbatim (filesystem/user skills, desktop
+  //     semantics unchanged).
+  const skillRegistry =
+    opts.spawn || capabilities.skills !== undefined
+      ? SkillRegistry.fromDefinitions(skills)
+      : (opts.skillRegistry ?? new SkillRegistry())
 
   return {
     definition,
