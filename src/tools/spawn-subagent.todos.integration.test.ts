@@ -102,8 +102,8 @@ describe('subagent TodoWrite exclusion (issue #159; supersedes #128 review P2 st
       const records = await store.loadRecords(run.sessionId, childBranch!.records)
       const texts = records.filter((r) => r !== null).map((r) => JSON.stringify(r.message))
       expect(texts.some((t) => t.includes('Unknown tool') && t.includes('TodoWrite'))).toBe(true)
-      // Nothing persisted for the child session.
-      expect((await store.loadTodos(run.sessionId)) ?? []).toEqual([])
+      // Nothing persisted for the child session (loadTodos returns []).
+      expect(await store.loadTodos(run.sessionId)).toEqual([])
       // Isolation: the parent session's todos are untouched.
       expect(await store.loadTodos('parent-session')).toEqual([
         { content: 'parent task', status: 'pending', priority: 'high' },

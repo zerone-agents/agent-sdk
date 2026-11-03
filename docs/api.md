@@ -276,7 +276,7 @@ on the final pool, not a static deny-list):
 ```text
 built-in tools + caps.customTools + caps.connectionTools
   → allow-list (built-ins only) → deny-list (full merged pool)
-  → [spawn] remove Task/MultiTask/AskUserQuestion/TodoWrite ← depth fixed at 1; parent-only tools (#154/#159)
+  → [spawn] remove Task/MultiTask (nesting: depth 1) + AskUserQuestion/TodoWrite (parent-only, #154/#159)
   → [spawn·Explore] isReadOnly || Bash   ← write tools stay undiscoverable
   → lazy split (FindTool catalog)
 ```
@@ -289,9 +289,10 @@ no-questions notice telling it to make a reasonable assumption and report
 uncertainty back to the parent instead. Parent agents keep
 `AskUserQuestion` exactly as before.
 
-`TodoWrite` is removed the same way (#159): a child manages its own
-assignment, never the parent conversation's task list. Parent agents keep
-`TodoWrite` as before.
+`TodoWrite` is excluded from the same pool (#159) — pool removal only, no
+prompt-notice change (the base prompt never names TodoWrite): a child
+manages its own assignment, never the parent conversation's task list.
+Parent agents keep `TodoWrite` as before.
 
 MCP `annotations.readOnlyHint` maps to `isReadOnly`, so read-only MCP tools
 work in Explore subagents and join the read-only concurrency batch.
