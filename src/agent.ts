@@ -648,6 +648,10 @@ export class Agent {
           throw new SessionNotFoundError(this.cfg.resume)
         }
         this.sid = this.cfg.resume
+        // #158: ownership must track the RESUMED session id — the constructor
+        // default (a fresh randomUUID) is stale after resume, and a mid-query
+        // spawn would assert the wrong root.
+        this.v4Ownership = this.cfg.ownership ?? { rootSessionId: this.sid }
         // issue #145：register-only/todos-only（branches=[]）resume → 空历史起步——
         // currentBranchId 为空串（非实体分支），不得对其查询上下文
         this.history = state.branches.length > 0
@@ -850,6 +854,12 @@ export class Agent {
         // prompts, and subagent traffic never arrive as user/assistant
         // events here (executeTools only yields tool_result events).
         if (event.type === 'user') {
+          // #158: the first 'user' event means UserPromptSubmit hooks passed
+          // and the engine is live — self-register before any mid-query child
+          // write. Blocked or immediately-aborted queries never reach this
+          // point, so they leave no register-only empty row (the old
+          // persistCheckpoint invariant). Idempotent via v4Registered.
+          await this.ensureV4Registered()
           this.messageLog.push({
             type: 'user',
             message: { role: 'user', content: input },
@@ -1035,13 +1045,7 @@ export class Agent {
     if (!this.v4store || !this.v4coordinator) return
     if (post.length < 2) return   // 真实产物下限 = summary pair（R20：空 kept 合法）
     // 与 persistCheckpoint 相同的登记/索引前提
-    if (!this.v4Registered) {
-      await this.v4coordinator.execute(this.sid, {
-        kind: 'register',
-        ownership: this.v4Ownership,
-      })
-      this.v4Registered = true
-    }
+    await this.ensureV4Registered()
     const state = await this.v4store.loadSession(this.sid)
     if (!state) return
     if (!this.v4Index) {
@@ -1070,6 +1074,24 @@ export class Agent {
   }
 
   /**
+   * Self-register the session row before the first write (spec §2.3) —
+   * idempotent via v4Registered. query() calls this on the first 'user' event
+   * so mid-query subagent spawns (Task/MultiTask) see the root registered
+   * (issue #158); the resume path pre-sets v4Registered (row already exists)
+   * and the short-circuit keeps that path unchanged.
+   */
+  private async ensureV4Registered(): Promise<void> {
+    if (this.v4Registered) return
+    if (this.cfg.persistSession === false) return
+    if (!this.v4store || !this.v4coordinator) return
+    await this.v4coordinator.execute(this.sid, {
+      kind: 'register',
+      ownership: this.v4Ownership,
+    })
+    this.v4Registered = true
+  }
+
+  /**
    * Persist the current history as a session checkpoint (v4, issue #131 P3):
    * WriteCoordinator + CommittedMessageIndex incremental diff. Without a
    * store the agent is ephemeral (no persistence). Conflicts propagate;
@@ -1080,14 +1102,9 @@ export class Agent {
 
     // ── v4 path (issue #131 P3): WriteCoordinator + CommittedMessageIndex ──
     if (this.v4store && this.v4coordinator) {
-      // Self-register before first write (spec §2.3)
-      if (!this.v4Registered) {
-        await this.v4coordinator.execute(this.sid, {
-          kind: 'register',
-          ownership: this.v4Ownership,
-        })
-        this.v4Registered = true
-      }
+      // Self-register before first write (spec §2.3) — normally a no-op:
+      // the first 'user' event already registered (#158).
+      await this.ensureV4Registered()
       // Build index on first use or after compact
       if (!this.v4Index) {
         const state = await this.v4store.loadSession(this.sid)
