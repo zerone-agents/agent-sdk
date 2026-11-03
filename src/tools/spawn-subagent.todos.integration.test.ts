@@ -1,8 +1,12 @@
 /**
- * Behavior-level integration for subagent todo storage (issue #128 review P2):
- * REAL engine (no vi.mock) so TodoWrite actually executes inside the child,
- * then asserts the child's todos land on the shared storage under the child's
- * sessionId, the parent session stays untouched, and nothing hits the disk.
+ * Behavior-level integration for subagent TodoWrite EXCLUSION (issue #159;
+ * supersedes the issue #128 review P2 child-todo-storage behavior — #159
+ * removed TodoWrite from every spawned child's pool): REAL engine (no
+ * vi.mock) so the child's TodoWrite tool_use is actually executed against
+ * the resolved pool, then asserts the spawn exclusion blocks it
+ * (unknown-tool error, nothing persisted) even when the agent explicitly
+ * allows the tool, the parent session stays untouched, and nothing hits
+ * the disk.
  */
 import { describe, expect, it } from 'vitest'
 import { existsSync, mkdtempSync } from 'fs'
@@ -60,8 +64,8 @@ function todoProvider(): LLMProvider {
   }
 }
 
-describe('subagent todo storage behavior (issue #128 review P2)', () => {
-  it('child TodoWrite lands on the shared storage under the child sessionId; parent untouched; no files', async () => {
+describe('subagent TodoWrite exclusion (issue #159; supersedes #128 review P2 storage behavior)', () => {
+  it('child TodoWrite is blocked by the spawn exclusion even with explicit allowedTools: unknown-tool error, nothing persisted, parent untouched', async () => {
     const home = mkdtempSync(join(tmpdir(), 'sub-todos-home-'))
     const prevHome = process.env.HOME
     process.env.HOME = home
@@ -91,10 +95,15 @@ describe('subagent todo storage behavior (issue #128 review P2)', () => {
       expect(childState).not.toBeNull()
       const childBranch = childState!.branches.find((b) => b.branchId === childState!.currentBranchId)
       expect(childBranch?.records.length ?? 0).toBeGreaterThan(0)
-      // Behavior: the child's TodoWrite call persisted through the shared store.
-      expect(await store.loadTodos(run.sessionId)).toEqual([
-        { content: 'child task', status: 'pending', priority: 'high' },
-      ])
+      // #159: the model's TodoWrite call hit the spawn exclusion — the tool is
+      // not in the child pool (name-based ban beats explicit allowedTools), so
+      // the executor answers with an unknown-tool error instead of executing.
+      // (Records are JSON-serialized, so match quote-free fragments.)
+      const records = await store.loadRecords(run.sessionId, childBranch!.records)
+      const texts = records.filter((r) => r !== null).map((r) => JSON.stringify(r.message))
+      expect(texts.some((t) => t.includes('Unknown tool') && t.includes('TodoWrite'))).toBe(true)
+      // Nothing persisted for the child session (loadTodos returns []).
+      expect(await store.loadTodos(run.sessionId)).toEqual([])
       // Isolation: the parent session's todos are untouched.
       expect(await store.loadTodos('parent-session')).toEqual([
         { content: 'parent task', status: 'pending', priority: 'high' },

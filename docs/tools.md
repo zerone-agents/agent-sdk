@@ -19,7 +19,7 @@ Agent SDK ships with 20+ tools covering file I/O, search, command execution, web
 | **FindTool**                               | Discover lazy-loaded tools                   |
 | **CronCreate/Delete/List**                 | Scheduled task management                    |
 | **Config**                                 | Dynamic configuration                        |
-| **TodoWrite**                              | Session todo list                            |
+| **TodoWrite**                              | Session todo list (not available to spawned SubAgents — the parent conversation owns the list, #159) |
 
 ### PDF Support
 

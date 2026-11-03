@@ -19,8 +19,9 @@ vi.mock('./tools/index.js', async (importOriginal) => {
   }
 })
 
-import { resolveAgent } from './resolve-agent.js'
+import { resolveAgent, SPAWN_EXCLUDED_TOOLS } from './resolve-agent.js'
 import { AskUserQuestionTool } from './tools/ask-user.js'
+import { TodoWriteTool } from './tools/todowrite.js'
 import { resolvePrompt } from './prompts/system-prompts.js'
 import { SkillRegistry, filterSkillsByAllowlist } from './skills/registry.js'
 import type { AgentCapabilities, RuntimeEnvironment } from './types.js'
@@ -307,34 +308,57 @@ describe('resolveAgent diagnostics (#78)', () => {
   })
 })
 
-describe('resolveAgent spawn pipeline: AskUserQuestion (issue #154)', () => {
-  // The shared MOCK_TOOLS above does not carry AskUserQuestion (its real
-  // mounting is host-service-dependent), so these pins inject the REAL
-  // built-in definition (imported past the tools/index mock). Custom tools
-  // bypass allow-lists and participate in ALL downstream filtering, so the
-  // pins exercise the name-based spawn filter itself — including the deferred
-  // (FindTool catalog) path — and fail loudly if the real tool is renamed.
-  it('the filter literal tracks the real built-in name', () => {
-    expect(AskUserQuestionTool.name).toBe('AskUserQuestion')
-    expect(AskUserQuestionTool.deferred).toBe(true)
+describe.each([
+  { name: 'AskUserQuestion', tool: AskUserQuestionTool, deferred: true },
+  { name: 'TodoWrite', tool: TodoWriteTool, deferred: false },
+])('resolveAgent spawn pipeline: $name (issue #154/#159)', ({ name, tool, deferred }) => {
+  // Same injection strategy: the shared MOCK_TOOLS does not carry these
+  // tools, so the pins inject the REAL built-in definitions (imported past
+  // the tools/index mock). Custom tools bypass allow-lists and go through
+  // ALL downstream filtering, exercising the name-based spawn filter itself.
+  it('the real built-in name is listed in SPAWN_EXCLUDED_TOOLS (drift guard both ways)', () => {
+    expect(tool.name).toBe(name)
+    expect(tool.deferred ?? false).toBe(deferred)
+    expect(SPAWN_EXCLUDED_TOOLS.has(name)).toBe(true)
   })
 
-  it('General spawn removes the real AskUserQuestionTool from the eager pool AND the FindTool catalog', () => {
-    const r = resolveAgent(makeRuntime(), { customTools: [AskUserQuestionTool] }, DEF, { spawn: { mode: 'General' } })
+  it.each([
+    ['General', { spawn: { mode: 'General' as const } }],
+    ['Explore', { spawn: { mode: 'Explore' as const } }],
+  ])('%s spawn removes the real tool from the eager pool AND the FindTool catalog', (_mode, opts) => {
+    const r = resolveAgent(makeRuntime(), { customTools: [tool] }, DEF, opts)
     const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
-    expect(names).not.toContain('AskUserQuestion')
+    expect(names).not.toContain(name)
   })
 
-  it('Explore spawn removes it from pool and catalog too', () => {
-    const r = resolveAgent(makeRuntime(), { customTools: [AskUserQuestionTool] }, DEF, { spawn: { mode: 'Explore' } })
+  it('parent agent keeps the real tool (control case)', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [tool] }, DEF)
     const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
-    expect(names).not.toContain('AskUserQuestion')
+    expect(names).toContain(name)
+    // AskUserQuestion is deferred (catalog); TodoWrite is eager (pool).
+    if (deferred) {
+      expect(r.deferredTools.map((t) => t.name)).toContain(name)
+    } else {
+      expect(r.tools.map((t) => t.name)).toContain(name)
+    }
   })
+})
 
-  it('parent agent keeps the real AskUserQuestionTool (control case: deferred-discoverable)', () => {
-    const r = resolveAgent(makeRuntime(), { customTools: [AskUserQuestionTool] }, DEF)
-    const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
-    expect(names).toContain('AskUserQuestion')
+describe('TodoWrite deferred-variant catalog pin (issue #159 review)', () => {
+  // TodoWrite is an EAGER built-in — without a deferred variant the
+  // deferred (FindTool catalog) leg of the exclusion pins above would be
+  // vacuous (deferredTools empty → not.toContain trivially true). Force
+  // deferred on the real definition (CronList precedent in MOCK_TOOLS) and
+  // make the pin self-guarding: the unfiltered parent MUST have the variant
+  // in its catalog, proving the exclusion assertion has teeth.
+  it('even if TodoWrite were deferred, spawn excludes it from the FindTool catalog', () => {
+    const deferredVariant = { ...TodoWriteTool, deferred: true }
+    const unfiltered = resolveAgent(makeRuntime(), { customTools: [deferredVariant] }, DEF)
+    expect(unfiltered.deferredTools.map((t) => t.name)).toContain('TodoWrite')
+
+    const r = resolveAgent(makeRuntime(), { customTools: [deferredVariant] }, DEF, { spawn: { mode: 'General' } })
+    expect(r.deferredTools.map((t) => t.name)).not.toContain('TodoWrite')
+    expect(r.tools.map((t) => t.name)).not.toContain('TodoWrite')
   })
 })
 

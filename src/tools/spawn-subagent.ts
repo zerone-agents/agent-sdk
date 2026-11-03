@@ -12,6 +12,8 @@
  * - AskUserQuestion is removed there too (#154): spawned children complete
  *   their assignment independently and report uncertainty back to the parent
  *   instead of interrupting delegated work with a question to the user.
+ * - TodoWrite is removed there too (#159): a child manages its own
+ *   assignment, never the parent conversation's task list.
  */
 
 import type {
@@ -64,8 +66,9 @@ export interface SpawnSubagentOptions {
   diagnostics?: DiagnosticsSink
   /**
    * issue #131 P3: v4 SessionStore inherited by the child agent — the subagent
-   * (TodoWrite/checkpoints) persists through the SAME backend as the parent,
-   * isolated by the child's own sessionId. REQUIRED: no silent fallback —
+   * (checkpoints and any child-side writes) persists through the SAME backend
+   * as the parent, isolated by the child's own sessionId. REQUIRED: no silent
+   * fallback —
    * missing wiring must fail loudly.
    */
   store: SessionStore
@@ -168,8 +171,9 @@ export async function runSubagent(opts: SpawnSubagentOptions): Promise<SubagentR
 
   const sessionId = crypto.randomUUID()
 
-  // R2（§2.3）：预登记子会话——后续写入（TodoWrite/checkpoint）自动继承登记
-  // 归属；级联删除自 root 可达。幂等：同归属重复 register 为 no-op。
+  // R2（§2.3）：预登记子会话——后续写入（checkpoint）自动继承登记归属；级联删除
+  // 自 root 可达。幂等：同归属重复 register 为 no-op。（TodoWrite 已自 child 池
+  // 剔除——#159——故不再是 child 写路径。）
   if (opts.ownership && opts.coordinator) {
     await opts.coordinator.execute(sessionId, { kind: 'register', ownership: opts.ownership })
   }

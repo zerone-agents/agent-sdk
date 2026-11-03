@@ -1,4 +1,19 @@
 /**
+ * Tools removed from every spawned SubAgent's pool — name-based, regardless
+ * of source (built-in mounting, customTools, connectionTools):
+ * - Task/MultiTask: the nesting ban (issue #72 — delegation depth fixed at 1)
+ * - AskUserQuestion (#154) / TodoWrite (#159): parent-only tools
+ * Single source of truth for the spawn filter, the docs, and the drift-guard
+ * tests (which pin the real built-in names against this set).
+ */
+export const SPAWN_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
+  'Task',
+  'MultiTask',
+  'AskUserQuestion',
+  'TodoWrite',
+])
+
+/**
  * Agent capability resolution.
  *
  * resolveAgent() computes an agent's effective tools and skills exactly once
@@ -9,7 +24,7 @@
  * Pipeline order (issue #72):
  *   built-ins + caps.customTools + caps.connectionTools
  *     → allow-list (built-ins only, #64) → deny-list (full pool)
- *     → [spawn] remove Task/MultiTask/AskUserQuestion
+ *     → [spawn] remove SPAWN_EXCLUDED_TOOLS
  *     → [spawn·Explore] isReadOnly || Bash (deferred tools included)
  *     → lazy split (FindTool catalog)
  */
@@ -26,7 +41,7 @@ import { SkillRegistry, filterSkillsByAllowlist } from './skills/registry.js'
 import { createDiagnosticsSink, type DiagnosticsSink } from './utils/diagnostics.js'
 
 export interface ResolveAgentOptions {
-  /** Spawn pipeline: removes Task/MultiTask/AskUserQuestion; Explore applies the read-only safety policy. */
+  /** Spawn pipeline: removes SPAWN_EXCLUDED_TOOLS; Explore applies the read-only safety policy. */
   spawn?: { mode: 'General' | 'Explore' }
   /**
    * Root path: the Agent session's registry, used ONLY when `capabilities.skills`
@@ -71,15 +86,11 @@ export function resolveAgent(
   // policy on the FINAL pool — deferred tools included, so write tools stay
   // undiscoverable (absent from the FindTool catalog) in Explore mode.
   //
-  // #154: spawned children never ask the user — AskUserQuestion is removed by
-  // name (regardless of source: built-in mounting or customTools) so it can
-  // surface neither in the eager pool nor in deferred/FindTool discovery.
-  // Children report uncertainty back to the parent instead of interrupting
-  // delegated work. The parent agent's own AskUserQuestion is untouched.
+  // SPAWN_EXCLUDED_TOOLS: children never nest (Task/MultiTask), never ask the
+  // user (#154), and never manage the parent conversation's task list (#159).
+  // Name-based regardless of source; parent agents are untouched.
   if (opts.spawn) {
-    pool = pool.filter(
-      (t) => t.name !== 'Task' && t.name !== 'MultiTask' && t.name !== 'AskUserQuestion',
-    )
+    pool = pool.filter((t) => !SPAWN_EXCLUDED_TOOLS.has(t.name))
   }
   if (opts.spawn?.mode === 'Explore') {
     pool = pool.filter((t) => isReadOnlyTool(t) || t.name === 'Bash')

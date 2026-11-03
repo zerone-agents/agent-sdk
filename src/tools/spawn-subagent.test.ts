@@ -52,6 +52,22 @@ const {
   buildSubagentSystemPrompt,
 } = await import('./spawn-subagent.js')
 import { AskUserQuestionTool } from './ask-user.js'
+import { TodoWriteTool } from './todowrite.js'
+
+/** Capture the QueryEngine config the child engine was constructed with. */
+function captureEngine() {
+  ;(QueryEngine as any).mockImplementation(function (this: any, config: any) {
+    capturedConfig = config
+    this.submitMessage = async function* () {
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
+    }
+  })
+}
+
+/** Eager pool + deferred catalog names of the captured child config. */
+function childNames(): string[] {
+  return [...capturedConfig.resolved.tools, ...capturedConfig.resolved.deferredTools].map((t: any) => t.name)
+}
 
 const runtime = {
   provider: {} as any,
@@ -398,52 +414,43 @@ describe('subagent todo storage wiring (issue #128)', () => {
   })
 })
 
-describe('spawned children cannot ask the user (issue #154)', () => {
-  function captureEngine() {
-    ;(QueryEngine as any).mockImplementation(function (this: any, config: any) {
-      capturedConfig = config
-      this.submitMessage = async function* () {
-        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
-      }
-    })
-  }
-
-  /** Eager pool + deferred catalog names of the captured child config. */
-  function childNames(): string[] {
-    return [...capturedConfig.resolved.tools, ...capturedConfig.resolved.deferredTools].map((t: any) => t.name)
-  }
-
-  // The REAL built-in definition (imported past the getAllBaseTools mock): if
-  // the tool is renamed, these pins fail loudly instead of the name-based
-  // spawn filter silently missing it.
-  const PLAIN_AGENTS: Record<string, AgentDefinition> = {
+describe.each([
+  { name: 'AskUserQuestion', tool: AskUserQuestionTool },
+  { name: 'TodoWrite', tool: TodoWriteTool },
+])('spawned children cannot use $name (issue #154/#159)', ({ name, tool }) => {
+  // Same strategy for both tools: the shared MOCK_TOOLS does not carry them,
+  // so the pins inject the REAL built-in definitions (imported past the
+  // getAllBaseTools mock) via caps.customTools.
+  const AGENTS_WITH_TOOL: Record<string, AgentDefinition> = {
     worker: {
       description: 'Does the work',
       prompt: 'Work independently.',
-      capabilities: { customTools: [AskUserQuestionTool] },
+      capabilities: { customTools: [tool] },
     },
   }
 
   // Task and MultiTask share runSubagent, so these pins cover both spawn paths.
-  it('General spawn: real AskUserQuestionTool absent from pool AND FindTool catalog', async () => {
+  it('General spawn: absent from pool AND FindTool catalog', async () => {
     captureEngine()
-    await runSubagent(baseOpts({ agentName: 'worker', subAgents: PLAIN_AGENTS }))
-    expect(childNames()).not.toContain('AskUserQuestion')
+    await runSubagent(baseOpts({ agentName: 'worker', subAgents: AGENTS_WITH_TOOL }))
+    expect(childNames()).not.toContain(name)
   })
 
   it('Explore spawn: same exclusion', async () => {
     captureEngine()
-    await runSubagent(baseOpts({ agentName: 'worker', subAgents: PLAIN_AGENTS, mode: 'Explore' }))
-    expect(childNames()).not.toContain('AskUserQuestion')
+    await runSubagent(baseOpts({ agentName: 'worker', subAgents: AGENTS_WITH_TOOL, mode: 'Explore' }))
+    expect(childNames()).not.toContain(name)
   })
+})
 
-  it('spawn guidance: General-mode prompt tells the child to report uncertainty instead of asking (no phantom AskUserQuestion guidance)', () => {
+describe('spawn guidance for AskUserQuestion (issue #154)', () => {
+  it('General-mode prompt tells the child to report uncertainty instead of asking (no phantom AskUserQuestion guidance)', () => {
     const prompt = buildSubagentSystemPrompt({ description: 'd', prompt: 'Work.' }, 'General')
     expect(prompt).toContain('CANNOT ask the user questions')
     expect(prompt).toContain('final report to the parent agent')
   })
 
-  it('spawn guidance: Explore-mode prompt carries BOTH the restriction and the no-questions notice', () => {
+  it('Explore-mode prompt carries BOTH the restriction and the no-questions notice', () => {
     const prompt = buildSubagentSystemPrompt({ description: 'd', prompt: 'Work.' }, 'Explore')
     expect(prompt).toContain('Explore mode')
     expect(prompt).toContain('CANNOT ask the user questions')
