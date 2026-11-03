@@ -8,6 +8,7 @@ import type {
 } from '../types.js'
 import { createEmptyServices } from './services.js'
 import { AskUserQuestionTool } from './ask-user.js'
+import { TodoWriteTool } from './todowrite.js'
 import { InMemorySessionStore } from '../store/in-memory.js'
 import { WriteCoordinator } from '../store/coordinator.js'
 
@@ -371,6 +372,31 @@ describe('MultiTaskTool', () => {
       const config = vi.mocked(QueryEngine).mock.calls[0][0] as any
       const names = [...config.resolved.tools, ...config.resolved.deferredTools].map((t: any) => t.name)
       expect(names).not.toContain('AskUserQuestion')
+    })
+
+    it('excludes the real TodoWriteTool from spawned child pools (#159)', async () => {
+      await MultiTaskTool.call({
+        tasks: [
+          {
+            description: 'General task',
+            prompt: 'Do something',
+            subagent_type: 'General',
+          },
+        ],
+      }, makeContext({
+        subAgents: {
+          ...TEST_AGENTS,
+          general: {
+            description: 'General agent',
+            prompt: 'You are a general assistant.',
+            capabilities: { customTools: [TodoWriteTool] },
+          },
+        },
+      }))
+
+      const config = vi.mocked(QueryEngine).mock.calls[0][0] as any
+      const names = [...config.resolved.tools, ...config.resolved.deferredTools].map((t: any) => t.name)
+      expect(names).not.toContain('TodoWrite')
     })
   })
 

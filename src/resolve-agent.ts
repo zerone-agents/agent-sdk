@@ -9,7 +9,7 @@
  * Pipeline order (issue #72):
  *   built-ins + caps.customTools + caps.connectionTools
  *     → allow-list (built-ins only, #64) → deny-list (full pool)
- *     → [spawn] remove Task/MultiTask/AskUserQuestion
+ *     → [spawn] remove Task/MultiTask/AskUserQuestion/TodoWrite
  *     → [spawn·Explore] isReadOnly || Bash (deferred tools included)
  *     → lazy split (FindTool catalog)
  */
@@ -26,7 +26,7 @@ import { SkillRegistry, filterSkillsByAllowlist } from './skills/registry.js'
 import { createDiagnosticsSink, type DiagnosticsSink } from './utils/diagnostics.js'
 
 export interface ResolveAgentOptions {
-  /** Spawn pipeline: removes Task/MultiTask/AskUserQuestion; Explore applies the read-only safety policy. */
+  /** Spawn pipeline: removes Task/MultiTask/AskUserQuestion/TodoWrite; Explore applies the read-only safety policy. */
   spawn?: { mode: 'General' | 'Explore' }
   /**
    * Root path: the Agent session's registry, used ONLY when `capabilities.skills`
@@ -76,9 +76,16 @@ export function resolveAgent(
   // surface neither in the eager pool nor in deferred/FindTool discovery.
   // Children report uncertainty back to the parent instead of interrupting
   // delegated work. The parent agent's own AskUserQuestion is untouched.
+  //
+  // #159: same treatment for TodoWrite — a child manages its own assignment,
+  // never the parent conversation's task list.
   if (opts.spawn) {
     pool = pool.filter(
-      (t) => t.name !== 'Task' && t.name !== 'MultiTask' && t.name !== 'AskUserQuestion',
+      (t) =>
+        t.name !== 'Task' &&
+        t.name !== 'MultiTask' &&
+        t.name !== 'AskUserQuestion' &&
+        t.name !== 'TodoWrite',
     )
   }
   if (opts.spawn?.mode === 'Explore') {

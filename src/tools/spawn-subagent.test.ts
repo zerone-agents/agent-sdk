@@ -52,6 +52,22 @@ const {
   buildSubagentSystemPrompt,
 } = await import('./spawn-subagent.js')
 import { AskUserQuestionTool } from './ask-user.js'
+import { TodoWriteTool } from './todowrite.js'
+
+/** Capture the QueryEngine config the child engine was constructed with. */
+function captureEngine() {
+  ;(QueryEngine as any).mockImplementation(function (this: any, config: any) {
+    capturedConfig = config
+    this.submitMessage = async function* () {
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
+    }
+  })
+}
+
+/** Eager pool + deferred catalog names of the captured child config. */
+function childNames(): string[] {
+  return [...capturedConfig.resolved.tools, ...capturedConfig.resolved.deferredTools].map((t: any) => t.name)
+}
 
 const runtime = {
   provider: {} as any,
@@ -399,20 +415,6 @@ describe('subagent todo storage wiring (issue #128)', () => {
 })
 
 describe('spawned children cannot ask the user (issue #154)', () => {
-  function captureEngine() {
-    ;(QueryEngine as any).mockImplementation(function (this: any, config: any) {
-      capturedConfig = config
-      this.submitMessage = async function* () {
-        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }
-      }
-    })
-  }
-
-  /** Eager pool + deferred catalog names of the captured child config. */
-  function childNames(): string[] {
-    return [...capturedConfig.resolved.tools, ...capturedConfig.resolved.deferredTools].map((t: any) => t.name)
-  }
-
   // The REAL built-in definition (imported past the getAllBaseTools mock): if
   // the tool is renamed, these pins fail loudly instead of the name-based
   // spawn filter silently missing it.
@@ -447,5 +449,31 @@ describe('spawned children cannot ask the user (issue #154)', () => {
     const prompt = buildSubagentSystemPrompt({ description: 'd', prompt: 'Work.' }, 'Explore')
     expect(prompt).toContain('Explore mode')
     expect(prompt).toContain('CANNOT ask the user questions')
+  })
+})
+
+describe('spawned children do not manage the parent todo list (issue #159)', () => {
+  // Same strategy as #154: the shared MOCK_TOOLS does not carry TodoWrite, so
+  // these pins inject the REAL built-in definition (imported past the
+  // getAllBaseTools mock) via caps.customTools.
+  const TODO_AGENTS: Record<string, AgentDefinition> = {
+    worker: {
+      description: 'Does the work',
+      prompt: 'Work independently.',
+      capabilities: { customTools: [TodoWriteTool] },
+    },
+  }
+
+  // Task and MultiTask share runSubagent, so these pins cover both spawn paths.
+  it('General spawn: real TodoWriteTool absent from pool AND FindTool catalog', async () => {
+    captureEngine()
+    await runSubagent(baseOpts({ agentName: 'worker', subAgents: TODO_AGENTS }))
+    expect(childNames()).not.toContain('TodoWrite')
+  })
+
+  it('Explore spawn: same exclusion', async () => {
+    captureEngine()
+    await runSubagent(baseOpts({ agentName: 'worker', subAgents: TODO_AGENTS, mode: 'Explore' }))
+    expect(childNames()).not.toContain('TodoWrite')
   })
 })

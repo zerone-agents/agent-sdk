@@ -12,6 +12,8 @@
  * - AskUserQuestion is removed there too (#154): spawned children complete
  *   their assignment independently and report uncertainty back to the parent
  *   instead of interrupting delegated work with a question to the user.
+ * - TodoWrite is removed there too (#159): a child manages its own
+ *   assignment, never the parent conversation's task list.
  */
 
 import type {

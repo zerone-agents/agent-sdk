@@ -21,6 +21,7 @@ vi.mock('./tools/index.js', async (importOriginal) => {
 
 import { resolveAgent } from './resolve-agent.js'
 import { AskUserQuestionTool } from './tools/ask-user.js'
+import { TodoWriteTool } from './tools/todowrite.js'
 import { resolvePrompt } from './prompts/system-prompts.js'
 import { SkillRegistry, filterSkillsByAllowlist } from './skills/registry.js'
 import type { AgentCapabilities, RuntimeEnvironment } from './types.js'
@@ -335,6 +336,36 @@ describe('resolveAgent spawn pipeline: AskUserQuestion (issue #154)', () => {
     const r = resolveAgent(makeRuntime(), { customTools: [AskUserQuestionTool] }, DEF)
     const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
     expect(names).toContain('AskUserQuestion')
+  })
+})
+
+describe('resolveAgent spawn pipeline: TodoWrite (issue #159)', () => {
+  // Same injection strategy as #154: the shared MOCK_TOOLS does not carry
+  // TodoWrite, so these pins inject the REAL built-in definition (imported
+  // past the tools/index mock). Custom tools bypass allow-lists and go
+  // through ALL downstream filtering, exercising the name-based spawn
+  // filter itself — and failing loudly if the real tool is renamed.
+  it('the filter literal tracks the real built-in name', () => {
+    expect(TodoWriteTool.name).toBe('TodoWrite')
+  })
+
+  it('General spawn removes the real TodoWriteTool from the eager pool AND the FindTool catalog', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [TodoWriteTool] }, DEF, { spawn: { mode: 'General' } })
+    const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
+    expect(names).not.toContain('TodoWrite')
+  })
+
+  it('Explore spawn removes it from pool and catalog too', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [TodoWriteTool] }, DEF, { spawn: { mode: 'Explore' } })
+    const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
+    expect(names).not.toContain('TodoWrite')
+  })
+
+  it('parent agent keeps the real TodoWriteTool (control case: eager built-in, not deferred)', () => {
+    const r = resolveAgent(makeRuntime(), { customTools: [TodoWriteTool] }, DEF)
+    expect(r.tools.map((t) => t.name)).toContain('TodoWrite')
+    const names = [...r.tools, ...r.deferredTools].map((t) => t.name)
+    expect(names).toContain('TodoWrite')
   })
 })
 
