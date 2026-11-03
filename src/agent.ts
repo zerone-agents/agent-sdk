@@ -839,6 +839,13 @@ export class Agent {
       (engine as any).messages.push(msg)
     }
 
+    // #158: self-register before the engine loop (spec §2.3). A mid-query
+    // subagent spawn (Task/MultiTask) asserts the root session's registration
+    // from inside prepareChildOwnership — the register used to run only in
+    // persistCheckpoint, AFTER this loop, so fresh-session first-query spawns
+    // failed with "ownership target <sid> is not registered".
+    await this.ensureV4Registered()
+
     // Run the engine (try/finally ensures persistence even on abort)
     let inFlightError: unknown
     try {
@@ -1035,13 +1042,7 @@ export class Agent {
     if (!this.v4store || !this.v4coordinator) return
     if (post.length < 2) return   // 真实产物下限 = summary pair（R20：空 kept 合法）
     // 与 persistCheckpoint 相同的登记/索引前提
-    if (!this.v4Registered) {
-      await this.v4coordinator.execute(this.sid, {
-        kind: 'register',
-        ownership: this.v4Ownership,
-      })
-      this.v4Registered = true
-    }
+    await this.ensureV4Registered()
     const state = await this.v4store.loadSession(this.sid)
     if (!state) return
     if (!this.v4Index) {
@@ -1070,6 +1071,24 @@ export class Agent {
   }
 
   /**
+   * Self-register the session row before the first write (spec §2.3) —
+   * idempotent via v4Registered. query() calls this BEFORE the engine loop so
+   * mid-query subagent spawns (Task/MultiTask) see the root registered
+   * (issue #158); the resume path pre-sets v4Registered (row already exists)
+   * and the short-circuit keeps that path unchanged.
+   */
+  private async ensureV4Registered(): Promise<void> {
+    if (this.v4Registered) return
+    if (this.cfg.persistSession === false) return
+    if (!this.v4store || !this.v4coordinator) return
+    await this.v4coordinator.execute(this.sid, {
+      kind: 'register',
+      ownership: this.v4Ownership,
+    })
+    this.v4Registered = true
+  }
+
+  /**
    * Persist the current history as a session checkpoint (v4, issue #131 P3):
    * WriteCoordinator + CommittedMessageIndex incremental diff. Without a
    * store the agent is ephemeral (no persistence). Conflicts propagate;
@@ -1080,14 +1099,9 @@ export class Agent {
 
     // ── v4 path (issue #131 P3): WriteCoordinator + CommittedMessageIndex ──
     if (this.v4store && this.v4coordinator) {
-      // Self-register before first write (spec §2.3)
-      if (!this.v4Registered) {
-        await this.v4coordinator.execute(this.sid, {
-          kind: 'register',
-          ownership: this.v4Ownership,
-        })
-        this.v4Registered = true
-      }
+      // Self-register before first write (spec §2.3) — normally a no-op:
+      // query() already registered before the engine loop (#158).
+      await this.ensureV4Registered()
       // Build index on first use or after compact
       if (!this.v4Index) {
         const state = await this.v4store.loadSession(this.sid)
