@@ -648,6 +648,10 @@ export class Agent {
           throw new SessionNotFoundError(this.cfg.resume)
         }
         this.sid = this.cfg.resume
+        // #158: ownership must track the RESUMED session id — the constructor
+        // default (a fresh randomUUID) is stale after resume, and a mid-query
+        // spawn would assert the wrong root.
+        this.v4Ownership = this.cfg.ownership ?? { rootSessionId: this.sid }
         // issue #145：register-only/todos-only（branches=[]）resume → 空历史起步——
         // currentBranchId 为空串（非实体分支），不得对其查询上下文
         this.history = state.branches.length > 0
@@ -839,13 +843,6 @@ export class Agent {
       (engine as any).messages.push(msg)
     }
 
-    // #158: self-register before the engine loop (spec §2.3). A mid-query
-    // subagent spawn (Task/MultiTask) asserts the root session's registration
-    // from inside prepareChildOwnership — the register used to run only in
-    // persistCheckpoint, AFTER this loop, so fresh-session first-query spawns
-    // failed with "ownership target <sid> is not registered".
-    await this.ensureV4Registered()
-
     // Run the engine (try/finally ensures persistence even on abort)
     let inFlightError: unknown
     try {
@@ -857,6 +854,12 @@ export class Agent {
         // prompts, and subagent traffic never arrive as user/assistant
         // events here (executeTools only yields tool_result events).
         if (event.type === 'user') {
+          // #158: the first 'user' event means UserPromptSubmit hooks passed
+          // and the engine is live — self-register before any mid-query child
+          // write. Blocked or immediately-aborted queries never reach this
+          // point, so they leave no register-only empty row (the old
+          // persistCheckpoint invariant). Idempotent via v4Registered.
+          await this.ensureV4Registered()
           this.messageLog.push({
             type: 'user',
             message: { role: 'user', content: input },
@@ -1072,8 +1075,8 @@ export class Agent {
 
   /**
    * Self-register the session row before the first write (spec §2.3) —
-   * idempotent via v4Registered. query() calls this BEFORE the engine loop so
-   * mid-query subagent spawns (Task/MultiTask) see the root registered
+   * idempotent via v4Registered. query() calls this on the first 'user' event
+   * so mid-query subagent spawns (Task/MultiTask) see the root registered
    * (issue #158); the resume path pre-sets v4Registered (row already exists)
    * and the short-circuit keeps that path unchanged.
    */
@@ -1100,7 +1103,7 @@ export class Agent {
     // ── v4 path (issue #131 P3): WriteCoordinator + CommittedMessageIndex ──
     if (this.v4store && this.v4coordinator) {
       // Self-register before first write (spec §2.3) — normally a no-op:
-      // query() already registered before the engine loop (#158).
+      // the first 'user' event already registered (#158).
       await this.ensureV4Registered()
       // Build index on first use or after compact
       if (!this.v4Index) {
