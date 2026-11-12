@@ -77,6 +77,18 @@ const _httpWithExtras: McpServerConfig = {
   deferred: false,
 }
 
+// #163: headers also accept a PER-REQUEST provider (streamable-http + sse).
+const _httpWithHeaderProvider: McpServerConfig = {
+  type: 'streamable_http',
+  url: 'https://x',
+  headers: () => ({ 'X-User-Id': 'session-user' }),
+}
+const _sseWithAsyncHeaderProvider: McpServerConfig = {
+  type: 'sse',
+  url: 'https://x',
+  headers: async () => ({ 'X-User-Id': 'session-user' }),
+}
+
 // ---------------------------------------------------------------------------
 // Silence unused-binding warnings; the values themselves are irrelevant.
 // The const declarations exist only for their type annotations.
@@ -99,4 +111,6 @@ void [
   _httpBothAgree1,
   _httpBothAgree2,
   _httpWithExtras,
+  _httpWithHeaderProvider,
+  _sseWithAsyncHeaderProvider,
 ]
