@@ -249,3 +249,41 @@ describe('MCP connection pool', () => {
     await releaseMCPConnection(c2)
   })
 })
+
+describe('MCP connection pool: header providers in the key (issue #163 review)', () => {
+  beforeEach(() => {
+    __clearPoolForTests()
+    vi.mocked(buildMCPClient).mockReset()
+    vi.mocked(buildMCPClient).mockImplementation(async () => mockBuiltClient())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('configs differing ONLY in the provider get DISTINCT pool entries — no cross-session identity reuse (review blocker)', async () => {
+    const providerA = () => ({ 'X-User-Id': 'alice' })
+    const providerB = () => ({ 'X-User-Id': 'bob' })
+    const base = { type: 'streamable-http' as const, url: 'https://pool-key.test/srv' }
+    const c1 = await acquireMCPConnection('srv', { ...base, headers: providerA })
+    const c2 = await acquireMCPConnection('srv', { ...base })
+    const c3 = await acquireMCPConnection('srv', { ...base, headers: providerB })
+
+    // JSON.stringify drops function values — pre-fix all three collided into ONE
+    // connection (the first-arriver's identity headers served to everyone).
+    expect(buildMCPClient).toHaveBeenCalledTimes(3)
+    for (const c of [c1, c2, c3]) await releaseMCPConnection(c)
+  })
+
+  it('the SAME provider instance shares one connection', async () => {
+    const provider = () => ({ 'X-User-Id': 'alice' })
+    const cfg = { type: 'streamable-http' as const, url: 'https://pool-key.test/same', headers: provider }
+
+    const c1 = await acquireMCPConnection('srv', cfg)
+    const c2 = await acquireMCPConnection('srv', { ...cfg })   // structural clone, same provider reference
+
+    expect(buildMCPClient).toHaveBeenCalledTimes(1)
+    await releaseMCPConnection(c1)
+    await releaseMCPConnection(c2)
+  })
+})

@@ -421,6 +421,7 @@ export type {
   McpStdioConfig,
   McpSseConfig,
   McpHttpConfig,
+  McpHeaderProvider,
 
   // Agent types
   AgentOptions,

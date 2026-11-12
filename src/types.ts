@@ -542,7 +542,9 @@ export interface McpStdioConfig {
  * send different identity headers per in-flight session (e.g. `X-User-Id`
  * sourced from the current session by the host runtime). Resolution
  * failures surface as sanitized errors — the message never contains header
- * keys or values (they may carry identity credentials).
+ * keys or values (they may carry identity credentials). Merge order: on
+ * same-name conflicts the provider wins; untouched transport headers
+ * (mcp-session-id, Content-Type, ...) pass through.
  */
 export type McpHeaderProvider = () => Record<string, string> | Promise<Record<string, string>>
 

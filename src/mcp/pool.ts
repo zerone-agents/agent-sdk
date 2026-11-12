@@ -26,12 +26,32 @@ interface Entry {
 
 const pool = new Map<string, Entry>()
 
+// #164 review blocker: JSON.stringify silently drops function values, so
+// configs differing ONLY in a header provider collided in the pool key —
+// the first-arriver's identity headers were served to every later session
+// (cross-session/tenant leakage). Give each function instance a stable id:
+// the SAME provider shares its connection; DIFFERENT providers get
+// different keys (the "no split" constraint is per-PROVIDER, not per-call).
+const functionIds = new WeakMap<object, number>()
+let nextFunctionId = 0
+function stableFunctionId(fn: object): number {
+  let id = functionIds.get(fn)
+  if (id === undefined) {
+    id = ++nextFunctionId
+    functionIds.set(fn, id)
+  }
+  return id
+}
+
 function configKey(config: McpServerConfig): string {
   // Hash only transport-relevant fields; retryPolicy (connect-time) and
   // deferred (per-tool wrapping, applied after acquiring raw tools) never
   // affect the child process and must not break sharing when callers tweak them.
   const { retryPolicy: _omit, deferred: _omit2, ...transport } = config as any
-  return createHash('sha256').update(JSON.stringify(transport)).digest('hex').slice(0, 16)
+  return createHash('sha256').update(JSON.stringify(transport, (_key, value) => {
+    if (typeof value === 'function') return `[fn#${stableFunctionId(value)}]`
+    return value
+  })).digest('hex').slice(0, 16)
 }
 
 /**

@@ -3,6 +3,7 @@
  */
 
 import type { ToolDefinition, McpServerConfig, McpHeaderProvider, ToolContext, ToolResult } from '../types.js'
+import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { truncateForCatalog } from '../tools/helpers.js'
 // #78: sanitize trio + TimeoutError live in utils/diagnostics.ts (no compat
 // re-export per CONTRIBUTING "No backwards-compat shims").
@@ -126,23 +127,27 @@ function isHeaderProvider(headers: HeadersConfig | undefined): headers is McpHea
  * #163: wrap fetch so a header provider resolves PER REQUEST. The MCP
  * transports call this custom fetch for every network request on the SAME
  * shared connection — session identity can differ per in-flight request.
- * Provider results MERGE over (not replace) transport-provided headers
- * (Accept, Content-Type, session id, ...). Provider failures re-throw
- * sanitized: only the error class name, never header keys/values (they may
- * carry identity credentials).
+ * Provider results MERGE over the transport's init headers; on same-name
+ * conflicts the PROVIDER wins (Headers#set runs after init), untouched
+ * transport headers (mcp-session-id, Content-Type, ...) pass through.
+ * Failures re-throw sanitized via stableErrorType (#81): never header
+ * keys/values (they may carry identity credentials). The sanitized boundary
+ * covers BOTH stages — provider resolution AND header materialization:
+ * Node's Headers.set error embeds the offending key/value verbatim (#164
+ * review blocker). The final fetch() stays OUTSIDE the boundary — network
+ * errors are legitimate and carry no header material.
  */
-function withDynamicHeaders(provider: McpHeaderProvider) {
-  return async (url: any, init?: any): Promise<Response> => {
-    let resolved: Record<string, string>
+function withDynamicHeaders(provider: McpHeaderProvider): FetchLike {
+  return async (url, init) => {
+    let headers: Headers
     try {
-      resolved = (await provider()) ?? {}
+      const resolved = (await provider()) ?? {}
+      headers = new Headers(init?.headers)
+      for (const [key, value] of Object.entries(resolved)) {
+        headers.set(key, value)
+      }
     } catch (err: unknown) {
-      const kind = err instanceof Error ? err.constructor.name : typeof err
-      throw new Error(`MCP header provider failed (${kind}; details omitted)`)
-    }
-    const headers = new Headers(init?.headers)
-    for (const [key, value] of Object.entries(resolved)) {
-      headers.set(key, value)
+      throw new Error(`MCP header provider failed (${stableErrorType(err)}; details omitted)`)
     }
     return fetch(url, { ...(init ?? {}), headers })
   }
@@ -153,7 +158,7 @@ function withDynamicHeaders(provider: McpHeaderProvider) {
  * (zero behavior change, no fetch wrapper); provider → custom per-request
  * fetch; absent → undefined (as before).
  */
-function headerTransportOptions(headers?: HeadersConfig): { requestInit?: { headers: Record<string, string> }; fetch?: ReturnType<typeof withDynamicHeaders> } | undefined {
+function headerTransportOptions(headers?: HeadersConfig): { requestInit?: { headers: Record<string, string> }; fetch?: FetchLike } | undefined {
   if (headers === undefined) return undefined
   if (isHeaderProvider(headers)) {
     return { fetch: withDynamicHeaders(headers) }

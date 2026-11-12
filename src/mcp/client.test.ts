@@ -915,4 +915,59 @@ describe('dynamic header provider (issue #163)', () => {
     expect(caught.message).not.toContain('secret-user-42')
     expect(caught.message).not.toContain('X-User-Id')
   })
+
+  /** Wire a provider config through connectMCPServer and return the captured custom fetch. */
+  async function captureProviderFetch(
+    provider: () => Record<string, string> | Promise<Record<string, string>>,
+  ): Promise<(url: any, init?: any) => Promise<Response>> {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'streamable-http', url: 'https://x', headers: provider, ...RETRY })
+    return capturedOptions(StreamableHTTPClientTransport).fetch
+  }
+
+  it('invalid header VALUE from the provider is sanitized — no verbatim leak (review blocker)', async () => {
+    const fetchFn = await captureProviderFetch(() => ({ 'X-User-Id': 'secret-user-42\nX-Injected: yes' }))
+    vi.stubGlobal('fetch', vi.fn())
+    let caught: any
+    try { await fetchFn('https://x') } catch (e) { caught = e }
+    expect(caught).toBeDefined()
+    expect(caught.message).toMatch(/header provider failed/i)
+    // Node's raw Headers.set error embeds the offending value verbatim — it must not escape.
+    expect(caught.message).not.toContain('secret-user-42')
+    expect(caught.message).not.toContain('X-Injected')
+  })
+
+  it('invalid header KEY from the provider is sanitized — no verbatim leak', async () => {
+    const fetchFn = await captureProviderFetch(() => ({ 'Bad Key': 'v' }))
+    vi.stubGlobal('fetch', vi.fn())
+    let caught: any
+    try { await fetchFn('https://x') } catch (e) { caught = e }
+    expect(caught).toBeDefined()
+    expect(caught.message).toMatch(/header provider failed/i)
+    expect(caught.message).not.toContain('Bad Key')
+  })
+
+  it('async provider rejection is sanitized the same way', async () => {
+    const fetchFn = await captureProviderFetch(async () => {
+      throw new Error('async failure while resolving X-User-Id=secret-user-43')
+    })
+    vi.stubGlobal('fetch', vi.fn())
+    let caught: any
+    try { await fetchFn('https://x') } catch (e) { caught = e }
+    expect(caught).toBeDefined()
+    expect(caught.message).toMatch(/header provider failed/i)
+    expect(caught.message).not.toContain('secret-user-43')
+  })
+
+  it('provider headers take precedence over same-name transport headers (documented merge order)', async () => {
+    const fetchFn = await captureProviderFetch(() => ({ Accept: 'text/event-stream', 'X-User-Id': 'alice' }))
+    const fake = vi.fn(async (_url: unknown, _init?: { headers?: HeadersInit }) => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fake)
+    await fetchFn('https://x', { headers: { Accept: 'application/json', 'mcp-session-id': 'sess-1' } })
+    const h = new Headers(fake.mock.calls[0]?.[1]?.headers)
+    expect(h.get('Accept')).toBe('text/event-stream')    // provider wins same-name conflicts
+    expect(h.get('mcp-session-id')).toBe('sess-1')       // untouched transport headers preserved
+    expect(h.get('X-User-Id')).toBe('alice')
+  })
 })
