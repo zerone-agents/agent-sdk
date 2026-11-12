@@ -2,7 +2,7 @@
  * MCP Client - Connect to Model Context Protocol servers
  */
 
-import type { ToolDefinition, McpServerConfig, ToolContext, ToolResult } from '../types.js'
+import type { ToolDefinition, McpServerConfig, McpHeaderProvider, ToolContext, ToolResult } from '../types.js'
 import { truncateForCatalog } from '../tools/helpers.js'
 // #78: sanitize trio + TimeoutError live in utils/diagnostics.ts (no compat
 // re-export per CONTRIBUTING "No backwards-compat shims").
@@ -115,6 +115,52 @@ export function resolveTransportKind(config: McpServerConfig): 'stdio' | 'sse' |
   )
 }
 
+/** #163: headers config — a static Record, or a per-request provider function. */
+type HeadersConfig = Record<string, string> | McpHeaderProvider
+
+function isHeaderProvider(headers: HeadersConfig | undefined): headers is McpHeaderProvider {
+  return typeof headers === 'function'
+}
+
+/**
+ * #163: wrap fetch so a header provider resolves PER REQUEST. The MCP
+ * transports call this custom fetch for every network request on the SAME
+ * shared connection — session identity can differ per in-flight request.
+ * Provider results MERGE over (not replace) transport-provided headers
+ * (Accept, Content-Type, session id, ...). Provider failures re-throw
+ * sanitized: only the error class name, never header keys/values (they may
+ * carry identity credentials).
+ */
+function withDynamicHeaders(provider: McpHeaderProvider) {
+  return async (url: any, init?: any): Promise<Response> => {
+    let resolved: Record<string, string>
+    try {
+      resolved = (await provider()) ?? {}
+    } catch (err: unknown) {
+      const kind = err instanceof Error ? err.constructor.name : typeof err
+      throw new Error(`MCP header provider failed (${kind}; details omitted)`)
+    }
+    const headers = new Headers(init?.headers)
+    for (const [key, value] of Object.entries(resolved)) {
+      headers.set(key, value)
+    }
+    return fetch(url, { ...(init ?? {}), headers })
+  }
+}
+
+/**
+ * #163 dual path: static Record → the exact pre-#163 `requestInit` options
+ * (zero behavior change, no fetch wrapper); provider → custom per-request
+ * fetch; absent → undefined (as before).
+ */
+function headerTransportOptions(headers?: HeadersConfig): { requestInit?: { headers: Record<string, string> }; fetch?: ReturnType<typeof withDynamicHeaders> } | undefined {
+  if (headers === undefined) return undefined
+  if (isHeaderProvider(headers)) {
+    return { fetch: withDynamicHeaders(headers) }
+  }
+  return { requestInit: { headers } }
+}
+
 async function createTransport(name: string, config: McpServerConfig) {
   const kind = resolveTransportKind(config)
 
@@ -141,19 +187,15 @@ async function createTransport(name: string, config: McpServerConfig) {
   }
 
   if (kind === 'sse') {
-    const sseConfig = config as { url: string; headers?: Record<string, string> }
+    const sseConfig = config as { url: string; headers?: HeadersConfig }
     const { SSEClientTransport } = await import('@modelcontextprotocol/sdk/client/sse.js')
-    return new SSEClientTransport(new URL(sseConfig.url), {
-      requestInit: sseConfig.headers ? { headers: sseConfig.headers } : undefined,
-    } as any)
+    return new SSEClientTransport(new URL(sseConfig.url), headerTransportOptions(sseConfig.headers))
   }
 
   // kind === 'streamable-http'
-  const httpConfig = config as { url: string; headers?: Record<string, string> }
+  const httpConfig = config as { url: string; headers?: HeadersConfig }
   const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
-  return new StreamableHTTPClientTransport(new URL(httpConfig.url), {
-    requestInit: httpConfig.headers ? { headers: httpConfig.headers } : undefined,
-  } as any)
+  return new StreamableHTTPClientTransport(new URL(httpConfig.url), headerTransportOptions(httpConfig.headers))
 }
 
 export interface BuiltClient {

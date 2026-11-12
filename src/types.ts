@@ -537,12 +537,26 @@ export interface McpStdioConfig {
   deferred?: boolean
 }
 
+/**
+ * #163: per-request MCP header resolution. The same shared connection can
+ * send different identity headers per in-flight session (e.g. `X-User-Id`
+ * sourced from the current session by the host runtime). Resolution
+ * failures surface as sanitized errors — the message never contains header
+ * keys or values (they may carry identity credentials).
+ */
+export type McpHeaderProvider = () => Record<string, string> | Promise<Record<string, string>>
+
 export interface McpSseConfig {
   type?: 'sse'
   /** Alternate selector field name for `type`. See `McpStreamableHttpType` doc. */
   transport?: 'sse'
   url: string
-  headers?: Record<string, string>
+  /**
+   * Static headers (written into the transport once at connect — unchanged
+   * behavior), or a provider resolved PER REQUEST on the same shared
+   * connection (#163). Ignored for stdio transports.
+   */
+  headers?: Record<string, string> | McpHeaderProvider
   retryPolicy?: McpRetryPolicy
   /**
    * Override the global MCP deferred default for this server's tools.
@@ -568,7 +582,12 @@ export interface McpHttpConfig {
   /** Alternate selector field name for `type`. See `McpStreamableHttpType` doc. */
   transport?: McpStreamableHttpType
   url: string
-  headers?: Record<string, string>
+  /**
+   * Static headers (written into the transport once at connect — unchanged
+   * behavior), or a provider resolved PER REQUEST on the same shared
+   * connection (#163). Ignored for stdio transports.
+   */
+  headers?: Record<string, string> | McpHeaderProvider
   retryPolicy?: McpRetryPolicy
   /**
    * Override the global MCP deferred default for this server's tools.

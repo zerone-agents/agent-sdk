@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { connectMCPServer, createMCPToolDefinition, resolveTransportKind } from './client.js'
 import { TimeoutError, sanitizeLogField, stableErrorType, normalizeCaughtError } from '../utils/diagnostics.js'
 import type { McpServerConfig } from '../types.js'
@@ -819,5 +819,100 @@ describe('connectMCPServer diagnostics sink (#78)', () => {
       expect(spy).toHaveBeenCalledWith('[MCP] Failed to connect to server', { server: '"srv"', errorType: 'Error' })
       expect((spy.mock.calls[0] as unknown[])).toHaveLength(2)
     } finally { vi.restoreAllMocks() }
+  })
+})
+
+describe('dynamic header provider (issue #163)', () => {
+  const RETRY = { retryPolicy: { timeoutMs: 1000, maxRetries: 0 } }
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  /** Options object the given (mocked) transport constructor received. */
+  function capturedOptions(Ctor: any): any {
+    return vi.mocked(Ctor).mock.calls[0]?.[1]
+  }
+
+  it('static headers keep the requestInit path EXACTLY unchanged (no fetch wrapper) — streamable-http', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'streamable-http', url: 'https://x', headers: { Authorization: 'Bearer t' }, ...RETRY })
+    const opts = capturedOptions(StreamableHTTPClientTransport)
+    expect(opts.requestInit).toEqual({ headers: { Authorization: 'Bearer t' } })
+    expect(opts.fetch).toBeUndefined()
+  })
+
+  it('static headers keep the requestInit path EXACTLY unchanged — sse', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(SSEClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'sse', url: 'https://x', headers: { Authorization: 'Bearer t' }, ...RETRY })
+    const opts = capturedOptions(SSEClientTransport)
+    expect(opts.requestInit).toEqual({ headers: { Authorization: 'Bearer t' } })
+    expect(opts.fetch).toBeUndefined()
+  })
+
+  it('provider headers wire the custom fetch path (requestInit absent) — streamable-http', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'streamable-http', url: 'https://x', headers: () => ({}), ...RETRY })
+    const opts = capturedOptions(StreamableHTTPClientTransport)
+    expect(typeof opts.fetch).toBe('function')
+    expect(opts.requestInit).toBeUndefined()
+  })
+
+  it('provider headers wire the custom fetch path — sse', async () => {
+    mockClient = createMockClient({ tools: [] })
+    vi.mocked(SSEClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'sse', url: 'https://x', headers: () => ({}), ...RETRY })
+    const opts = capturedOptions(SSEClientTransport)
+    expect(typeof opts.fetch).toBe('function')
+    expect(opts.requestInit).toBeUndefined()
+  })
+
+  it('per-request resolution: consecutive calls get session-specific headers; SDK headers merge (not replace)', async () => {
+    mockClient = createMockClient({ tools: [] })
+    let currentUser = 'alice'   // simulates the in-flight session switching
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'streamable-http', url: 'https://x', headers: () => ({ 'X-User-Id': currentUser }), ...RETRY })
+    const fetchFn = capturedOptions(StreamableHTTPClientTransport).fetch
+
+    const fake = vi.fn(async (_url: unknown, _init?: { headers?: HeadersInit }) => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fake)
+
+    await fetchFn('https://x/rpc', { method: 'POST', headers: { Accept: 'application/json' } })
+    currentUser = 'bob'
+    await fetchFn('https://x/rpc', { method: 'POST', headers: { Accept: 'application/json' } })
+
+    expect(fake).toHaveBeenCalledTimes(2)
+    const h0 = new Headers(fake.mock.calls[0]?.[1]?.headers)
+    const h1 = new Headers(fake.mock.calls[1]?.[1]?.headers)
+    // Session 1 saw alice, session 2 saw bob — same shared connection.
+    expect(h0.get('X-User-Id')).toBe('alice')
+    expect(h1.get('X-User-Id')).toBe('bob')
+    // Transport-provided headers are preserved (merge, not replace).
+    expect(h0.get('Accept')).toBe('application/json')
+    expect(h1.get('Accept')).toBe('application/json')
+  })
+
+  it('provider failure rejects with a SANITIZED error — no header keys/values in the message', async () => {
+    mockClient = createMockClient({ tools: [] })
+    const provider = () => {
+      throw new Error('boom while resolving X-User-Id=secret-user-42')
+    }
+    vi.mocked(StreamableHTTPClientTransport).mockClear()
+    await connectMCPServer('srv', { type: 'streamable-http', url: 'https://x', headers: provider, ...RETRY })
+    const fetchFn = capturedOptions(StreamableHTTPClientTransport).fetch
+    vi.stubGlobal('fetch', vi.fn())
+
+    let caught: any
+    try {
+      await fetchFn('https://x')
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeDefined()
+    expect(caught.message).toMatch(/header provider failed/i)
+    // The original message (header key + value) must NOT leak.
+    expect(caught.message).not.toContain('secret-user-42')
+    expect(caught.message).not.toContain('X-User-Id')
   })
 })
