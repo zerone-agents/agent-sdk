@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 let mockCreateImpl: any
 let capturedParams: any
 
-// Capture-style mock (unlike anthropic.usage.test.ts, which ignores the
-// request): assert what the provider ACTUALLY sends for each thinking value.
+// Capture-style mock (unlike anthropic.usage.test.ts, which does not capture
+// the request): assert what the provider ACTUALLY sends for each thinking value.
 vi.mock('@anthropic-ai/sdk', () => {
   const MockAnthropic = function (this: { messages: { create: (p: unknown) => unknown } }) {
     this.messages = {
@@ -52,11 +52,20 @@ describe('thinking mapping (#166)', () => {
   for (const c of CASES) {
     it(`non-streaming: ${c.name}`, async () => {
       const params = await createWith(c.thinking)
-      expect(params.thinking).toEqual(c.expected)
+      if (c.expected === undefined) {
+        // Key truly absent (not present-as-undefined) — aligns with T2 precision.
+        expect('thinking' in params).toBe(false)
+      } else {
+        expect(params.thinking).toEqual(c.expected)
+      }
     })
     it(`streaming: ${c.name}`, async () => {
       const params = await createStreamWith(c.thinking)
-      expect(params.thinking).toEqual(c.expected)
+      if (c.expected === undefined) {
+        expect('thinking' in params).toBe(false)
+      } else {
+        expect(params.thinking).toEqual(c.expected)
+      }
     })
   }
 })

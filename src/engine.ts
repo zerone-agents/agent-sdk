@@ -22,6 +22,7 @@ import type {
   QueryEngineConfig,
   ToolDefinition,
   TokenUsage,
+  ThinkingConfig,
   EngineSnapshot,
   AgentInput,
 } from './types.js'
@@ -167,6 +168,14 @@ function toEventUsage(
     total_input_tokens: u.totalInputTokens,
     totalInputTokens: u.totalInputTokens,
   }
+}
+
+/** #166: forward ALL thinking values to the provider seam (camel→snake). */
+function toSeamThinking(
+  t: ThinkingConfig | undefined,
+): { type: string; budget_tokens?: number } | undefined {
+  if (!t) return undefined
+  return { type: t.type, budget_tokens: t.budgetTokens }
 }
 
 export class QueryEngine {
@@ -482,12 +491,7 @@ export class QueryEngine {
             system: systemPrompt,
             messages: apiMessages,
             tools: tools.length > 0 ? tools : undefined,
-            thinking: this.config.thinking
-              ? {
-                  type: this.config.thinking.type,
-                  budget_tokens: this.config.thinking.budgetTokens,
-                }
-              : undefined,
+            thinking: toSeamThinking(this.config.thinking),
             effort: this.config.effort,
             signal: this.config.abortSignal,
           })
@@ -581,12 +585,7 @@ export class QueryEngine {
                 system: systemPrompt,
                 messages: apiMessages,
                 tools: tools.length > 0 ? tools : undefined,
-                thinking: this.config.thinking
-                  ? {
-                      type: this.config.thinking.type,
-                      budget_tokens: this.config.thinking.budgetTokens,
-                    }
-                  : undefined,
+                thinking: toSeamThinking(this.config.thinking),
                 effort: this.config.effort,
               })
             },
