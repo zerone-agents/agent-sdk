@@ -239,3 +239,33 @@ describe('usage normalization equivalence (#149)', () => {
     expect(res.usage.cache_read_input_tokens).toBe(535_000)
   })
 })
+
+// #166: disabled must map to enable_thinking:false (vLLM/Qwen-compatible
+// semantics); adaptive sends no kwargs (server default). Previously only
+// enabled was handled.
+describe('thinking mapping (#166)', () => {
+  const ENABLED = { type: 'enabled', budget_tokens: 4096 }
+  const DISABLED = { type: 'disabled' }
+  const ADAPTIVE = { type: 'adaptive' }
+
+  const CASES: Array<{ name: string; thinking: any; expected: unknown }> = [
+    { name: 'enabled → enable_thinking true', thinking: ENABLED, expected: { enable_thinking: true } },
+    { name: 'disabled → enable_thinking false', thinking: DISABLED, expected: { enable_thinking: false } },
+    { name: 'adaptive → no kwargs key', thinking: ADAPTIVE, expected: undefined },
+  ]
+
+  for (const c of CASES) {
+    it(`non-streaming: ${c.name}`, async () => {
+      const calls = stubFetch([{ status: 200, json: SUCCESS_JSON }])
+      const provider = new OpenAIProvider({ apiKey: 'k' })
+      await provider.createMessage(makeParams({ thinking: c.thinking } as any))
+      expect(calls[0].body.chat_template_kwargs).toEqual(c.expected)
+    })
+    it(`streaming: ${c.name}`, async () => {
+      const calls = stubFetch([{ status: 200, body: SUCCESS_SSE }])
+      const provider = new OpenAIProvider({ apiKey: 'k' })
+      for await (const _ of provider.createMessageStream(makeParams({ thinking: c.thinking } as any))) { /* drain */ }
+      expect(calls[0].body.chat_template_kwargs).toEqual(c.expected)
+    })
+  }
+})

@@ -174,7 +174,11 @@ export class OpenAIProvider implements LLMProvider {
 
     if (params.thinking?.type === 'enabled') {
       body.chat_template_kwargs = { enable_thinking: true }
+    } else if (params.thinking?.type === 'disabled') {
+      // vLLM/Qwen OpenAI-compatible semantics: explicitly turn thinking OFF (#166).
+      body.chat_template_kwargs = { enable_thinking: false }
     }
+    // 'adaptive': no kwargs — server default.
 
     if (params.effort) {
       body.reasoning_effort = params.effort
@@ -251,7 +255,11 @@ export class OpenAIProvider implements LLMProvider {
 
     if (params.thinking?.type === 'enabled') {
       body.chat_template_kwargs = { enable_thinking: true }
+    } else if (params.thinking?.type === 'disabled') {
+      // vLLM/Qwen OpenAI-compatible semantics: explicitly turn thinking OFF (#166).
+      body.chat_template_kwargs = { enable_thinking: false }
     }
+    // 'adaptive': no kwargs — server default.
 
     if (params.effort) {
       body.reasoning_effort = params.effort
