@@ -15,6 +15,23 @@ import type {
 
 import { createDiagnosticsSink, type DiagnosticsSink } from '../utils/diagnostics.js'
 
+/** Anthropic requires budget_tokens for enabled thinking; the documented
+ *  minimum. A missing budget must never silently drop the config (#166). */
+const MIN_THINKING_BUDGET_TOKENS = 1024
+
+/** Map SDK thinking config onto the native Anthropic request shape (#166). */
+function toAnthropicThinking(
+  t: { type: string; budget_tokens?: number } | undefined,
+): { type: string; budget_tokens?: number } | undefined {
+  if (!t) return undefined
+  if (t.type === 'disabled') return { type: 'disabled' }   // native explicit OFF
+  if (t.type === 'enabled') {
+    return { type: 'enabled', budget_tokens: t.budget_tokens ?? MIN_THINKING_BUDGET_TOKENS }
+  }
+  // 'adaptive': no thinking field — let the server decide.
+  return undefined
+}
+
 export class AnthropicProvider implements LLMProvider {
   readonly apiType = 'anthropic-messages' as const
   private client: Anthropic
@@ -93,11 +110,9 @@ export class AnthropicProvider implements LLMProvider {
         : undefined,
     }
 
-    if (params.thinking?.type === 'enabled' && params.thinking.budget_tokens) {
-      (requestParams as any).thinking = {
-        type: 'enabled',
-        budget_tokens: params.thinking.budget_tokens,
-      }
+    const thinkingField = toAnthropicThinking(params.thinking)
+    if (thinkingField) {
+      ;(requestParams as any).thinking = thinkingField
     }
 
     if (params.effort) {
@@ -142,11 +157,9 @@ export class AnthropicProvider implements LLMProvider {
       stream: true,
     }
 
-    if (params.thinking?.type === 'enabled' && params.thinking.budget_tokens) {
-      (requestParams as any).thinking = {
-        type: 'enabled',
-        budget_tokens: params.thinking.budget_tokens,
-      }
+    const thinkingField = toAnthropicThinking(params.thinking)
+    if (thinkingField) {
+      ;(requestParams as any).thinking = thinkingField
     }
 
     if (params.effort) {
