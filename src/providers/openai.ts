@@ -172,13 +172,16 @@ export class OpenAIProvider implements LLMProvider {
       body.tools = tools
     }
 
-    if (params.thinking?.type === 'enabled') {
-      body.chat_template_kwargs = { enable_thinking: true }
-    } else if (params.thinking?.type === 'disabled') {
-      // vLLM/Qwen OpenAI-compatible semantics: explicitly turn thinking OFF (#166).
-      body.chat_template_kwargs = { enable_thinking: false }
+    if (params.thinking?.type === 'enabled' || params.thinking?.type === 'disabled') {
+      // Dual-send (#166 calibration): top-level `enable_thinking` is the Alibaba
+      // Bailian OpenAI-compatible parameter; `chat_template_kwargs` is the
+      // vLLM/self-hosted one. Same value on both — each endpoint reads the one
+      // it knows and ignores the other.
+      const enableThinking = params.thinking.type === 'enabled'
+      body.enable_thinking = enableThinking
+      body.chat_template_kwargs = { enable_thinking: enableThinking }
     }
-    // 'adaptive': no kwargs — server default.
+    // 'adaptive': neither field — server default.
 
     if (params.effort) {
       body.reasoning_effort = params.effort
@@ -253,13 +256,16 @@ export class OpenAIProvider implements LLMProvider {
       body.tools = tools
     }
 
-    if (params.thinking?.type === 'enabled') {
-      body.chat_template_kwargs = { enable_thinking: true }
-    } else if (params.thinking?.type === 'disabled') {
-      // vLLM/Qwen OpenAI-compatible semantics: explicitly turn thinking OFF (#166).
-      body.chat_template_kwargs = { enable_thinking: false }
+    if (params.thinking?.type === 'enabled' || params.thinking?.type === 'disabled') {
+      // Dual-send (#166 calibration): top-level `enable_thinking` is the Alibaba
+      // Bailian OpenAI-compatible parameter; `chat_template_kwargs` is the
+      // vLLM/self-hosted one. Same value on both — each endpoint reads the one
+      // it knows and ignores the other.
+      const enableThinking = params.thinking.type === 'enabled'
+      body.enable_thinking = enableThinking
+      body.chat_template_kwargs = { enable_thinking: enableThinking }
     }
-    // 'adaptive': no kwargs — server default.
+    // 'adaptive': neither field — server default.
 
     if (params.effort) {
       body.reasoning_effort = params.effort
