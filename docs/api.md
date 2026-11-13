@@ -172,7 +172,7 @@ integrations to `compactSessionStream()` or `compactSession()`.
 | `autoCompactionProtectedQueries` | `number`                       | `4`                    | Retained protected queries for automatic token-threshold compaction (issue #122); explicit `compact()`/`compactStream()` args take precedence |
 | `autoCompactionToolProtectedQueries` | `number`                     | `2`                    | Queries within the automatic-compaction tail keeping full tool_result payloads; oversized results outside the window are cleared |
 | `maxBudgetUsd`       | `number`                                | —                      | Spending cap                                                         |
-| `thinking`           | `ThinkingConfig`                        | —                      | Extended thinking (`{ type: 'adaptive' \| 'enabled' \| 'disabled', budgetTokens? }`); disabled unless set |
+| `thinking`           | `ThinkingConfig`                        | —                      | Extended thinking: `enabled` (with `budgetTokens`, **default 1024** when omitted), `disabled` (**explicitly turns thinking off** — Anthropic native / `enable_thinking: false`), `adaptive` (no field sent — server decides) |
 | `effort`             | `string`                                | —                      | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`; not sent unless set |
 | `mcpServers`         | `Record<string, McpServerConfig>`       | —                      | MCP server connections                                               |
 | `subAgents`          | `Record<string, AgentDefinition>`       | —                      | Subagent definitions for Task/MultiTask; each entry owns its `capabilities` — never inherited from the parent |
