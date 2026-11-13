@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { QueryEngine } from './engine.js'
-import type { QueryEngineConfig, SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition, ContentBlockParam } from './types.js'
+import type { QueryEngineConfig, SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKToolResultMessage, SDKUserMessage, ToolDefinition, ContentBlockParam, ThinkingConfig } from './types.js'
 import type { LLMProvider, StreamChunk, CreateMessageParams, CreateMessageResponse, NormalizedMessageParam } from './providers/types.js'
 import type { Logger } from './utils/logger.js'
 import { SkillRegistry } from './skills/index.js'
@@ -2056,5 +2056,60 @@ describe('usage contract normalization (#149)', () => {
     expect(assistant).toBeDefined()
     // undefined in → undefined out (never a throw, never a truthy empty object)
     expect(assistant.usage === undefined || assistant.usage.total_input_tokens === undefined).toBe(true)
+  })
+})
+
+// #166: the engine used to forward ONLY enabled thinking (disabled/adaptive
+// became undefined at the assembly layer and never reached the provider).
+// All three config values must pass through with the camel→snake conversion.
+describe('thinking passthrough (#166)', () => {
+  /** Provider that captures the request params of both call paths. */
+  function capturingProvider(): { provider: LLMProvider; calls: CreateMessageParams[] } {
+    const calls: CreateMessageParams[] = []
+    return {
+      calls,
+      provider: {
+        apiType: 'anthropic-messages',
+        async createMessage(params: CreateMessageParams) {
+          calls.push(params)
+          return { content: [{ type: 'text', text: 'ok' }], stopReason: 'end_turn' } as any
+        },
+        async *createMessageStream(params: CreateMessageParams): AsyncGenerator<StreamChunk> {
+          calls.push(params)
+          yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        },
+      },
+    }
+  }
+
+  async function drain(engine: QueryEngine) {
+    for await (const _ of engine.submitMessage('hi')) { /* drain */ }
+  }
+
+  const CASES: Array<{ name: string; thinking: ThinkingConfig; expected: { type: string; budget_tokens?: number } | undefined }> = [
+    { name: 'enabled with budget', thinking: { type: 'enabled', budgetTokens: 4096 }, expected: { type: 'enabled', budget_tokens: 4096 } },
+    { name: 'enabled without budget', thinking: { type: 'enabled' }, expected: { type: 'enabled', budget_tokens: undefined } },
+    { name: 'disabled', thinking: { type: 'disabled' }, expected: { type: 'disabled' } },
+    { name: 'adaptive', thinking: { type: 'adaptive' }, expected: { type: 'adaptive' } },
+  ]
+
+  for (const c of CASES) {
+    it(`streaming passes ${c.name} through (#166)`, async () => {
+      const cap = capturingProvider()
+      await drain(new QueryEngine(makeConfig(cap.provider, [], { thinking: c.thinking })))
+      expect(cap.calls[0].thinking).toEqual(c.expected)
+    })
+    it(`non-streaming passes ${c.name} through (#166)`, async () => {
+      const cap = capturingProvider()
+      await drain(new QueryEngine(makeConfig(cap.provider, [], { thinking: c.thinking, includePartialMessages: false })))
+      expect(cap.calls[0].thinking).toEqual(c.expected)
+    })
+  }
+
+  it('unset thinking stays undefined (#166)', async () => {
+    const cap = capturingProvider()
+    await drain(new QueryEngine(makeConfig(cap.provider)))
+    expect(cap.calls[0].thinking).toBeUndefined()
   })
 })
