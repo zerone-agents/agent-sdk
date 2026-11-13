@@ -2058,3 +2058,58 @@ describe('usage contract normalization (#149)', () => {
     expect(assistant.usage === undefined || assistant.usage.total_input_tokens === undefined).toBe(true)
   })
 })
+
+// #166: the engine used to forward ONLY enabled thinking (disabled/adaptive
+// became undefined at the assembly layer and never reached the provider).
+// All three config values must pass through with the camel→snake conversion.
+describe('thinking passthrough (#166)', () => {
+  /** Provider that captures the request params of both call paths. */
+  function capturingProvider(): { provider: LLMProvider; calls: any[] } {
+    const calls: any[] = []
+    return {
+      calls,
+      provider: {
+        apiType: 'anthropic-messages',
+        async createMessage(params: any) {
+          calls.push(params)
+          return { content: [{ type: 'text', text: 'ok' }], stopReason: 'end_turn' } as any
+        },
+        async *createMessageStream(params: any): AsyncGenerator<StreamChunk> {
+          calls.push(params)
+          yield { type: 'text', index: 0, delta: 'ok' } as StreamChunk
+          yield { type: 'done', index: -1 } as StreamChunk
+        },
+      },
+    }
+  }
+
+  async function drain(engine: QueryEngine) {
+    for await (const _ of engine.submitMessage('hi')) { /* drain */ }
+  }
+
+  const CASES: Array<{ name: string; thinking: any; expected: any }> = [
+    { name: 'enabled with budget', thinking: { type: 'enabled', budgetTokens: 4096 }, expected: { type: 'enabled', budget_tokens: 4096 } },
+    { name: 'enabled without budget', thinking: { type: 'enabled' }, expected: { type: 'enabled', budget_tokens: undefined } },
+    { name: 'disabled', thinking: { type: 'disabled' }, expected: { type: 'disabled' } },
+    { name: 'adaptive', thinking: { type: 'adaptive' }, expected: { type: 'adaptive' } },
+  ]
+
+  for (const c of CASES) {
+    it(`streaming passes ${c.name} through (#166)`, async () => {
+      const cap = capturingProvider()
+      await drain(new QueryEngine(makeConfig(cap.provider, [], { thinking: c.thinking })))
+      expect(cap.calls[0].thinking).toEqual(c.expected)
+    })
+    it(`non-streaming passes ${c.name} through (#166)`, async () => {
+      const cap = capturingProvider()
+      await drain(new QueryEngine(makeConfig(cap.provider, [], { thinking: c.thinking, includePartialMessages: false })))
+      expect(cap.calls[0].thinking).toEqual(c.expected)
+    })
+  }
+
+  it('unset thinking stays undefined (#166)', async () => {
+    const cap = capturingProvider()
+    await drain(new QueryEngine(makeConfig(cap.provider)))
+    expect(cap.calls[0].thinking).toBeUndefined()
+  })
+})

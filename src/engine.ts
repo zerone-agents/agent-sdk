@@ -482,13 +482,12 @@ export class QueryEngine {
             system: systemPrompt,
             messages: apiMessages,
             tools: tools.length > 0 ? tools : undefined,
-            thinking:
-              this.config.thinking?.type === 'enabled'
-                ? {
-                    type: 'enabled',
-                    budget_tokens: this.config.thinking.budgetTokens,
-                  }
-                : undefined,
+            thinking: this.config.thinking
+              ? {
+                  type: this.config.thinking.type,
+                  budget_tokens: this.config.thinking.budgetTokens,
+                }
+              : undefined,
             effort: this.config.effort,
             signal: this.config.abortSignal,
           })
@@ -582,13 +581,12 @@ export class QueryEngine {
                 system: systemPrompt,
                 messages: apiMessages,
                 tools: tools.length > 0 ? tools : undefined,
-                thinking:
-                  this.config.thinking?.type === 'enabled'
-                    ? {
-                      type: 'enabled',
+                thinking: this.config.thinking
+                  ? {
+                      type: this.config.thinking.type,
                       budget_tokens: this.config.thinking.budgetTokens,
                     }
-                    : undefined,
+                  : undefined,
                 effort: this.config.effort,
               })
             },
