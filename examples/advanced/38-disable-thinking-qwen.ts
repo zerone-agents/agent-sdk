@@ -16,6 +16,11 @@
  * (Before v4.2.1 the config was silently dropped at three layers and
  * qwen3.8 kept thinking — see issue #166.)
  *
+ * Verified on Alibaba Bailian (token-plan, qwen3.8-flash, both API shapes,
+ * 0 thinking blocks each — see the issue #166 end-to-end retest comment).
+ * The vLLM half of the dual-send relies on the standard tolerance
+ * convention (endpoints ignore unknown fields) — not separately verified.
+ *
  * Environment variables (Alibaba Cloud Bailian / DashScope):
  *   DASHSCOPE_API_KEY=sk-...                              # required
  *   DASHSCOPE_ANTHROPIC_BASE_URL   # default: https://dashscope.aliyuncs.com/api/v2
@@ -56,7 +61,7 @@ async function runDisabledThinking(
   let thinkingBlocks = 0
 
   for await (const event of agent.query(QUESTION)) {
-    const msg = event as any
+    const msg = event
     if (msg.type === 'assistant') {
       for (const block of msg.message?.content || []) {
         if (block.type === 'thinking') {
