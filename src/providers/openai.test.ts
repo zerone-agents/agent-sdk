@@ -272,3 +272,61 @@ describe('thinking mapping (#166)', () => {
     })
   }
 })
+
+// #170: Bailian (and the OpenAI-compatible contract) requires reasoning_effort
+// to AGREE with enable_thinking — 'xhigh' alongside enable_thinking:false is a
+// 400 ("'reasoning_effort' must be 'none' when 'enable_thinking' is false").
+// Disabled maps effort to 'none' (the official "thinking off" value);
+// enabled/adaptive keep the configured value.
+describe('thinking × effort coordination (#170)', () => {
+  it('disabled + effort → reasoning_effort mapped to none (non-streaming)', async () => {
+    const calls = stubFetch([{ status: 200, json: SUCCESS_JSON }])
+    const provider = new OpenAIProvider({ apiKey: 'k' })
+
+    await provider.createMessage(makeParams({ thinking: { type: 'disabled' }, effort: 'xhigh' } as any))
+
+    expect(calls[0].body.enable_thinking).toBe(false)
+    expect(calls[0].body.chat_template_kwargs).toEqual({ enable_thinking: false })
+    expect(calls[0].body.reasoning_effort).toBe('none')
+  })
+
+  it('disabled + effort → reasoning_effort mapped to none (streaming)', async () => {
+    const calls = stubFetch([{ status: 200, body: SUCCESS_SSE }])
+    const provider = new OpenAIProvider({ apiKey: 'k' })
+
+    for await (const _ of provider.createMessageStream(makeParams({ thinking: { type: 'disabled' }, effort: 'xhigh' } as any))) { /* drain */ }
+
+    expect(calls[0].body.enable_thinking).toBe(false)
+    expect(calls[0].body.reasoning_effort).toBe('none')
+  })
+
+  it('regression: disabled WITHOUT effort still sends no reasoning_effort', async () => {
+    const calls = stubFetch([{ status: 200, json: SUCCESS_JSON }])
+    const provider = new OpenAIProvider({ apiKey: 'k' })
+
+    await provider.createMessage(makeParams({ thinking: { type: 'disabled' } } as any))
+
+    expect(calls[0].body.enable_thinking).toBe(false)
+    expect('reasoning_effort' in calls[0].body).toBe(false)
+  })
+
+  it('regression: enabled + effort keeps the configured effort value', async () => {
+    const calls = stubFetch([{ status: 200, json: SUCCESS_JSON }])
+    const provider = new OpenAIProvider({ apiKey: 'k' })
+
+    await provider.createMessage(makeParams({ thinking: { type: 'enabled' }, effort: 'xhigh' } as any))
+
+    expect(calls[0].body.enable_thinking).toBe(true)
+    expect(calls[0].body.reasoning_effort).toBe('xhigh')
+  })
+
+  it('regression: effort only (adaptive thinking) keeps the value, no thinking fields', async () => {
+    const calls = stubFetch([{ status: 200, json: SUCCESS_JSON }])
+    const provider = new OpenAIProvider({ apiKey: 'k' })
+
+    await provider.createMessage(makeParams({ effort: 'xhigh' } as any))
+
+    expect('enable_thinking' in calls[0].body).toBe(false)
+    expect(calls[0].body.reasoning_effort).toBe('xhigh')
+  })
+})

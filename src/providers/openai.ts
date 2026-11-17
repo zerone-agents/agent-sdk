@@ -191,7 +191,10 @@ export class OpenAIProvider implements LLMProvider {
     applyOpenAIThinking(body, params.thinking)
 
     if (params.effort) {
-      body.reasoning_effort = params.effort
+      // #170: Bailian (and the OpenAI-compatible contract) requires
+      // reasoning_effort to AGREE with enable_thinking — 'xhigh' alongside
+      // disabled is a 400. Map to 'none' (the official "thinking off" value).
+      body.reasoning_effort = params.thinking?.type === 'disabled' ? 'none' : params.effort
     }
 
     let imageFallback = false
@@ -266,7 +269,10 @@ export class OpenAIProvider implements LLMProvider {
     applyOpenAIThinking(body, params.thinking)
 
     if (params.effort) {
-      body.reasoning_effort = params.effort
+      // #170: Bailian (and the OpenAI-compatible contract) requires
+      // reasoning_effort to AGREE with enable_thinking — 'xhigh' alongside
+      // disabled is a 400. Map to 'none' (the official "thinking off" value).
+      body.reasoning_effort = params.thinking?.type === 'disabled' ? 'none' : params.effort
     }
 
     let response: Response
