@@ -149,6 +149,26 @@ function applyOpenAIThinking(
   body.chat_template_kwargs = { enable_thinking: enableThinking }
 }
 
+/**
+ * #170: reasoning_effort must AGREE with enable_thinking on OpenAI-compatible
+ * endpoints — Bailian 400s on 'xhigh' alongside disabled ("'reasoning_effort'
+ * must be 'none' when 'enable_thinking' is false"). Disabled maps effort to
+ * 'none' — the official "thinking off" value — rather than omitting the
+ * field: omitting would silently drop the user-configured effort (#142's
+ * no-silent-drop philosophy), and gateways that ignore enable_thinking but
+ * parse effort only receive the "off" intent via 'none'. Known trade-off:
+ * a strict-enum gateway that rejects 'none' fails loudly — preferred over
+ * silent misconfiguration.
+ */
+function applyOpenAIReasoning(
+  body: Record<string, any>,
+  effort: string | undefined,
+  t: { type: string } | undefined,
+): void {
+  if (!effort) return
+  body.reasoning_effort = t?.type === 'disabled' ? 'none' : effort
+}
+
 export class OpenAIProvider implements LLMProvider {
   readonly apiType = 'openai-completions' as const
   private apiKey: string
@@ -189,13 +209,7 @@ export class OpenAIProvider implements LLMProvider {
     }
 
     applyOpenAIThinking(body, params.thinking)
-
-    if (params.effort) {
-      // #170: Bailian (and the OpenAI-compatible contract) requires
-      // reasoning_effort to AGREE with enable_thinking — 'xhigh' alongside
-      // disabled is a 400. Map to 'none' (the official "thinking off" value).
-      body.reasoning_effort = params.thinking?.type === 'disabled' ? 'none' : params.effort
-    }
+    applyOpenAIReasoning(body, params.effort, params.thinking)
 
     let imageFallback = false
     let response = await fetch(`${this.baseURL}/chat/completions`, {
@@ -267,13 +281,7 @@ export class OpenAIProvider implements LLMProvider {
     }
 
     applyOpenAIThinking(body, params.thinking)
-
-    if (params.effort) {
-      // #170: Bailian (and the OpenAI-compatible contract) requires
-      // reasoning_effort to AGREE with enable_thinking — 'xhigh' alongside
-      // disabled is a 400. Map to 'none' (the official "thinking off" value).
-      body.reasoning_effort = params.thinking?.type === 'disabled' ? 'none' : params.effort
-    }
+    applyOpenAIReasoning(body, params.effort, params.thinking)
 
     let response: Response
     let imageFallback = false
