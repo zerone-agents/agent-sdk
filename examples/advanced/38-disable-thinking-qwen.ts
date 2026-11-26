@@ -39,6 +39,8 @@ interface RunSummary {
   text: string
   thinkingBlocks: number
   durationS: string
+  success: boolean
+  error?: string
 }
 
 async function runDisabledThinking(
@@ -59,6 +61,8 @@ async function runDisabledThinking(
   const t0 = performance.now()
   let text = ''
   let thinkingBlocks = 0
+  let success = true
+  let error: string | undefined
 
   for await (const event of agent.query(QUESTION)) {
     const msg = event
@@ -73,6 +77,11 @@ async function runDisabledThinking(
         }
       }
     }
+    if (msg.type === 'result' && msg.subtype === 'error') {
+      success = false
+      error = (msg.errors || []).join('; ') || 'unknown provider error'
+      console.log(`  [provider error] ${error}`)
+    }
   }
 
   await agent.close()
@@ -82,6 +91,8 @@ async function runDisabledThinking(
     text,
     thinkingBlocks,
     durationS: ((performance.now() - t0) / 1000).toFixed(1),
+    success,
+    error,
   }
 }
 
@@ -110,9 +121,26 @@ async function main() {
 
   // --- Summary ---
   console.log('=== Summary (thinking must be 0 on both shapes) ===')
+  let failed = false
   for (const s of [anthropic, openai]) {
-    const verdict = s.thinkingBlocks === 0 ? '✓ thinking disabled' : '✗ THINKING STILL PRESENT'
+    const thinkingOk = s.thinkingBlocks === 0
+    const completedOk = s.success
+    const verdict = thinkingOk && completedOk ? '✓ thinking disabled' : '✗ FAIL'
     console.log(`  ${s.apiType.padEnd(22)} | thinking blocks: ${s.thinkingBlocks} | ${s.durationS}s | ${verdict}`)
+    if (!thinkingOk) failed = true
+    if (!completedOk) {
+      failed = true
+      console.log(`    error: ${s.error}`)
+    }
+  }
+
+  if (failed) {
+    console.log('
+❌ Example 38: at least one run failed (thinking still present or provider error).')
+    process.exitCode = 1
+  } else {
+    console.log('
+✅ Example 38: thinking disabled on both API shapes.')
   }
 }
 
