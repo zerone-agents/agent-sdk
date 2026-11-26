@@ -27,6 +27,7 @@ async function* parseSSEStream(
   response: Response,
   signal?: AbortSignal,
   onParseError?: (raw: string, error: unknown) => void,
+  state?: { sawDone: boolean },
 ): AsyncGenerator<any> {
   const reader = response.body!.getReader()
   const decoder = new TextDecoder()
@@ -60,7 +61,12 @@ async function* parseSSEStream(
         const trimmed = line.trim()
         if (trimmed.startsWith('data: ')) {
           const data = trimmed.slice(6)
-          if (data === '[DONE]') return
+          if (data === '[DONE]') {
+            // #174: record the sentinel so the caller can distinguish a
+            // completed stream from a premature EOF.
+            if (state) state.sawDone = true
+            return
+          }
           try {
             yield JSON.parse(data)
           } catch (err) {
@@ -167,6 +173,26 @@ function applyOpenAIReasoning(
 ): void {
   if (!effort) return
   body.reasoning_effort = t?.type === 'disabled' ? 'none' : effort
+}
+
+/**
+ * #174: some gateways deliver provider failures as an SSE `data:` frame with
+ * an `error` object (HTTP 200 + stream close) — e.g. GLM model routers
+ * relaying an upstream interruption as `{"error":{"code":...,"message":...}}`.
+ * The frame carries no `choices`, so the previous loop skipped it and the
+ * subsequent close was indistinguishable from normal completion. Mirror the
+ * Anthropic adapter's contract: fail the operation with the provider error
+ * preserved (code/message/type) and the gateway request id when available.
+ */
+function openaiSSEError(error: any, requestId?: string | null): any {
+  const code = error?.code || error?.type || 'unknown'
+  const message = error?.message || '(no message)'
+  const suffix = requestId ? ` (request id: ${requestId})` : ''
+  const err: any = new Error(`OpenAI SSE error: ${code} - ${message}${suffix}`)
+  err.status = 200
+  err.error = error
+  if (requestId) err.requestId = requestId
+  return err
 }
 
 export class OpenAIProvider implements LLMProvider {
@@ -339,11 +365,22 @@ export class OpenAIProvider implements LLMProvider {
     const parseWarnings: string[] = imageFallback
       ? ['Provider does not support image input; images were stripped from the request']
       : []
+    // #174: a supported terminal signal is the `[DONE]` sentinel or any
+    // choice-level `finish_reason`. Some OpenAI-compatible gateways close the
+    // connection after `finish_reason` without sending `[DONE]`, so both count;
+    // an EOF without either is an interrupted stream, not a completion.
+    const terminal = { sawDone: false }
+    let sawFinishReason = false
+    const requestId = response.headers.get('x-request-id')
 
     try {
       for await (const chunk of parseSSEStream(response, params.signal, (raw, _err) => {
         parseWarnings.push(`SSE parse error, dropped chunk: ${raw.slice(0, 100)}`)
-      })) {
+      }, terminal)) {
+        if (chunk.error) {
+          throw openaiSSEError(chunk.error, requestId)
+        }
+
         if (chunk.usage) {
           yield {
             type: 'usage',
@@ -362,6 +399,8 @@ export class OpenAIProvider implements LLMProvider {
 
         const choice = chunk.choices?.[0]
         if (!choice) continue
+
+        if (choice.finish_reason) sawFinishReason = true
 
         const delta = choice.delta
         if (!delta) continue
@@ -460,6 +499,18 @@ export class OpenAIProvider implements LLMProvider {
           input: call.arguments,
         }
       }
+    }
+
+    // #174: EOF without a supported terminal signal is an interrupted stream —
+    // fail the operation instead of emitting `done` like a normal completion.
+    // Caller-initiated aborts keep the legacy graceful finish (the engine
+    // breaks its consumption loop on abort and does not expect a throw).
+    if (!terminal.sawDone && !sawFinishReason && !params.signal?.aborted) {
+      const err: any = new Error(
+        'OpenAI stream ended without completion ([DONE]/finish_reason not received)',
+      )
+      err.streamInterrupted = true
+      throw err
     }
 
     yield { type: 'done', index: -1 }
