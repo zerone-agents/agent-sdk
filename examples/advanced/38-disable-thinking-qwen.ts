@@ -135,12 +135,10 @@ async function main() {
   }
 
   if (failed) {
-    console.log('
-❌ Example 38: at least one run failed (thinking still present or provider error).')
+    console.log('\n❌ Example 38: at least one run failed (thinking still present or provider error).')
     process.exitCode = 1
   } else {
-    console.log('
-✅ Example 38: thinking disabled on both API shapes.')
+    console.log('\n✅ Example 38: thinking disabled on both API shapes.')
   }
 }
 
