@@ -184,11 +184,18 @@ function applyOpenAIReasoning(
  * Anthropic adapter's contract: fail the operation with the provider error
  * preserved (code/message/type) and the gateway request id when available.
  */
-function openaiSSEError(error: any, requestId?: string | null): any {
-  const code = error?.code || error?.type || 'unknown'
-  const message = error?.message || '(no message)'
+function openaiSSEError(
+  error: Record<string, unknown>,
+  requestId?: string | null,
+): Error & { status: number; error: Record<string, unknown>; requestId?: string } {
+  const code = String(error?.code || error?.type || 'unknown')
+  const message = String(error?.message || '(no message)')
   const suffix = requestId ? ` (request id: ${requestId})` : ''
-  const err: any = new Error(`OpenAI SSE error: ${code} - ${message}${suffix}`)
+  const err = new Error(`OpenAI SSE error: ${code} - ${message}${suffix}`) as Error & {
+    status: number
+    error: Record<string, unknown>
+    requestId?: string
+  }
   err.status = 200
   err.error = error
   if (requestId) err.requestId = requestId
@@ -506,11 +513,10 @@ export class OpenAIProvider implements LLMProvider {
     // Caller-initiated aborts keep the legacy graceful finish (the engine
     // breaks its consumption loop on abort and does not expect a throw).
     if (!terminal.sawDone && !sawFinishReason && !params.signal?.aborted) {
-      const err: any = new Error(
-        'OpenAI stream ended without completion ([DONE]/finish_reason not received)',
+      throw Object.assign(
+        new Error('OpenAI stream ended without completion ([DONE]/finish_reason not received)'),
+        { streamInterrupted: true },
       )
-      err.streamInterrupted = true
-      throw err
     }
 
     yield { type: 'done', index: -1 }

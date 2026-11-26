@@ -28,15 +28,21 @@ function stubSSE(frames: Array<unknown>, opts: { requestId?: string } = {}): voi
   vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200, headers })))
 }
 
-async function drain(gen: AsyncGenerator<any>): Promise<{ chunks: any[]; error: any }> {
-  const chunks: any[] = []
-  let error: any
+async function drain<T>(
+  gen: AsyncGenerator<T>,
+): Promise<{ chunks: T[]; error: unknown }> {
+  const chunks: T[] = []
+  let error: unknown
   try {
     for await (const chunk of gen) chunks.push(chunk)
   } catch (err) {
     error = err
   }
   return { chunks, error }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 const CONTENT_FRAME = {
@@ -106,12 +112,14 @@ describe('OpenAIProvider createMessageStream SSE error handling (issue #174)', (
     // ...but the operation fails instead of completing.
     expect(chunks.some((c) => c.type === 'done')).toBe(false)
     expect(error).toBeDefined()
-    expect(error.message).toContain('upstream_unavailable')
-    expect(error.message).toContain('Provider service unavailable')
-    expect(error.message).toContain('req-123')
-    expect(error.status).toBe(200)
-    expect(error.error).toEqual({ code: 'upstream_unavailable', message: 'Provider service unavailable' })
-    expect(error.requestId).toBe('req-123')
+    expect(errorMessage(error)).toContain('upstream_unavailable')
+    expect(errorMessage(error)).toContain('Provider service unavailable')
+    expect(errorMessage(error)).toContain('req-123')
+    expect(error).toMatchObject({
+      status: 200,
+      error: { code: 'upstream_unavailable', message: 'Provider service unavailable' },
+      requestId: 'req-123',
+    })
   })
 
   it('surfaces an SSE error frame that arrives before any content as a failure', async () => {
@@ -122,8 +130,8 @@ describe('OpenAIProvider createMessageStream SSE error handling (issue #174)', (
 
     expect(chunks).toEqual([])
     expect(error).toBeDefined()
-    expect(error.message).toContain('server_error')
-    expect(error.message).toContain('boom')
+    expect(errorMessage(error)).toContain('server_error')
+    expect(errorMessage(error)).toContain('boom')
   })
 
   it('throws an interrupted-stream error on premature EOF (no [DONE]/finish_reason)', async () => {
@@ -135,8 +143,8 @@ describe('OpenAIProvider createMessageStream SSE error handling (issue #174)', (
     expect(chunks.filter((c) => c.type === 'text').map((c) => c.delta)).toEqual(['Partial answer'])
     expect(chunks.some((c) => c.type === 'done')).toBe(false)
     expect(error).toBeDefined()
-    expect(error.message).toContain('ended without completion')
-    expect(error.streamInterrupted).toBe(true)
+    expect(errorMessage(error)).toContain('ended without completion')
+    expect(error).toMatchObject({ streamInterrupted: true })
   })
 
   it('does not throw on an empty stream when the caller aborted', async () => {
